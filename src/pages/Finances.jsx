@@ -1,0 +1,452 @@
+import { useRef, useState } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import Papa from 'papaparse'
+import dayjs from 'dayjs'
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ResponsiveContainer,
+} from 'recharts'
+import { api } from '../api/client.js'
+import { FINANCE_CATEGORIES, FINANCE_CATEGORY_COLORS } from '../constants/categories.js'
+import { detectSource, processCSVRows, parsePdfToTableData } from '../utils/csvHelpers.js'
+import CsvMappingModal from '../components/CsvMappingModal.jsx'
+import AddTransactionModal from '../components/AddTransactionModal.jsx'
+
+const FINANCE_CAT_SET = new Set(FINANCE_CATEGORIES)
+
+function buildMonthlyData(transactions) {
+  const months = Array.from({ length: 6 }, (_, i) =>
+    dayjs().subtract(5 - i, 'month').format('YYYY-MM')
+  )
+  return months.map(month => {
+    const txs = transactions.filter(t => t.date?.startsWith(month))
+    // Use category tag; fall back to type for legacy transactions with non-finance categories
+    const income = txs
+      .filter(t => t.category === 'Income' || (t.type === 'income' && !FINANCE_CAT_SET.has(t.category)))
+      .reduce((s, t) => s + Math.abs(t.amount), 0)
+    const savings = txs
+      .filter(t => t.category === 'Savings')
+      .reduce((s, t) => s + Math.abs(t.amount), 0)
+    const expenses = txs
+      .filter(t => t.category === 'Expense' || (t.type === 'expense' && !FINANCE_CAT_SET.has(t.category)))
+      .reduce((s, t) => s + Math.abs(t.amount), 0)
+    return {
+      month: dayjs(month + '-01').format('MMM YY'),
+      Income: Math.round(income * 100) / 100,
+      Savings: Math.round(savings * 100) / 100,
+      Expenses: Math.round(expenses * 100) / 100,
+    }
+  })
+}
+
+
+export default function Finances() {
+  const fileInputRef = useRef()
+  const queryClient = useQueryClient()
+
+  const [csvModalData, setCsvModalData] = useState(null)
+  const [showAddModal, setShowAddModal] = useState(false)
+  const [filterMonth, setFilterMonth] = useState('all')
+  const [filterType, setFilterType] = useState('all')
+  const [importStatus, setImportStatus] = useState(null)
+  const [editingCategoryId, setEditingCategoryId] = useState(null)
+
+  const { data: transactions = [], isLoading } = useQuery({
+    queryKey: ['transactions'],
+    queryFn: api.transactions.list,
+  })
+
+  const { data: settings } = useQuery({
+    queryKey: ['settings'],
+    queryFn: api.settings.get,
+  })
+
+  const allCategories = FINANCE_CATEGORIES
+  const allCategoryColors = FINANCE_CATEGORY_COLORS
+
+  const batchMutation = useMutation({
+    mutationFn: api.transactions.batch,
+    onSuccess: (imported) => {
+      queryClient.invalidateQueries({ queryKey: ['transactions'] })
+      setCsvModalData(null)
+      setImportStatus({ type: 'success', message: `Imported ${imported.length} transactions.` })
+      setTimeout(() => setImportStatus(null), 4000)
+    },
+    onError: () => setImportStatus({ type: 'error', message: 'Import failed. Please try again.' }),
+  })
+
+  const addMutation = useMutation({
+    mutationFn: api.transactions.create,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['transactions'] })
+      setShowAddModal(false)
+    },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: api.transactions.remove,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['transactions'] }),
+  })
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, ...data }) => api.transactions.update(id, data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['transactions'] }),
+  })
+
+  const saveMappingMutation = useMutation({
+    mutationFn: (newSources) => api.settings.update({ csvSources: newSources }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['settings'] }),
+  })
+
+  async function handleFileChange(e) {
+    const file = e.target.files[0]
+    if (!file) return
+    e.target.value = ''
+
+    if (file.name.toLowerCase().endsWith('.pdf')) {
+      setImportStatus({ type: 'loading', message: 'Parsing PDF…' })
+      try {
+        const result = await parsePdfToTableData(file)
+        setImportStatus(null)
+        if (!result) {
+          setImportStatus({ type: 'error', message: 'Could not extract a table from this PDF. It may be a scanned or image-based document.' })
+          return
+        }
+        const { headers, rows, statementYear, statementEndYear, statementEndMonth } = result
+        const detected = detectSource(headers, settings?.csvSources || {}, 'bank')
+        if (detected) {
+          const txs = processCSVRows(rows, { ...detected.mapping, sourceName: detected.name, statementYear, statementEndYear, statementEndMonth })
+          batchMutation.mutate(txs)
+        } else {
+          setCsvModalData({ headers, rows, statementYear, statementEndYear, statementEndMonth })
+        }
+      } catch {
+        setImportStatus({ type: 'error', message: 'Failed to parse PDF. Please try a different file.' })
+      }
+      return
+    }
+
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: ({ data: rows, meta }) => {
+        const headers = meta.fields || []
+        const csvSources = settings?.csvSources || {}
+        const detected = detectSource(headers, csvSources, 'bank')
+        if (detected) {
+          const txs = processCSVRows(rows, { ...detected.mapping, sourceName: detected.name })
+          batchMutation.mutate(txs)
+        } else {
+          setCsvModalData({ headers, rows })
+        }
+      },
+      error: () => setImportStatus({ type: 'error', message: 'Could not parse CSV file.' }),
+    })
+  }
+
+  function handleMappingConfirm(sourceName, mapping) {
+    const newSources = { ...(settings?.csvSources || {}), [sourceName]: mapping }
+    saveMappingMutation.mutate(newSources)
+    const txs = processCSVRows(csvModalData.rows, { ...mapping, sourceName, statementYear: csvModalData.statementYear, statementEndYear: csvModalData.statementEndYear, statementEndMonth: csvModalData.statementEndMonth })
+    batchMutation.mutate(txs)
+  }
+
+  const availableMonths = [
+    ...new Set(transactions.map(t => t.date?.slice(0, 7)).filter(Boolean)),
+  ].sort().reverse()
+
+  const filtered = transactions
+    .filter(t => filterMonth === 'all' || t.date?.startsWith(filterMonth))
+    .filter(t => filterType === 'all' || t.type === filterType)
+    .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+
+  const monthlyData = buildMonthlyData(transactions)
+  const totalIncome = Math.round(monthlyData.reduce((s, m) => s + m.Income, 0) * 100) / 100
+  const totalSavings = Math.round(monthlyData.reduce((s, m) => s + m.Savings, 0) * 100) / 100
+  const totalExpenses = Math.round(monthlyData.reduce((s, m) => s + m.Expenses, 0) * 100) / 100
+  const net = Math.round((totalIncome + totalSavings - totalExpenses) * 100) / 100
+  const netCash = Math.round((totalIncome - totalExpenses) * 100) / 100
+  const barMax = Math.max(totalIncome, totalSavings, totalExpenses, 1)
+  const hasChartData = transactions.length > 0
+
+  return (
+    <div className="p-6">
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-semibold text-gray-900">Finances</h1>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setShowAddModal(true)}
+            className="px-4 py-2 text-sm border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+          >
+            + Add Transaction
+          </button>
+          <button
+            onClick={() => fileInputRef.current.click()}
+            disabled={batchMutation.isPending || importStatus?.type === 'loading'}
+            className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors"
+          >
+            {batchMutation.isPending || importStatus?.type === 'loading' ? 'Importing…' : 'Upload Bank Statement'}
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv,.pdf"
+            className="hidden"
+            onChange={handleFileChange}
+          />
+        </div>
+      </div>
+
+      {importStatus && (
+        <div
+          className={`mb-4 px-4 py-3 rounded-lg text-sm flex items-center justify-between ${
+            importStatus.type === 'success'
+              ? 'bg-green-50 text-green-800 border border-green-200'
+              : importStatus.type === 'loading'
+              ? 'bg-blue-50 text-blue-800 border border-blue-200'
+              : 'bg-red-50 text-red-800 border border-red-200'
+          }`}
+        >
+          {importStatus.message}
+          {importStatus.type !== 'loading' && (
+            <button onClick={() => setImportStatus(null)} className="ml-4 opacity-60 hover:opacity-100">✕</button>
+          )}
+        </div>
+      )}
+
+      {hasChartData && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-6">
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+            <h2 className="text-sm font-medium text-gray-500 mb-4">Monthly Income vs Expenses</h2>
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={monthlyData} barCategoryGap="35%">
+                <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+                <XAxis dataKey="month" tick={{ fontSize: 12, fill: '#6b7280' }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 12, fill: '#6b7280' }} tickFormatter={v => `$${v}`} axisLine={false} tickLine={false} />
+                <Tooltip
+                  formatter={(v, name) => [`$${v.toLocaleString(undefined, { minimumFractionDigits: 2 })}`, name]}
+                  contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 12 }}
+                />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Bar dataKey="Income" fill="#22c55e" radius={[4, 4, 0, 0]} maxBarSize={28} />
+                <Bar dataKey="Savings" fill="#14b8a6" radius={[4, 4, 0, 0]} maxBarSize={28} />
+                <Bar dataKey="Expenses" fill="#f87171" radius={[4, 4, 0, 0]} maxBarSize={28} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 flex flex-col justify-between">
+            <h2 className="text-sm font-medium text-gray-500 mb-5">Total Income, Savings &amp; Expenses — Last 6 Months</h2>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+              <div>
+                <p className="text-xl font-semibold text-green-600">
+                  ${totalIncome.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </p>
+                <p className="text-xs text-gray-400 mt-1">Income</p>
+              </div>
+              <div>
+                <p className="text-xl font-semibold text-teal-500">
+                  ${totalSavings.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </p>
+                <p className="text-xs text-gray-400 mt-1">Savings</p>
+              </div>
+              <div>
+                <p className="text-xl font-semibold text-red-500">
+                  ${totalExpenses.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </p>
+                <p className="text-xs text-gray-400 mt-1">Expenses</p>
+              </div>
+              <div>
+                <p className={`text-xl font-semibold ${net >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                  {net >= 0 ? '+' : '−'}${Math.abs(net).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </p>
+                <p className="text-xs text-gray-400 mt-1">Net</p>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <div className="flex justify-between text-xs text-gray-500 mb-1">
+                  <span>Income</span>
+                  <span className="text-green-600 font-medium">${totalIncome.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                </div>
+                <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-green-400 rounded-full transition-all duration-500"
+                    style={{ width: `${(totalIncome / barMax) * 100}%` }}
+                  />
+                </div>
+              </div>
+              <div>
+                <div className="flex justify-between text-xs text-gray-500 mb-1">
+                  <span>Savings</span>
+                  <span className="text-teal-500 font-medium">${totalSavings.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                </div>
+                <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-teal-400 rounded-full transition-all duration-500"
+                    style={{ width: `${(totalSavings / barMax) * 100}%` }}
+                  />
+                </div>
+              </div>
+              <div>
+                <div className="flex justify-between text-xs text-gray-500 mb-1">
+                  <span>Expenses</span>
+                  <span className="text-red-500 font-medium">${totalExpenses.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                </div>
+                <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-red-400 rounded-full transition-all duration-500"
+                    style={{ width: `${(totalExpenses / barMax) * 100}%` }}
+                  />
+                </div>
+              </div>
+
+              <div className="pt-3 border-t border-gray-100 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-500">Net Cash</span>
+                  <span className={`text-sm font-semibold ${netCash >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                    {netCash >= 0 ? '+' : '−'}${Math.abs(netCash).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-500">Savings</span>
+                  <span className="text-sm font-semibold text-teal-500">
+                    +${totalSavings.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
+        <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3 flex-wrap">
+          <span className="text-sm font-medium text-gray-500">Filter:</span>
+          <select
+            value={filterMonth}
+            onChange={e => setFilterMonth(e.target.value)}
+            className="text-sm border border-gray-200 rounded-md px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="all">All months</option>
+            {availableMonths.map(m => (
+              <option key={m} value={m}>{dayjs(m + '-01').format('MMM YYYY')}</option>
+            ))}
+          </select>
+          <select
+            value={filterType}
+            onChange={e => setFilterType(e.target.value)}
+            className="text-sm border border-gray-200 rounded-md px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="all">All types</option>
+            <option value="income">Income</option>
+            <option value="expense">Expenses</option>
+          </select>
+          <span className="ml-auto text-sm text-gray-400">
+            {filtered.length} transaction{filtered.length !== 1 ? 's' : ''}
+          </span>
+        </div>
+
+        {isLoading ? (
+          <div className="py-12 text-center text-sm text-gray-400">Loading…</div>
+        ) : filtered.length === 0 ? (
+          <div className="py-16 text-center">
+            <p className="text-gray-400 text-sm">No transactions yet.</p>
+            <p className="text-gray-300 text-xs mt-1">Upload a bank statement or add one manually.</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="text-left text-xs font-medium text-gray-400 uppercase tracking-wide border-b border-gray-100">
+                  <th className="px-4 py-3">Date</th>
+                  <th className="px-4 py-3">Description</th>
+                  <th className="px-4 py-3">Category</th>
+                  <th className="px-4 py-3">Source</th>
+                  <th className="px-4 py-3 text-right">Amount</th>
+                  <th className="px-4 py-3 w-8"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {filtered.map(tx => (
+                  <tr key={tx.id} className="hover:bg-gray-50 transition-colors">
+                    <td className="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">
+                      {tx.date ? dayjs(tx.date).format('MMM D, YYYY') : '—'}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-gray-900 max-w-xs truncate">
+                      {tx.description || <span className="text-gray-300 italic">No description</span>}
+                    </td>
+                    <td className="px-4 py-3">
+                      {editingCategoryId === tx.id ? (
+                        <select
+                          autoFocus
+                          defaultValue={tx.category || 'Other'}
+                          onChange={e => {
+                            updateMutation.mutate({ id: tx.id, category: e.target.value })
+                            setEditingCategoryId(null)
+                          }}
+                          onBlur={() => setEditingCategoryId(null)}
+                          className="text-xs border border-gray-300 rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          {allCategories.map(cat => (
+                            <option key={cat} value={cat}>{cat}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span
+                          onClick={() => setEditingCategoryId(tx.id)}
+                          title="Click to edit category"
+                          className="inline-block px-2.5 py-0.5 rounded-full text-xs font-medium cursor-pointer hover:opacity-75 transition-opacity"
+                          style={{
+                            backgroundColor: (allCategoryColors[tx.category] || '#94a3b8') + '1a',
+                            color: allCategoryColors[tx.category] || '#94a3b8',
+                          }}
+                        >
+                          {tx.category || 'Other'}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-gray-400">{tx.source || '—'}</td>
+                    <td className={`px-4 py-3 text-sm font-medium text-right whitespace-nowrap ${
+                      tx.type === 'income' ? 'text-green-600' : 'text-red-500'
+                    }`}>
+                      {tx.type === 'income' ? '+' : '−'}${Math.abs(tx.amount).toFixed(2)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <button
+                        onClick={() => deleteMutation.mutate(tx.id)}
+                        disabled={deleteMutation.isPending}
+                        className="text-gray-300 hover:text-red-400 transition-colors text-lg leading-none"
+                        title="Delete"
+                      >
+                        ×
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {csvModalData && (
+        <CsvMappingModal
+          headers={csvModalData.headers}
+          existingSources={settings?.csvSources || {}}
+          onConfirm={handleMappingConfirm}
+          onCancel={() => setCsvModalData(null)}
+        />
+      )}
+      {showAddModal && (
+        <AddTransactionModal
+          categories={allCategories}
+          onConfirm={data => addMutation.mutate(data)}
+          onCancel={() => setShowAddModal(false)}
+        />
+      )}
+    </div>
+  )
+}
