@@ -9,6 +9,28 @@ import Anthropic from '@anthropic-ai/sdk'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DB_PATH = path.join(__dirname, '../data/db.json')
 
+const DEFAULT_DB = {
+  transactions: [],
+  credit_card_transactions: [],
+  holdings: [],
+  goals: [],
+  savings_accounts: [],
+  settings: {
+    claudeApiKey: '',
+    customCategories: [],
+    cashBalance: 0,
+  },
+}
+
+function ensureDb() {
+  if (fs.existsSync(DB_PATH)) return
+  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true })
+  fs.writeFileSync(DB_PATH, JSON.stringify(DEFAULT_DB, null, 2))
+  console.log(`Initialized empty db at ${DB_PATH}`)
+}
+
+ensureDb()
+
 const app = express()
 app.use(cors())
 app.use(express.json())
