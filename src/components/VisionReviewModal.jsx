@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import dayjs from 'dayjs'
 
-export default function VisionReviewModal({ transactions: initialTxs, onConfirm, onCancel }) {
-  const [sourceName, setSourceName] = useState('Bank Statement')
+export default function VisionReviewModal({ transactions: initialTxs, onConfirm, onCancel, initialSourceName = 'Bank Statement' }) {
+  const [sourceName, setSourceName] = useState(initialSourceName)
   const [txs, setTxs] = useState(initialTxs)
 
   function remove(idx) {

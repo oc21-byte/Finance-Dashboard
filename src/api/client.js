@@ -69,5 +69,6 @@ export const api = {
     dashboardChat: (messages) => request('POST', '/llm/dashboard-chat', { messages }),
     goalChat: (goalId, messages) => request('POST', '/llm/goal-chat', { goalId, messages }),
     budgetBuilder: (payload) => request('POST', '/llm/budget-builder', payload),
+    detectColumns: (headers, samples) => request('POST', '/llm/detect-columns', { headers, samples }),
   },
 }

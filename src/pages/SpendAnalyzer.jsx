@@ -94,6 +94,7 @@ export default function SpendAnalyzer({ onTabChange }) {
   const [csvModalData, setCsvModalData] = useState(null)
   const [pdfConfirmData, setPdfConfirmData] = useState(null)
   const [visionData, setVisionData] = useState(null)
+  const [autoDetectData, setAutoDetectData] = useState(null)
   const [showAddModal, setShowAddModal] = useState(false)
   const [filterMonth, setFilterMonth] = useState('all')
   const [searchQuery, setSearchQuery] = useState('')
@@ -155,6 +156,7 @@ export default function SpendAnalyzer({ onTabChange }) {
       queryClient.invalidateQueries({ queryKey: ['credit_card_transactions'] })
       setCsvModalData(null)
       setVisionData(null)
+      setAutoDetectData(null)
       setImportStatus({ type: 'success', message: `Imported ${imported.length} transactions.` })
       setTimeout(() => setImportStatus(null), 4000)
     },
@@ -246,6 +248,8 @@ export default function SpendAnalyzer({ onTabChange }) {
     }
   }
 
+  const PAYMENT_RE = /\b(payment\s*thank\s*you|autopay|auto\s*pay|directpay)\b/i
+
   async function triggerVision(file) {
     setCsvModalData(null)
     setImportStatus({ type: 'loading', message: 'Scanned PDF detected — analyzing with AI…' })
@@ -256,14 +260,16 @@ export default function SpendAnalyzer({ onTabChange }) {
         setImportStatus({ type: 'error', message: 'AI could not find any transactions in this PDF.' })
         return
       }
-      let normalized = transactions.map(tx => ({
-        date: tx.date,
-        description: tx.description,
-        amount: Math.round(Number(tx.amount) * 100) / 100,
-        category: Number(tx.amount) >= 0 ? 'Income' : 'Expense',
-        type: Number(tx.amount) >= 0 ? 'income' : 'expense',
-        source: 'Bank Statement',
-      }))
+      let normalized = transactions
+        .map(tx => ({
+          date: tx.date,
+          description: tx.description,
+          amount: Math.round(Number(tx.amount) * 100) / 100,
+          category: Number(tx.amount) >= 0 ? 'Income' : 'Expense',
+          type: Number(tx.amount) >= 0 ? 'income' : 'expense',
+          source: 'Bank Statement',
+        }))
+        .filter(tx => !PAYMENT_RE.test(tx.description))
       if (settings?.hasClaudeApiKey) {
         setImportStatus({ type: 'loading', message: 'Categorizing with AI…' })
         normalized = await categorizeTxs(normalized)
@@ -290,12 +296,11 @@ export default function SpendAnalyzer({ onTabChange }) {
           return
         }
         const { headers, rows, statementYear, statementEndYear, statementEndMonth } = result
-        pendingFileRef.current = file
         const detected = detectSource(headers, settings?.csvSources || {}, 'credit_card')
         if (detected) {
           setPdfConfirmData({ sourceName: detected.name, mapping: detected.mapping, headers, rows, statementYear, statementEndYear, statementEndMonth })
         } else {
-          setCsvModalData({ headers, rows, statementYear, statementEndYear, statementEndMonth })
+          await runAutoDetect(headers, rows, { statementYear, statementEndYear, statementEndMonth })
         }
       } catch (e) {
         console.error('PDF parse error:', e)
@@ -319,8 +324,7 @@ export default function SpendAnalyzer({ onTabChange }) {
           }
           batchMutation.mutate(txs)
         } else {
-          pendingFileRef.current = file
-          setCsvModalData({ headers, rows })
+          await runAutoDetect(headers, rows, {})
         }
       },
       error: () => setImportStatus({ type: 'error', message: 'Could not parse CSV file.' }),
@@ -353,6 +357,36 @@ export default function SpendAnalyzer({ onTabChange }) {
       txs = await categorizeTxs(txs)
     }
     batchMutation.mutate(txs)
+  }
+
+  async function runAutoDetect(headers, rows, { statementYear, statementEndYear, statementEndMonth } = {}) {
+    if (settings?.hasClaudeApiKey) {
+      setImportStatus({ type: 'loading', message: 'Auto-detecting columns…' })
+      try {
+        const { mapping } = await api.llm.detectColumns(headers, rows.slice(0, 3))
+        let txs = processCSVRows(rows, { ...mapping, statementYear, statementEndYear, statementEndMonth })
+        if (settings?.hasClaudeApiKey) {
+          setImportStatus({ type: 'loading', message: 'Categorizing with AI…' })
+          txs = await categorizeTxs(txs)
+        }
+        setImportStatus(null)
+        setAutoDetectData({ transactions: txs, mapping, suggestedSourceName: mapping.suggestedSourceName || '' })
+      } catch {
+        setImportStatus(null)
+        setCsvModalData({ headers, rows, statementYear, statementEndYear, statementEndMonth })
+      }
+    } else {
+      setCsvModalData({ headers, rows, statementYear, statementEndYear, statementEndMonth })
+    }
+  }
+
+  async function handleAutoDetectConfirm(sourceName, txs) {
+    if (autoDetectData?.mapping) {
+      const newSources = { ...(settings?.csvSources || {}), [sourceName]: autoDetectData.mapping }
+      saveMappingMutation.mutate(newSources)
+    }
+    batchMutation.mutate(txs)
+    setAutoDetectData(null)
   }
 
   function handleSort(field) {
@@ -996,6 +1030,14 @@ export default function SpendAnalyzer({ onTabChange }) {
           transactions={visionData.transactions}
           onConfirm={(sourceName, txs) => batchMutation.mutate(txs)}
           onCancel={() => setVisionData(null)}
+        />
+      )}
+      {autoDetectData && (
+        <VisionReviewModal
+          transactions={autoDetectData.transactions}
+          initialSourceName={autoDetectData.suggestedSourceName}
+          onConfirm={handleAutoDetectConfirm}
+          onCancel={() => setAutoDetectData(null)}
         />
       )}
       {csvModalData && (
