@@ -1,9 +1,11 @@
 import * as pdfjsLib from 'pdfjs-dist'
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import dayjs from 'dayjs'
 import { CATEGORIES, FINANCE_CATEGORIES } from '../constants/categories.js'
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.min.mjs',
+  import.meta.url
+).href
 
 export function isCitizensBankCsv(text) {
   return /TRANSACTIONDETAILS?\s+FOR\s+CHECKING\s+ACCOUNT/i.test(text) ||
