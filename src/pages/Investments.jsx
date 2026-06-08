@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import React, { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import dayjs from 'dayjs'
 import { api } from '../api/client.js'
@@ -55,6 +55,8 @@ export default function Investments() {
   const priceError = pricesQueryError?.message ?? null
   const showPriceError = priceError && !priceErrorDismissed
 
+  const [expandedHistoryId, setExpandedHistoryId] = useState(null)
+
   const addHoldingMutation = useMutation({
     mutationFn: api.holdings.create,
     onSuccess: () => {
@@ -66,6 +68,11 @@ export default function Investments() {
 
   const deleteHoldingMutation = useMutation({
     mutationFn: api.holdings.remove,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['holdings'] }),
+  })
+
+  const deletePurchaseMutation = useMutation({
+    mutationFn: ({ holdingId, purchaseId }) => api.holdings.removePurchase(holdingId, purchaseId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['holdings'] }),
   })
 
@@ -134,6 +141,8 @@ export default function Investments() {
   // ── Savings state ─────────────────────────────────────────────────────────
   const [showSavingsForm, setShowSavingsForm] = useState(false)
   const [savingsForm, setSavingsForm] = useState(DEFAULT_SAVINGS_FORM)
+  const [editingAccountId, setEditingAccountId] = useState(null)
+  const [editAccountForm, setEditAccountForm] = useState({})
 
   const { data: savingsAccounts = [] } = useQuery({
     queryKey: ['savings-accounts'],
@@ -149,10 +158,36 @@ export default function Investments() {
     },
   })
 
+  const updateSavingsMutation = useMutation({
+    mutationFn: ({ id, ...data }) => api.savingsAccounts.update(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['savings-accounts'] })
+      setEditingAccountId(null)
+      setEditAccountForm({})
+    },
+  })
+
   const deleteSavingsMutation = useMutation({
     mutationFn: api.savingsAccounts.remove,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['savings-accounts'] }),
   })
+
+  function startEditAccount(a) {
+    setEditingAccountId(a.id)
+    setEditAccountForm({ name: a.name, accountType: a.accountType, balance: String(a.balance), apy: String(a.apy) })
+  }
+
+  function handleSaveAccount(id) {
+    const { name, accountType, balance, apy } = editAccountForm
+    if (!name || balance === '' || apy === '') return
+    updateSavingsMutation.mutate({
+      id,
+      name,
+      accountType,
+      balance: parseFloat(balance),
+      apy: parseFloat(apy),
+    })
+  }
 
   function savingsField(key) {
     return {
@@ -176,7 +211,7 @@ export default function Investments() {
   const totalAnnualInterest = savingsAccounts.reduce((s, a) => s + a.balance * (a.apy / 100), 0)
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-3 sm:p-6 space-y-6">
       {/* ── Holdings section ───────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold text-gray-900">Investments</h1>
@@ -194,7 +229,7 @@ export default function Investments() {
           className="bg-white rounded-xl border border-gray-200 shadow-sm p-5"
         >
           <h2 className="text-sm font-medium text-gray-700 mb-4">New Holding</h2>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3">
             <div>
               <label className="block text-xs text-gray-500 mb-1">Ticker</label>
               <input {...holdingField('ticker')} placeholder="AAPL" className={inputClass} required />
@@ -317,7 +352,7 @@ export default function Investments() {
                     Account <SortIcon active={sortField === 'accountType'} dir={sortDir} />
                   </th>
                   <th className="px-4 py-3 text-right">Shares</th>
-                  <th className="px-4 py-3 text-right">Purchase Price</th>
+                  <th className="px-4 py-3 text-right hidden sm:table-cell">Purchase Price</th>
                   <th className="px-4 py-3 text-right">Current Price</th>
                   <th
                     className="px-4 py-3 text-right cursor-pointer select-none hover:text-gray-600"
@@ -326,53 +361,125 @@ export default function Investments() {
                     Gain / Loss <SortIcon active={sortField === 'gainPct'} dir={sortDir} />
                   </th>
                   <th className="px-4 py-3 text-right">Total Value</th>
-                  <th className="px-4 py-3 text-right">Purchase Date</th>
-                  <th className="px-4 py-3 w-8"></th>
+                  <th className="px-4 py-3 text-right hidden sm:table-cell">Purchase Date</th>
+                  <th className="px-4 py-3 w-24"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
-                {displayRows.map(r => (
-                  <tr key={r.id} className="hover:bg-gray-50 transition-colors">
-                    <td className="px-4 py-3 text-sm font-semibold text-gray-900">{r.ticker}</td>
-                    <td className="px-4 py-3 text-sm text-gray-500">{r.accountType}</td>
-                    <td className="px-4 py-3 text-sm text-gray-600 text-right">{r.shares}</td>
-                    <td className="px-4 py-3 text-sm text-gray-600 text-right">${fmt(r.purchasePrice)}</td>
-                    <td className="px-4 py-3 text-sm text-right">
-                      {pricesFetching
-                        ? <span className="text-gray-300 text-xs">Fetching…</span>
-                        : r.currentPrice !== null
-                          ? <span className="text-gray-900">${fmt(r.currentPrice)}</span>
-                          : <span className="text-gray-300">—</span>
-                      }
-                    </td>
-                    <td className={`px-4 py-3 text-sm font-medium text-right whitespace-nowrap ${
-                      r.gainDollar === null || pricesFetching ? 'text-gray-300' : r.gainDollar >= 0 ? 'text-green-600' : 'text-red-500'
-                    }`}>
-                      {r.gainDollar === null || pricesFetching
-                        ? '—'
-                        : <>{r.gainDollar >= 0 ? '+' : '−'}${fmt(Math.abs(r.gainDollar))} <span className="text-xs">({r.gainDollar >= 0 ? '+' : ''}{fmt(r.gainPct)}%)</span></>
-                      }
-                    </td>
-                    <td className="px-4 py-3 text-sm text-right text-gray-900">
-                      {r.currentValue !== null && !pricesFetching
-                        ? `$${fmt(r.currentValue)}`
-                        : `$${fmt(r.costBasis)}`}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-gray-400 text-right whitespace-nowrap">
-                      {r.purchaseDate ? dayjs(r.purchaseDate).format('MMM D, YYYY') : '—'}
-                    </td>
-                    <td className="px-4 py-3">
-                      <button
-                        onClick={() => deleteHoldingMutation.mutate(r.id)}
-                        disabled={deleteHoldingMutation.isPending}
-                        className="text-gray-300 hover:text-red-400 transition-colors text-lg leading-none"
-                        title="Delete"
-                      >
-                        ×
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {displayRows.map(r => {
+                  const purchaseCount = r.purchases?.length ?? 1
+                  const isExpanded = expandedHistoryId === r.id
+                  return (
+                    <React.Fragment key={r.id}>
+                      <tr className="hover:bg-gray-50 transition-colors">
+                        <td className="px-4 py-3 text-sm font-semibold text-gray-900">{r.ticker}</td>
+                        <td className="px-4 py-3 text-sm text-gray-500">{r.accountType}</td>
+                        <td className="px-4 py-3 text-sm text-gray-600 text-right">{r.shares}</td>
+                        <td className="px-4 py-3 text-sm text-gray-600 text-right hidden sm:table-cell">
+                          ${fmt(r.purchasePrice)}
+                          {purchaseCount > 1 && (
+                            <span className="ml-1 text-xs text-gray-400">avg</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-right">
+                          {pricesFetching
+                            ? <span className="text-gray-300 text-xs">Fetching…</span>
+                            : r.currentPrice !== null
+                              ? <span className="text-gray-900">${fmt(r.currentPrice)}</span>
+                              : <span className="text-gray-300">—</span>
+                          }
+                        </td>
+                        <td className={`px-4 py-3 text-sm font-medium text-right whitespace-nowrap ${
+                          r.gainDollar === null || pricesFetching ? 'text-gray-300' : r.gainDollar >= 0 ? 'text-green-600' : 'text-red-500'
+                        }`}>
+                          {r.gainDollar === null || pricesFetching
+                            ? '—'
+                            : <>{r.gainDollar >= 0 ? '+' : '−'}${fmt(Math.abs(r.gainDollar))} <span className="text-xs">({r.gainDollar >= 0 ? '+' : ''}{fmt(r.gainPct)}%)</span></>
+                          }
+                        </td>
+                        <td className="px-4 py-3 text-sm text-right text-gray-900">
+                          {r.currentValue !== null && !pricesFetching
+                            ? `$${fmt(r.currentValue)}`
+                            : `$${fmt(r.costBasis)}`}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-400 text-right whitespace-nowrap hidden sm:table-cell">
+                          {r.purchaseDate ? dayjs(r.purchaseDate).format('MMM D, YYYY') : '—'}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-1 justify-end">
+                            <button
+                              onClick={() => setExpandedHistoryId(id => id === r.id ? null : r.id)}
+                              className={`text-xs px-2 py-0.5 rounded border transition-colors ${
+                                isExpanded
+                                  ? 'border-blue-300 text-blue-600 bg-blue-50'
+                                  : 'border-gray-200 text-gray-400 hover:text-blue-500 hover:border-blue-200'
+                              }`}
+                              title="View purchase history"
+                            >
+                              {purchaseCount} {purchaseCount === 1 ? 'buy' : 'buys'}
+                            </button>
+                            <button
+                              onClick={() => deleteHoldingMutation.mutate(r.id)}
+                              disabled={deleteHoldingMutation.isPending}
+                              className="text-gray-300 hover:text-red-400 transition-colors text-lg leading-none"
+                              title="Delete all"
+                            >
+                              ×
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr className="bg-gray-50">
+                          <td colSpan={9} className="px-6 py-3">
+                            <p className="text-xs font-medium text-gray-400 mb-2 uppercase tracking-wide">
+                              Purchase history — {r.ticker} ({r.accountType})
+                            </p>
+                            {(() => {
+                              const purchases = r.purchases && r.purchases.length > 0
+                                ? r.purchases
+                                : [{ id: r.id + '-legacy', shares: r.shares, purchasePrice: r.purchasePrice, purchaseDate: r.purchaseDate }]
+                              const isLegacy = !r.purchases || r.purchases.length === 0
+                              return (
+                                <table className="w-full text-xs">
+                                  <thead>
+                                    <tr className="text-gray-400">
+                                      <th className="text-left py-1 pr-4 font-medium">Date</th>
+                                      <th className="text-right py-1 pr-4 font-medium">Shares</th>
+                                      <th className="text-right py-1 pr-4 font-medium">Price</th>
+                                      <th className="text-right py-1 pr-4 font-medium">Cost</th>
+                                      <th className="py-1 w-6"></th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {purchases.map(p => (
+                                      <tr key={p.id} className="border-t border-gray-100">
+                                        <td className="py-1.5 pr-4 text-gray-600">{p.purchaseDate ? dayjs(p.purchaseDate).format('MMM D, YYYY') : '—'}</td>
+                                        <td className="py-1.5 pr-4 text-right text-gray-600">{p.shares}</td>
+                                        <td className="py-1.5 pr-4 text-right text-gray-600">${fmt(p.purchasePrice)}</td>
+                                        <td className="py-1.5 pr-4 text-right text-gray-600">${fmt(p.shares * p.purchasePrice)}</td>
+                                        <td className="py-1.5">
+                                          <button
+                                            onClick={() => deletePurchaseMutation.mutate({ holdingId: r.id, purchaseId: p.id })}
+                                            disabled={deletePurchaseMutation.isPending || isLegacy}
+                                            className="text-gray-300 hover:text-red-400 transition-colors text-base leading-none disabled:cursor-not-allowed"
+                                            title={isLegacy ? 'Save a new buy first to enable per-purchase deletion' : 'Delete purchase'}
+                                          >
+                                            ×
+                                          </button>
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              )
+                            })()}
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -396,7 +503,7 @@ export default function Investments() {
           className="bg-white rounded-xl border border-gray-200 shadow-sm p-5"
         >
           <h2 className="text-sm font-medium text-gray-700 mb-4">New Savings Account</h2>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
             <div>
               <label className="block text-xs text-gray-500 mb-1">Account Name</label>
               <input {...savingsField('name')} placeholder="Marcus HYSA" className={inputClass} required />
@@ -453,7 +560,7 @@ export default function Investments() {
               <thead>
                 <tr className="text-left text-xs font-medium text-gray-400 uppercase tracking-wide border-b border-gray-100">
                   <th className="px-4 py-3">Name</th>
-                  <th className="px-4 py-3">Type</th>
+                  <th className="px-4 py-3 hidden sm:table-cell">Type</th>
                   <th className="px-4 py-3 text-right">Balance</th>
                   <th className="px-4 py-3 text-right">APY</th>
                   <th className="px-4 py-3 text-right">Monthly Interest</th>
@@ -463,25 +570,105 @@ export default function Investments() {
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {savingsAccounts.map(a => {
-                  const monthly = (a.balance * (a.apy / 100)) / 12
-                  const annual = a.balance * (a.apy / 100)
+                  const isEditing = editingAccountId === a.id
+                  const monthly = isEditing
+                    ? ((parseFloat(editAccountForm.balance) || 0) * (parseFloat(editAccountForm.apy) || 0) / 100) / 12
+                    : (a.balance * (a.apy / 100)) / 12
+                  const annual = isEditing
+                    ? (parseFloat(editAccountForm.balance) || 0) * (parseFloat(editAccountForm.apy) || 0) / 100
+                    : a.balance * (a.apy / 100)
                   return (
-                    <tr key={a.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-4 py-3 text-sm font-semibold text-gray-900">{a.name}</td>
-                      <td className="px-4 py-3 text-sm text-gray-500">{a.accountType}</td>
-                      <td className="px-4 py-3 text-sm text-gray-900 text-right">${fmt(a.balance)}</td>
-                      <td className="px-4 py-3 text-sm text-gray-600 text-right">{fmt(a.apy)}%</td>
+                    <tr key={a.id} className={`transition-colors ${isEditing ? 'bg-blue-50' : 'hover:bg-gray-50'}`}>
+                      <td className="px-4 py-3">
+                        {isEditing ? (
+                          <input
+                            value={editAccountForm.name}
+                            onChange={e => setEditAccountForm(f => ({ ...f, name: e.target.value }))}
+                            className="w-full border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                        ) : (
+                          <span className="text-sm font-semibold text-gray-900">{a.name}</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 hidden sm:table-cell">
+                        {isEditing ? (
+                          <select
+                            value={editAccountForm.accountType}
+                            onChange={e => setEditAccountForm(f => ({ ...f, accountType: e.target.value }))}
+                            className="border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          >
+                            {SAVINGS_ACCOUNT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                          </select>
+                        ) : (
+                          <span className="text-sm text-gray-500">{a.accountType}</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={editAccountForm.balance}
+                            onChange={e => setEditAccountForm(f => ({ ...f, balance: e.target.value }))}
+                            className="w-28 border border-gray-300 rounded-md px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                        ) : (
+                          <span className="text-sm text-gray-900">${fmt(a.balance)}</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={editAccountForm.apy}
+                            onChange={e => setEditAccountForm(f => ({ ...f, apy: e.target.value }))}
+                            className="w-20 border border-gray-300 rounded-md px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                        ) : (
+                          <span className="text-sm text-gray-600">{fmt(a.apy)}%</span>
+                        )}
+                      </td>
                       <td className="px-4 py-3 text-sm text-amber-600 font-medium text-right">${fmt(monthly)}</td>
                       <td className="px-4 py-3 text-sm text-amber-600 font-medium text-right">${fmt(annual)}</td>
                       <td className="px-4 py-3">
-                        <button
-                          onClick={() => deleteSavingsMutation.mutate(a.id)}
-                          disabled={deleteSavingsMutation.isPending}
-                          className="text-gray-300 hover:text-red-400 transition-colors text-lg leading-none"
-                          title="Delete"
-                        >
-                          ×
-                        </button>
+                        {isEditing ? (
+                          <div className="flex items-center gap-1 justify-end">
+                            <button
+                              onClick={() => handleSaveAccount(a.id)}
+                              disabled={updateSavingsMutation.isPending}
+                              className="text-xs px-2 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-60"
+                            >
+                              Save
+                            </button>
+                            <button
+                              onClick={() => setEditingAccountId(null)}
+                              className="text-xs px-2 py-1 border border-gray-300 rounded-md text-gray-600 hover:bg-gray-50"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1 justify-end">
+                            <button
+                              onClick={() => startEditAccount(a)}
+                              className="text-gray-400 hover:text-blue-500 transition-colors text-sm"
+                              title="Edit"
+                            >
+                              ✎
+                            </button>
+                            <button
+                              onClick={() => deleteSavingsMutation.mutate(a.id)}
+                              disabled={deleteSavingsMutation.isPending}
+                              className="text-gray-300 hover:text-red-400 transition-colors text-lg leading-none"
+                              title="Delete"
+                            >
+                              ×
+                            </button>
+                          </div>
+                        )}
                       </td>
                     </tr>
                   )

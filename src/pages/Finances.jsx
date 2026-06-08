@@ -8,8 +8,9 @@ import {
 } from 'recharts'
 import { api } from '../api/client.js'
 import { FINANCE_CATEGORIES, FINANCE_CATEGORY_COLORS } from '../constants/categories.js'
-import { detectSource, processCSVRows, parsePdfToTableData } from '../utils/csvHelpers.js'
+import { detectSource, processCSVRows, parsePdfToTableData, parsePdfVision, isCitizensBankCsv, parseCitizensBankCsv } from '../utils/csvHelpers.js'
 import CsvMappingModal from '../components/CsvMappingModal.jsx'
+import VisionReviewModal from '../components/VisionReviewModal.jsx'
 import AddTransactionModal from '../components/AddTransactionModal.jsx'
 
 const FINANCE_CAT_SET = new Set(FINANCE_CATEGORIES)
@@ -30,11 +31,15 @@ function buildMonthlyData(transactions) {
     const expenses = txs
       .filter(t => t.category === 'Expense' || (t.type === 'expense' && !FINANCE_CAT_SET.has(t.category)))
       .reduce((s, t) => s + Math.abs(t.amount), 0)
+    const investments = txs
+      .filter(t => t.category === 'Investments')
+      .reduce((s, t) => s + Math.abs(t.amount), 0)
     return {
       month: dayjs(month + '-01').format('MMM YY'),
       Income: Math.round(income * 100) / 100,
       Savings: Math.round(savings * 100) / 100,
       Expenses: Math.round(expenses * 100) / 100,
+      Investments: Math.round(investments * 100) / 100,
     }
   })
 }
@@ -45,11 +50,14 @@ export default function Finances() {
   const queryClient = useQueryClient()
 
   const [csvModalData, setCsvModalData] = useState(null)
+  const [pdfConfirmData, setPdfConfirmData] = useState(null)
+  const [visionData, setVisionData] = useState(null)
   const [showAddModal, setShowAddModal] = useState(false)
   const [filterMonth, setFilterMonth] = useState('all')
   const [filterType, setFilterType] = useState('all')
   const [importStatus, setImportStatus] = useState(null)
   const [editingCategoryId, setEditingCategoryId] = useState(null)
+  const [linkingTxId, setLinkingTxId] = useState(null)
 
   const { data: transactions = [], isLoading } = useQuery({
     queryKey: ['transactions'],
@@ -61,6 +69,11 @@ export default function Finances() {
     queryFn: api.settings.get,
   })
 
+  const { data: savingsAccounts = [] } = useQuery({
+    queryKey: ['savings-accounts'],
+    queryFn: api.savingsAccounts.list,
+  })
+
   const allCategories = FINANCE_CATEGORIES
   const allCategoryColors = FINANCE_CATEGORY_COLORS
 
@@ -69,6 +82,7 @@ export default function Finances() {
     onSuccess: (imported) => {
       queryClient.invalidateQueries({ queryKey: ['transactions'] })
       setCsvModalData(null)
+      setVisionData(null)
       setImportStatus({ type: 'success', message: `Imported ${imported.length} transactions.` })
       setTimeout(() => setImportStatus(null), 4000)
     },
@@ -98,6 +112,22 @@ export default function Finances() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['settings'] }),
   })
 
+  function downloadCsvTemplate() {
+    const rows = [
+      ['Date', 'Description', 'Amount'],
+      ['2026-01-15', 'Direct Deposit - Employer', '2500.00'],
+      ['2026-01-18', 'Grocery Store', '-67.42'],
+      ['2026-01-20', 'Electric Bill', '-110.00'],
+      ['2026-01-22', 'Transfer to Savings', '-500.00'],
+    ]
+    const csv = rows.map(r => r.join(',')).join('\n')
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+    a.download = 'bank-statement-template.csv'
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
   async function handleFileChange(e) {
     const file = e.target.files[0]
     if (!file) return
@@ -109,14 +139,32 @@ export default function Finances() {
         const result = await parsePdfToTableData(file)
         setImportStatus(null)
         if (!result) {
-          setImportStatus({ type: 'error', message: 'Could not extract a table from this PDF. It may be a scanned or image-based document.' })
+          setImportStatus({ type: 'loading', message: 'Scanned PDF detected — analyzing with AI…' })
+          try {
+            const { transactions } = await parsePdfVision(file)
+            setImportStatus(null)
+            if (!transactions?.length) {
+              setImportStatus({ type: 'error', message: 'AI could not find any transactions in this PDF.' })
+              return
+            }
+            const normalized = transactions.map(tx => ({
+              date: tx.date,
+              description: tx.description,
+              amount: Math.round(Number(tx.amount) * 100) / 100,
+              category: Number(tx.amount) >= 0 ? 'Income' : 'Expense',
+              type: Number(tx.amount) >= 0 ? 'income' : 'expense',
+              source: 'Bank Statement',
+            }))
+            setVisionData({ transactions: normalized })
+          } catch (err) {
+            setImportStatus({ type: 'error', message: err.message || 'AI analysis failed. Download the CSV Template instead.' })
+          }
           return
         }
         const { headers, rows, statementYear, statementEndYear, statementEndMonth } = result
         const detected = detectSource(headers, settings?.csvSources || {}, 'bank')
         if (detected) {
-          const txs = processCSVRows(rows, { ...detected.mapping, sourceName: detected.name, statementYear, statementEndYear, statementEndMonth })
-          batchMutation.mutate(txs)
+          setPdfConfirmData({ sourceName: detected.name, mapping: detected.mapping, headers, rows, statementYear, statementEndYear, statementEndMonth })
         } else {
           setCsvModalData({ headers, rows, statementYear, statementEndYear, statementEndMonth })
         }
@@ -126,7 +174,25 @@ export default function Finances() {
       return
     }
 
-    Papa.parse(file, {
+    const text = await file.text()
+
+    if (isCitizensBankCsv(text)) {
+      Papa.parse(text, {
+        header: false,
+        skipEmptyLines: false,
+        complete: ({ data: rawRows }) => {
+          const txs = parseCitizensBankCsv(rawRows)
+          if (txs.length === 0) {
+            setImportStatus({ type: 'error', message: 'No transactions found in this Citizens Bank statement.' })
+          } else {
+            batchMutation.mutate(txs)
+          }
+        },
+      })
+      return
+    }
+
+    Papa.parse(text, {
       header: true,
       skipEmptyLines: true,
       complete: ({ data: rows, meta }) => {
@@ -134,14 +200,26 @@ export default function Finances() {
         const csvSources = settings?.csvSources || {}
         const detected = detectSource(headers, csvSources, 'bank')
         if (detected) {
-          const txs = processCSVRows(rows, { ...detected.mapping, sourceName: detected.name })
-          batchMutation.mutate(txs)
+          setPdfConfirmData({ sourceName: detected.name, mapping: detected.mapping, headers, rows })
         } else {
           setCsvModalData({ headers, rows })
         }
       },
       error: () => setImportStatus({ type: 'error', message: 'Could not parse CSV file.' }),
     })
+  }
+
+  function handlePdfConfirmYes() {
+    const { sourceName, mapping, rows, statementYear, statementEndYear, statementEndMonth } = pdfConfirmData
+    const txs = processCSVRows(rows, { ...mapping, sourceName, statementYear, statementEndYear, statementEndMonth })
+    batchMutation.mutate(txs)
+    setPdfConfirmData(null)
+  }
+
+  function handlePdfConfirmNo() {
+    const { sourceName, headers, rows, statementYear, statementEndYear, statementEndMonth } = pdfConfirmData
+    setCsvModalData({ headers, rows, statementYear, statementEndYear, statementEndMonth, initialSourceName: sourceName })
+    setPdfConfirmData(null)
   }
 
   function handleMappingConfirm(sourceName, mapping) {
@@ -164,21 +242,28 @@ export default function Finances() {
   const totalIncome = Math.round(monthlyData.reduce((s, m) => s + m.Income, 0) * 100) / 100
   const totalSavings = Math.round(monthlyData.reduce((s, m) => s + m.Savings, 0) * 100) / 100
   const totalExpenses = Math.round(monthlyData.reduce((s, m) => s + m.Expenses, 0) * 100) / 100
-  const net = Math.round((totalIncome + totalSavings - totalExpenses) * 100) / 100
+  const totalInvestments = Math.round(monthlyData.reduce((s, m) => s + m.Investments, 0) * 100) / 100
+  const net = Math.round((totalIncome + totalSavings + totalInvestments - totalExpenses) * 100) / 100
   const netCash = Math.round((totalIncome - totalExpenses) * 100) / 100
-  const barMax = Math.max(totalIncome, totalSavings, totalExpenses, 1)
+  const barMax = Math.max(totalIncome, totalSavings, totalInvestments, totalExpenses, 1)
   const hasChartData = transactions.length > 0
 
   return (
-    <div className="p-6">
-      <div className="flex items-center justify-between mb-6">
+    <div className="p-3 sm:p-6">
+      <div className="flex items-center justify-between mb-6 gap-3 flex-wrap">
         <h1 className="text-2xl font-semibold text-gray-900">Finances</h1>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <button
             onClick={() => setShowAddModal(true)}
             className="px-4 py-2 text-sm border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
           >
             + Add Transaction
+          </button>
+          <button
+            onClick={downloadCsvTemplate}
+            className="px-4 py-2 text-sm border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+          >
+            CSV Template
           </button>
           <button
             onClick={() => fileInputRef.current.click()}
@@ -214,6 +299,23 @@ export default function Finances() {
         </div>
       )}
 
+      {pdfConfirmData && (
+        <div className="mb-4 px-4 py-3 rounded-lg bg-blue-50 border border-blue-200 text-sm flex items-center justify-between gap-4 flex-wrap">
+          <div>
+            <span className="font-medium text-blue-900">Recognized format: {pdfConfirmData.sourceName}</span>
+            <span className="text-blue-700 ml-2">— use saved column mapping?</span>
+          </div>
+          <div className="flex gap-2 shrink-0">
+            <button onClick={handlePdfConfirmNo} className="px-3 py-1.5 rounded-lg border border-blue-300 text-blue-700 hover:bg-blue-100 text-sm">
+              No, remap
+            </button>
+            <button onClick={handlePdfConfirmYes} className="px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-sm">
+              Yes, use it
+            </button>
+          </div>
+        </div>
+      )}
+
       {hasChartData && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-6">
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
@@ -228,9 +330,10 @@ export default function Finances() {
                   contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 12 }}
                 />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Bar dataKey="Income" fill="#22c55e" radius={[4, 4, 0, 0]} maxBarSize={28} />
-                <Bar dataKey="Savings" fill="#14b8a6" radius={[4, 4, 0, 0]} maxBarSize={28} />
-                <Bar dataKey="Expenses" fill="#f87171" radius={[4, 4, 0, 0]} maxBarSize={28} />
+                <Bar dataKey="Income" fill="#22c55e" radius={[4, 4, 0, 0]} maxBarSize={24} />
+                <Bar dataKey="Savings" fill="#14b8a6" radius={[4, 4, 0, 0]} maxBarSize={24} />
+                <Bar dataKey="Investments" fill="#6366f1" radius={[4, 4, 0, 0]} maxBarSize={24} />
+                <Bar dataKey="Expenses" fill="#f87171" radius={[4, 4, 0, 0]} maxBarSize={24} />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -238,7 +341,7 @@ export default function Finances() {
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 flex flex-col justify-between">
             <h2 className="text-sm font-medium text-gray-500 mb-5">Total Income, Savings &amp; Expenses — Last 6 Months</h2>
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
               <div>
                 <p className="text-xl font-semibold text-green-600">
                   ${totalIncome.toLocaleString(undefined, { minimumFractionDigits: 2 })}
@@ -250,6 +353,12 @@ export default function Finances() {
                   ${totalSavings.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                 </p>
                 <p className="text-xs text-gray-400 mt-1">Savings</p>
+              </div>
+              <div>
+                <p className="text-xl font-semibold text-indigo-500">
+                  ${totalInvestments.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </p>
+                <p className="text-xs text-gray-400 mt-1">Investments</p>
               </div>
               <div>
                 <p className="text-xl font-semibold text-red-500">
@@ -287,6 +396,18 @@ export default function Finances() {
                   <div
                     className="h-full bg-teal-400 rounded-full transition-all duration-500"
                     style={{ width: `${(totalSavings / barMax) * 100}%` }}
+                  />
+                </div>
+              </div>
+              <div>
+                <div className="flex justify-between text-xs text-gray-500 mb-1">
+                  <span>Investments</span>
+                  <span className="text-indigo-500 font-medium">${totalInvestments.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                </div>
+                <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-indigo-400 rounded-full transition-all duration-500"
+                    style={{ width: `${(totalInvestments / barMax) * 100}%` }}
                   />
                 </div>
               </div>
@@ -364,7 +485,7 @@ export default function Finances() {
                   <th className="px-4 py-3">Date</th>
                   <th className="px-4 py-3">Description</th>
                   <th className="px-4 py-3">Category</th>
-                  <th className="px-4 py-3">Source</th>
+                  <th className="px-4 py-3 hidden sm:table-cell">Source</th>
                   <th className="px-4 py-3 text-right">Amount</th>
                   <th className="px-4 py-3 w-8"></th>
                 </tr>
@@ -407,8 +528,39 @@ export default function Finances() {
                           {tx.category || 'Other'}
                         </span>
                       )}
+                      {tx.category === 'Savings' && savingsAccounts.length > 0 && (
+                        <div className="mt-1">
+                          {linkingTxId === tx.id ? (
+                            <select
+                              autoFocus
+                              defaultValue={tx.linkedSavingsAccountId || ''}
+                              onChange={e => {
+                                updateMutation.mutate({ id: tx.id, linkedSavingsAccountId: e.target.value || null })
+                                setLinkingTxId(null)
+                              }}
+                              onBlur={() => setLinkingTxId(null)}
+                              className="text-xs border border-gray-300 rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-teal-500"
+                            >
+                              <option value="">— No account —</option>
+                              {savingsAccounts.map(a => (
+                                <option key={a.id} value={a.id}>{a.name}</option>
+                              ))}
+                            </select>
+                          ) : (
+                            <span
+                              onClick={() => setLinkingTxId(tx.id)}
+                              className="text-xs text-teal-600 cursor-pointer hover:underline"
+                              title="Click to link savings account"
+                            >
+                              {tx.linkedSavingsAccountId
+                                ? (savingsAccounts.find(a => a.id === tx.linkedSavingsAccountId)?.name ?? 'Unknown account')
+                                : '+ Link account'}
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </td>
-                    <td className="px-4 py-3 text-xs text-gray-400">{tx.source || '—'}</td>
+                    <td className="px-4 py-3 text-xs text-gray-400 hidden sm:table-cell">{tx.source || '—'}</td>
                     <td className={`px-4 py-3 text-sm font-medium text-right whitespace-nowrap ${
                       tx.type === 'income' ? 'text-green-600' : 'text-red-500'
                     }`}>
@@ -432,10 +584,20 @@ export default function Finances() {
         )}
       </div>
 
+      {visionData && (
+        <VisionReviewModal
+          transactions={visionData.transactions}
+          onConfirm={(sourceName, txs) => batchMutation.mutate(txs)}
+          onCancel={() => setVisionData(null)}
+        />
+      )}
+
       {csvModalData && (
         <CsvMappingModal
+          key={csvModalData.headers.join('\0')}
           headers={csvModalData.headers}
           existingSources={settings?.csvSources || {}}
+          initialSourceName={csvModalData.initialSourceName || ''}
           onConfirm={handleMappingConfirm}
           onCancel={() => setCsvModalData(null)}
         />

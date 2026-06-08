@@ -1,10 +1,11 @@
 // Used by the Finances tab (bank transactions)
-export const FINANCE_CATEGORIES = ['Income', 'Expense', 'Savings']
+export const FINANCE_CATEGORIES = ['Income', 'Expense', 'Savings', 'Investments']
 
 export const FINANCE_CATEGORY_COLORS = {
-  'Income':  '#22c55e',
-  'Expense': '#f87171',
-  'Savings': '#14b8a6',
+  'Income':      '#22c55e',
+  'Expense':     '#f87171',
+  'Savings':     '#14b8a6',
+  'Investments': '#6366f1',
 }
 
 // Used by the Spend Analyzer tab (credit card transactions)
