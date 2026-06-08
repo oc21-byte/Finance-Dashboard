@@ -894,6 +894,50 @@ Only include categories that have spend data. Do not invent categories.`
 
 // --- PDF Vision ---
 
+app.post('/api/llm/detect-columns', async (req, res) => {
+  const db = readDb()
+  const apiKey = db.settings.claudeApiKey
+  if (!apiKey) return res.status(400).json({ error: 'No Claude API key configured.' })
+  const { headers, samples } = req.body
+  if (!Array.isArray(headers) || headers.length === 0) {
+    return res.status(400).json({ error: 'headers required' })
+  }
+  try {
+    const client = new Anthropic({ apiKey })
+    const message = await client.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 512,
+      messages: [{
+        role: 'user',
+        content: `You are analyzing a bank/credit card statement CSV. Given these column headers and sample rows, identify which column is the transaction date, which is the description, and which is the amount.
+
+Headers: ${JSON.stringify(headers)}
+Sample rows (up to 3): ${JSON.stringify(samples)}
+
+Return ONLY a JSON object with these exact keys:
+{
+  "date": "<header name for date column>",
+  "description": "<header name for description/merchant column>",
+  "splitDebitCredit": false,
+  "amount": "<header name for amount column>",
+  "invertAmounts": <true if purchases show as positive numbers, false if negative>,
+  "statementType": "credit_card" or "bank",
+  "suggestedSourceName": "<best guess at institution name from the data, or empty string>"
+}
+
+For invertAmounts: most credit card CSVs (Chase, Discover, Capital One) export purchases as positive → true. Bank CSVs typically export expenses as negative → false.`,
+      }],
+    })
+    const raw = message.content[0].text.trim()
+      .replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
+    const mapping = JSON.parse(raw)
+    res.json({ mapping })
+  } catch (err) {
+    console.error('detect-columns error:', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
+
 app.post('/api/parse-pdf-vision', async (req, res) => {
   const db = readDb()
   const apiKey = db.settings.claudeApiKey
@@ -919,7 +963,7 @@ app.post('/api/parse-pdf-vision', async (req, res) => {
 - "description": transaction description
 - "amount": number, positive for deposits/credits, negative for withdrawals/debits
 
-Exclude balance summaries, running totals, and any non-transaction rows. Return valid JSON only, no markdown.`,
+Exclude balance summaries, running totals, fee summaries, and any non-transaction rows. For credit card statements, also exclude payment transactions (payments made TO the card, e.g. "PAYMENT THANK YOU", "AUTOPAY", "DIRECTPAY"). Return valid JSON only, no markdown.`,
           },
           ...pages.map(data => ({
             type: 'image',

@@ -53,6 +53,7 @@ export default function Finances() {
   const [csvModalData, setCsvModalData] = useState(null)
   const [pdfConfirmData, setPdfConfirmData] = useState(null)
   const [visionData, setVisionData] = useState(null)
+  const [autoDetectData, setAutoDetectData] = useState(null)
   const [showAddModal, setShowAddModal] = useState(false)
   const [filterMonth, setFilterMonth] = useState('all')
   const [filterType, setFilterType] = useState('all')
@@ -84,6 +85,7 @@ export default function Finances() {
       queryClient.invalidateQueries({ queryKey: ['transactions'] })
       setCsvModalData(null)
       setVisionData(null)
+      setAutoDetectData(null)
       setImportStatus({ type: 'success', message: `Imported ${imported.length} transactions.` })
       setTimeout(() => setImportStatus(null), 4000)
     },
@@ -129,6 +131,8 @@ export default function Finances() {
     URL.revokeObjectURL(a.href)
   }
 
+  const PAYMENT_RE = /\b(payment\s*thank\s*you|autopay|auto\s*pay|directpay)\b/i
+
   async function triggerVision(file) {
     setCsvModalData(null)
     setImportStatus({ type: 'loading', message: 'Scanned PDF detected — analyzing with AI…' })
@@ -139,14 +143,16 @@ export default function Finances() {
         setImportStatus({ type: 'error', message: 'AI could not find any transactions in this PDF.' })
         return
       }
-      const normalized = transactions.map(tx => ({
-        date: tx.date,
-        description: tx.description,
-        amount: Math.round(Number(tx.amount) * 100) / 100,
-        category: Number(tx.amount) >= 0 ? 'Income' : 'Expense',
-        type: Number(tx.amount) >= 0 ? 'income' : 'expense',
-        source: 'Bank Statement',
-      }))
+      const normalized = transactions
+        .map(tx => ({
+          date: tx.date,
+          description: tx.description,
+          amount: Math.round(Number(tx.amount) * 100) / 100,
+          category: Number(tx.amount) >= 0 ? 'Income' : 'Expense',
+          type: Number(tx.amount) >= 0 ? 'income' : 'expense',
+          source: 'Bank Statement',
+        }))
+        .filter(tx => !PAYMENT_RE.test(tx.description))
       setVisionData({ transactions: normalized })
     } catch (err) {
       setImportStatus({ type: 'error', message: err.message || 'AI analysis failed. Download the CSV Template instead.' })
@@ -168,12 +174,11 @@ export default function Finances() {
           return
         }
         const { headers, rows, statementYear, statementEndYear, statementEndMonth } = result
-        pendingFileRef.current = file
         const detected = detectSource(headers, settings?.csvSources || {}, 'bank')
         if (detected) {
           setPdfConfirmData({ sourceName: detected.name, mapping: detected.mapping, headers, rows, statementYear, statementEndYear, statementEndMonth })
         } else {
-          setCsvModalData({ headers, rows, statementYear, statementEndYear, statementEndMonth })
+          await runAutoDetect(headers, rows, { statementYear, statementEndYear, statementEndMonth })
         }
       } catch (e) {
         console.error('PDF parse error:', e)
@@ -203,15 +208,14 @@ export default function Finances() {
     Papa.parse(text, {
       header: true,
       skipEmptyLines: true,
-      complete: ({ data: rows, meta }) => {
+      complete: async ({ data: rows, meta }) => {
         const headers = meta.fields || []
         const csvSources = settings?.csvSources || {}
         const detected = detectSource(headers, csvSources, 'bank')
         if (detected) {
           setPdfConfirmData({ sourceName: detected.name, mapping: detected.mapping, headers, rows })
         } else {
-          pendingFileRef.current = file
-          setCsvModalData({ headers, rows })
+          await runAutoDetect(headers, rows, {})
         }
       },
       error: () => setImportStatus({ type: 'error', message: 'Could not parse CSV file.' }),
@@ -236,6 +240,32 @@ export default function Finances() {
     saveMappingMutation.mutate(newSources)
     const txs = processCSVRows(csvModalData.rows, { ...mapping, sourceName, statementYear: csvModalData.statementYear, statementEndYear: csvModalData.statementEndYear, statementEndMonth: csvModalData.statementEndMonth })
     batchMutation.mutate(txs)
+  }
+
+  async function runAutoDetect(headers, rows, { statementYear, statementEndYear, statementEndMonth } = {}) {
+    if (settings?.hasClaudeApiKey) {
+      setImportStatus({ type: 'loading', message: 'Auto-detecting columns…' })
+      try {
+        const { mapping } = await api.llm.detectColumns(headers, rows.slice(0, 3))
+        setImportStatus(null)
+        const txs = processCSVRows(rows, { ...mapping, statementYear, statementEndYear, statementEndMonth })
+        setAutoDetectData({ transactions: txs, mapping, suggestedSourceName: mapping.suggestedSourceName || '' })
+      } catch {
+        setImportStatus(null)
+        setCsvModalData({ headers, rows, statementYear, statementEndYear, statementEndMonth })
+      }
+    } else {
+      setCsvModalData({ headers, rows, statementYear, statementEndYear, statementEndMonth })
+    }
+  }
+
+  function handleAutoDetectConfirm(sourceName, txs) {
+    if (autoDetectData?.mapping) {
+      const newSources = { ...(settings?.csvSources || {}), [sourceName]: autoDetectData.mapping }
+      saveMappingMutation.mutate(newSources)
+    }
+    batchMutation.mutate(txs)
+    setAutoDetectData(null)
   }
 
   const availableMonths = [
@@ -598,6 +628,14 @@ export default function Finances() {
           transactions={visionData.transactions}
           onConfirm={(sourceName, txs) => batchMutation.mutate(txs)}
           onCancel={() => setVisionData(null)}
+        />
+      )}
+      {autoDetectData && (
+        <VisionReviewModal
+          transactions={autoDetectData.transactions}
+          initialSourceName={autoDetectData.suggestedSourceName}
+          onConfirm={handleAutoDetectConfirm}
+          onCancel={() => setAutoDetectData(null)}
         />
       )}
 
