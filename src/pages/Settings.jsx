@@ -11,6 +11,7 @@ export default function Settings() {
   const [saved, setSaved] = useState(false)
   const [incomeInput, setIncomeInput] = useState('')
   const [incomeSaved, setIncomeSaved] = useState(false)
+  const [sourcesSaved, setSourcesSaved] = useState(false)
 
   const { data: settings } = useQuery({
     queryKey: ['settings'],
@@ -35,6 +36,27 @@ export default function Settings() {
   })
 
   const hasKey = settings?.hasClaudeApiKey
+
+  const saveSources = useMutation({
+    mutationFn: (csvSources) => api.settings.update({ csvSources }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+      setSourcesSaved(true)
+      setTimeout(() => setSourcesSaved(false), 2000)
+    },
+  })
+
+  function deleteSource(name) {
+    const updated = { ...(settings?.csvSources || {}) }
+    delete updated[name]
+    saveSources.mutate(updated)
+  }
+
+  function deleteAllSources() {
+    saveSources.mutate({})
+  }
+
+  const sourceNames = Object.keys(settings?.csvSources || {})
 
   const saveIncome = useMutation({
     mutationFn: (val) => api.settings.update({
@@ -161,6 +183,44 @@ export default function Settings() {
             </button>
           )}
         </form>
+      </div>
+      {/* CSV Sources */}
+      <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm mt-4">
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-sm font-semibold text-gray-700">Saved CSV Sources</h2>
+          {sourcesSaved && (
+            <span className="text-xs text-green-600">Saved ✓</span>
+          )}
+        </div>
+        <p className="text-xs text-gray-400 mb-4">
+          Auto-detected column mappings saved from previous imports. Delete a source to re-run AI detection on next upload.
+        </p>
+
+        {sourceNames.length === 0 ? (
+          <p className="text-sm text-gray-400">No saved sources.</p>
+        ) : (
+          <>
+            <ul className="divide-y divide-gray-100 mb-3">
+              {sourceNames.map(name => (
+                <li key={name} className="flex items-center justify-between py-2">
+                  <span className="text-sm text-gray-800">{name}</span>
+                  <button
+                    onClick={() => deleteSource(name)}
+                    className="text-xs text-red-400 hover:text-red-600 transition-colors"
+                  >
+                    Delete
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <button
+              onClick={deleteAllSources}
+              className="text-xs text-red-500 hover:text-red-700 font-medium transition-colors"
+            >
+              Delete all sources
+            </button>
+          </>
+        )}
       </div>
     </div>
   )

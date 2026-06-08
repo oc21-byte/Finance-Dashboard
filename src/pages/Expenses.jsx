@@ -1,8 +1,6 @@
 import { useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import Papa from 'papaparse'
-import * as pdfjsLib from 'pdfjs-dist'
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import dayjs from 'dayjs'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
@@ -12,8 +10,6 @@ import { api } from '../api/client.js'
 import { CATEGORIES, CATEGORY_COLORS } from '../constants/categories.js'
 import CsvMappingModal from '../components/CsvMappingModal.jsx'
 import AddTransactionModal from '../components/AddTransactionModal.jsx'
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
@@ -330,7 +326,8 @@ export default function Expenses() {
         } else {
           setCsvModalData({ headers, rows })
         }
-      } catch {
+      } catch (e) {
+        console.error('PDF parse error:', e)
         setImportStatus({ type: 'error', message: 'Failed to parse PDF. Please try a different file.' })
       }
       return
