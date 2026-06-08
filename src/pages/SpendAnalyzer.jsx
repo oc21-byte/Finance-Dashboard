@@ -88,6 +88,7 @@ function SortTh({ label, field, sortKey, sortDir, onSort, className = '' }) {
 export default function SpendAnalyzer({ onTabChange }) {
   const fileInputRef = useRef()
   const tableRef = useRef()
+  const pendingFileRef = useRef(null)
   const queryClient = useQueryClient()
 
   const [csvModalData, setCsvModalData] = useState(null)
@@ -245,6 +246,35 @@ export default function SpendAnalyzer({ onTabChange }) {
     }
   }
 
+  async function triggerVision(file) {
+    setCsvModalData(null)
+    setImportStatus({ type: 'loading', message: 'Scanned PDF detected — analyzing with AI…' })
+    try {
+      const { transactions } = await parsePdfVision(file)
+      setImportStatus(null)
+      if (!transactions?.length) {
+        setImportStatus({ type: 'error', message: 'AI could not find any transactions in this PDF.' })
+        return
+      }
+      let normalized = transactions.map(tx => ({
+        date: tx.date,
+        description: tx.description,
+        amount: Math.round(Number(tx.amount) * 100) / 100,
+        category: Number(tx.amount) >= 0 ? 'Income' : 'Expense',
+        type: Number(tx.amount) >= 0 ? 'income' : 'expense',
+        source: 'Bank Statement',
+      }))
+      if (settings?.hasClaudeApiKey) {
+        setImportStatus({ type: 'loading', message: 'Categorizing with AI…' })
+        normalized = await categorizeTxs(normalized)
+        setImportStatus(null)
+      }
+      setVisionData({ transactions: normalized })
+    } catch (err) {
+      setImportStatus({ type: 'error', message: err.message || 'AI analysis failed.' })
+    }
+  }
+
   async function handleFileChange(e) {
     const file = e.target.files[0]
     if (!file) return
@@ -256,41 +286,19 @@ export default function SpendAnalyzer({ onTabChange }) {
         const result = await parsePdfToTableData(file)
         setImportStatus(null)
         if (!result) {
-          setImportStatus({ type: 'loading', message: 'Scanned PDF detected — analyzing with AI…' })
-          try {
-            const { transactions } = await parsePdfVision(file)
-            setImportStatus(null)
-            if (!transactions?.length) {
-              setImportStatus({ type: 'error', message: 'AI could not find any transactions in this PDF.' })
-              return
-            }
-            let normalized = transactions.map(tx => ({
-              date: tx.date,
-              description: tx.description,
-              amount: Math.round(Number(tx.amount) * 100) / 100,
-              category: Number(tx.amount) >= 0 ? 'Income' : 'Expense',
-              type: Number(tx.amount) >= 0 ? 'income' : 'expense',
-              source: 'Bank Statement',
-            }))
-            if (settings?.hasClaudeApiKey) {
-              setImportStatus({ type: 'loading', message: 'Categorizing with AI…' })
-              normalized = await categorizeTxs(normalized)
-              setImportStatus(null)
-            }
-            setVisionData({ transactions: normalized })
-          } catch (err) {
-            setImportStatus({ type: 'error', message: err.message || 'AI analysis failed.' })
-          }
+          triggerVision(file)
           return
         }
         const { headers, rows, statementYear, statementEndYear, statementEndMonth } = result
+        pendingFileRef.current = file
         const detected = detectSource(headers, settings?.csvSources || {}, 'credit_card')
         if (detected) {
           setPdfConfirmData({ sourceName: detected.name, mapping: detected.mapping, headers, rows, statementYear, statementEndYear, statementEndMonth })
         } else {
           setCsvModalData({ headers, rows, statementYear, statementEndYear, statementEndMonth })
         }
-      } catch {
+      } catch (e) {
+        console.error('PDF parse error:', e)
         setImportStatus({ type: 'error', message: 'Failed to parse PDF. Please try a different file.' })
       }
       return
@@ -311,6 +319,7 @@ export default function SpendAnalyzer({ onTabChange }) {
           }
           batchMutation.mutate(txs)
         } else {
+          pendingFileRef.current = file
           setCsvModalData({ headers, rows })
         }
       },
@@ -997,6 +1006,7 @@ export default function SpendAnalyzer({ onTabChange }) {
           initialSourceName={csvModalData.initialSourceName || ''}
           onConfirm={handleMappingConfirm}
           onCancel={() => setCsvModalData(null)}
+          onUseVision={pendingFileRef.current ? () => triggerVision(pendingFileRef.current) : null}
         />
       )}
       {showAddModal && (
