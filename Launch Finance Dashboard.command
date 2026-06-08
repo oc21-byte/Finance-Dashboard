@@ -1,5 +1,5 @@
 #!/bin/zsh
-cd /Users/oliverchau/Desktop/finance-dashboard
+cd "$(dirname "$0")"
 npm run dev &
 sleep 4 && open http://localhost:5173
 wait
