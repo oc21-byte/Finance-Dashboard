@@ -9,8 +9,9 @@ import {
 } from 'recharts'
 import { api } from '../api/client.js'
 import { CATEGORIES, CATEGORY_COLORS } from '../constants/categories.js'
-import { detectSource, processCSVRows, parsePdfToTableData } from '../utils/csvHelpers.js'
+import { detectSource, processCSVRows, parsePdfToTableData, parsePdfVision } from '../utils/csvHelpers.js'
 import CsvMappingModal from '../components/CsvMappingModal.jsx'
+import VisionReviewModal from '../components/VisionReviewModal.jsx'
 import AddTransactionModal from '../components/AddTransactionModal.jsx'
 import CategoryManager from '../components/CategoryManager.jsx'
 import BudgetBuilderModal from '../components/BudgetBuilderModal.jsx'
@@ -91,6 +92,7 @@ export default function SpendAnalyzer({ onTabChange }) {
 
   const [csvModalData, setCsvModalData] = useState(null)
   const [pdfConfirmData, setPdfConfirmData] = useState(null)
+  const [visionData, setVisionData] = useState(null)
   const [showAddModal, setShowAddModal] = useState(false)
   const [filterMonth, setFilterMonth] = useState('all')
   const [searchQuery, setSearchQuery] = useState('')
@@ -151,6 +153,7 @@ export default function SpendAnalyzer({ onTabChange }) {
     onSuccess: (imported) => {
       queryClient.invalidateQueries({ queryKey: ['credit_card_transactions'] })
       setCsvModalData(null)
+      setVisionData(null)
       setImportStatus({ type: 'success', message: `Imported ${imported.length} transactions.` })
       setTimeout(() => setImportStatus(null), 4000)
     },
@@ -253,7 +256,31 @@ export default function SpendAnalyzer({ onTabChange }) {
         const result = await parsePdfToTableData(file)
         setImportStatus(null)
         if (!result) {
-          setImportStatus({ type: 'error', message: 'Could not extract a table from this PDF. It may be a scanned or image-based document.' })
+          setImportStatus({ type: 'loading', message: 'Scanned PDF detected — analyzing with AI…' })
+          try {
+            const { transactions } = await parsePdfVision(file)
+            setImportStatus(null)
+            if (!transactions?.length) {
+              setImportStatus({ type: 'error', message: 'AI could not find any transactions in this PDF.' })
+              return
+            }
+            let normalized = transactions.map(tx => ({
+              date: tx.date,
+              description: tx.description,
+              amount: Math.round(Number(tx.amount) * 100) / 100,
+              category: Number(tx.amount) >= 0 ? 'Income' : 'Expense',
+              type: Number(tx.amount) >= 0 ? 'income' : 'expense',
+              source: 'Bank Statement',
+            }))
+            if (settings?.hasClaudeApiKey) {
+              setImportStatus({ type: 'loading', message: 'Categorizing with AI…' })
+              normalized = await categorizeTxs(normalized)
+              setImportStatus(null)
+            }
+            setVisionData({ transactions: normalized })
+          } catch (err) {
+            setImportStatus({ type: 'error', message: err.message || 'AI analysis failed.' })
+          }
           return
         }
         const { headers, rows, statementYear, statementEndYear, statementEndMonth } = result
@@ -955,6 +982,13 @@ export default function SpendAnalyzer({ onTabChange }) {
         )}
       </div>
 
+      {visionData && (
+        <VisionReviewModal
+          transactions={visionData.transactions}
+          onConfirm={(sourceName, txs) => batchMutation.mutate(txs)}
+          onCancel={() => setVisionData(null)}
+        />
+      )}
       {csvModalData && (
         <CsvMappingModal
           key={csvModalData.headers.join('\0')}
