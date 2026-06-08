@@ -1,15 +1,25 @@
 import { useState, useEffect } from 'react'
 
-export default function CsvMappingModal({ headers, existingSources, onConfirm, onCancel, initialSourceName = '' }) {
+function guess(headers, patterns, fallback) {
+  return headers.find(h => patterns.some(p => p.test(h))) ?? fallback
+}
+
+export default function CsvMappingModal({ headers, existingSources, onConfirm, onCancel, initialSourceName = '', onUseVision = null }) {
   const firstHeader = headers[0] || ''
 
+  const defaultDate = guess(headers, [/\btrans\w*\s*date\b/i, /^date$/i, /\bdate\b/i], firstHeader)
+  const defaultDesc = guess(headers, [/^(description|desc|memo|detail|merchant)$/i, /\bdescription\b/i, /\bmemo\b/i], headers[1] || firstHeader)
+  const defaultAmount = guess(headers, [/^amount$/i, /\bamount\b/i, /\bcharge\b/i], headers[2] || firstHeader)
+  const defaultDebit = guess(headers, [/\bdebit\b/i, /\bwithdrawal\b/i], firstHeader)
+  const defaultCredit = guess(headers, [/\bcredit\b/i, /\bdeposit\b/i], headers[1] || firstHeader)
+
   const [sourceName, setSourceName] = useState(initialSourceName)
-  const [dateCol, setDateCol] = useState(firstHeader)
-  const [descCol, setDescCol] = useState(headers[1] || firstHeader)
+  const [dateCol, setDateCol] = useState(defaultDate)
+  const [descCol, setDescCol] = useState(defaultDesc)
   const [splitMode, setSplitMode] = useState(false)
-  const [amountCol, setAmountCol] = useState(headers[2] || firstHeader)
-  const [debitCol, setDebitCol] = useState(firstHeader)
-  const [creditCol, setCreditCol] = useState(headers[1] || firstHeader)
+  const [amountCol, setAmountCol] = useState(defaultAmount)
+  const [debitCol, setDebitCol] = useState(defaultDebit)
+  const [creditCol, setCreditCol] = useState(defaultCredit)
   const [invertAmounts, setInvertAmounts] = useState(true)
   const [categoryCol, setCategoryCol] = useState('')
   const [statementType, setStatementType] = useState('credit_card')
@@ -196,20 +206,30 @@ export default function CsvMappingModal({ headers, existingSources, onConfirm, o
           </div>
         </div>
 
-        <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-3 shrink-0">
-          <button
-            onClick={onCancel}
-            className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900 rounded-lg hover:bg-gray-50"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleConfirm}
-            disabled={!canSubmit}
-            className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            Import
-          </button>
+        <div className="px-6 py-4 border-t border-gray-100 flex items-center shrink-0">
+          {onUseVision && (
+            <button
+              onClick={onUseVision}
+              className="px-4 py-2 text-sm text-violet-600 hover:text-violet-800 rounded-lg hover:bg-violet-50"
+            >
+              Use AI Vision instead
+            </button>
+          )}
+          <div className="ml-auto flex gap-3">
+            <button
+              onClick={onCancel}
+              className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900 rounded-lg hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleConfirm}
+              disabled={!canSubmit}
+              className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Import
+            </button>
+          </div>
         </div>
       </div>
     </div>
