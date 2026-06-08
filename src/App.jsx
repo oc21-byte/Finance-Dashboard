@@ -22,7 +22,7 @@ export default function App() {
 
   return (
     <Layout activeTab={activeTab} onTabChange={setActiveTab}>
-      <Page />
+      <Page onTabChange={setActiveTab} />
     </Layout>
   )
 }

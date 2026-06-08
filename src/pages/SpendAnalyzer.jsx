@@ -1,4 +1,5 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, useEffect } from 'react'
+import { Sparkles } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import Papa from 'papaparse'
 import dayjs from 'dayjs'
@@ -12,6 +13,7 @@ import { detectSource, processCSVRows, parsePdfToTableData } from '../utils/csvH
 import CsvMappingModal from '../components/CsvMappingModal.jsx'
 import AddTransactionModal from '../components/AddTransactionModal.jsx'
 import CategoryManager from '../components/CategoryManager.jsx'
+import BudgetBuilderModal from '../components/BudgetBuilderModal.jsx'
 
 const SOURCE_COLORS = ['#f87171', '#60a5fa', '#34d399', '#fbbf24', '#a78bfa', '#f472b6']
 
@@ -82,19 +84,28 @@ function SortTh({ label, field, sortKey, sortDir, onSort, className = '' }) {
   )
 }
 
-export default function SpendAnalyzer() {
+export default function SpendAnalyzer({ onTabChange }) {
   const fileInputRef = useRef()
+  const tableRef = useRef()
   const queryClient = useQueryClient()
 
   const [csvModalData, setCsvModalData] = useState(null)
+  const [pdfConfirmData, setPdfConfirmData] = useState(null)
   const [showAddModal, setShowAddModal] = useState(false)
   const [filterMonth, setFilterMonth] = useState('all')
   const [searchQuery, setSearchQuery] = useState('')
+  const [showUncategorizedOnly, setShowUncategorizedOnly] = useState(false)
   const [importStatus, setImportStatus] = useState(null)
   const [sortKey, setSortKey] = useState('date')
   const [sortDir, setSortDir] = useState('desc')
   const [editingCategoryId, setEditingCategoryId] = useState(null)
   const [recategorizing, setRecategorizing] = useState(false)
+  const [insights, setInsights] = useState([])
+  const [insightsError, setInsightsError] = useState(null)
+  const [insightsPeriod, setInsightsPeriod] = useState(null)
+  const [chatMessages, setChatMessages] = useState([])
+  const [chatInput, setChatInput] = useState('')
+  const [chatLoading, setChatLoading] = useState(false)
 
   const { data: transactions = [], isLoading } = useQuery({
     queryKey: ['credit_card_transactions'],
@@ -105,6 +116,27 @@ export default function SpendAnalyzer() {
     queryKey: ['settings'],
     queryFn: api.settings.get,
   })
+
+  const { data: goals = [] } = useQuery({
+    queryKey: ['goals'],
+    queryFn: api.goals.list,
+  })
+
+  const { data: bankTransactions = [] } = useQuery({
+    queryKey: ['transactions'],
+    queryFn: api.transactions.list,
+  })
+
+  const [showGoalGuard, setShowGoalGuard] = useState(false)
+  const [showBudgetBuilder, setShowBudgetBuilder] = useState(false)
+  const [budgetSavedToast, setBudgetSavedToast] = useState('')
+  const [editingBudget, setEditingBudget] = useState(null)
+
+  useEffect(() => {
+    if (!budgetSavedToast) return
+    const t = setTimeout(() => setBudgetSavedToast(''), 4000)
+    return () => clearTimeout(t)
+  }, [budgetSavedToast])
 
   const { data: customCategories = [] } = useQuery({
     queryKey: ['categories'],
@@ -147,6 +179,40 @@ export default function SpendAnalyzer() {
     mutationFn: (newSources) => api.settings.update({ csvSources: newSources }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['settings'] }),
   })
+
+  const budgetMutation = useMutation({
+    mutationFn: (budgets) => api.settings.update({ categoryBudgets: budgets }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['settings'] }),
+  })
+
+  const insightsMutation = useMutation({
+    mutationFn: (period) => api.llm.spendInsights(period),
+    onSuccess: (data) => {
+      setInsights(data.insights || [])
+      setInsightsError(null)
+      setInsightsPeriod(filterMonth)
+      setChatMessages([])
+    },
+    onError: (err) => setInsightsError(err.message || 'Failed to generate insights. Please try again.'),
+  })
+
+  async function handleSendChat(e) {
+    e.preventDefault()
+    const message = chatInput.trim()
+    if (!message || chatLoading) return
+    const newMessages = [...chatMessages, { role: 'user', content: message }]
+    setChatMessages(newMessages)
+    setChatInput('')
+    setChatLoading(true)
+    try {
+      const result = await api.llm.spendChat(filterMonth, newMessages)
+      setChatMessages(prev => [...prev, { role: 'assistant', content: result.reply }])
+    } catch {
+      setChatMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, something went wrong. Please try again.' }])
+    } finally {
+      setChatLoading(false)
+    }
+  }
 
   async function categorizeTxs(txs) {
     try {
@@ -193,12 +259,7 @@ export default function SpendAnalyzer() {
         const { headers, rows, statementYear, statementEndYear, statementEndMonth } = result
         const detected = detectSource(headers, settings?.csvSources || {}, 'credit_card')
         if (detected) {
-          let txs = processCSVRows(rows, { ...detected.mapping, sourceName: detected.name, statementYear, statementEndYear, statementEndMonth })
-          if (settings?.hasClaudeApiKey) {
-            setImportStatus({ type: 'loading', message: 'Categorizing with AI…' })
-            txs = await categorizeTxs(txs)
-          }
-          batchMutation.mutate(txs)
+          setPdfConfirmData({ sourceName: detected.name, mapping: detected.mapping, headers, rows, statementYear, statementEndYear, statementEndMonth })
         } else {
           setCsvModalData({ headers, rows, statementYear, statementEndYear, statementEndMonth })
         }
@@ -230,6 +291,23 @@ export default function SpendAnalyzer() {
     })
   }
 
+  async function handlePdfConfirmYes() {
+    const { sourceName, mapping, rows, statementYear, statementEndYear, statementEndMonth } = pdfConfirmData
+    let txs = processCSVRows(rows, { ...mapping, sourceName, statementYear, statementEndYear, statementEndMonth })
+    if (settings?.hasClaudeApiKey) {
+      setImportStatus({ type: 'loading', message: 'Categorizing with AI…' })
+      txs = await categorizeTxs(txs)
+    }
+    batchMutation.mutate(txs)
+    setPdfConfirmData(null)
+  }
+
+  function handlePdfConfirmNo() {
+    const { sourceName, headers, rows, statementYear, statementEndYear, statementEndMonth } = pdfConfirmData
+    setCsvModalData({ headers, rows, statementYear, statementEndYear, statementEndMonth, initialSourceName: sourceName })
+    setPdfConfirmData(null)
+  }
+
   async function handleMappingConfirm(sourceName, mapping) {
     const newSources = { ...(settings?.csvSources || {}), [sourceName]: mapping }
     saveMappingMutation.mutate(newSources)
@@ -254,13 +332,17 @@ export default function SpendAnalyzer() {
     ...new Set(transactions.map(t => t.date?.slice(0, 7)).filter(Boolean)),
   ].sort().reverse()
 
+  const uncategorizedCount = transactions.filter(t => !t.category || t.category === 'Other').length
+
   const monthFiltered = transactions.filter(t =>
     filterMonth === 'all' || t.date?.startsWith(filterMonth)
   )
 
-  const filtered = monthFiltered.filter(t =>
-    !searchQuery || t.description?.toLowerCase().includes(searchQuery.toLowerCase())
-  )
+  const filtered = monthFiltered.filter(t => {
+    if (showUncategorizedOnly && t.category && t.category !== 'Other') return false
+    if (searchQuery && !t.description?.toLowerCase().includes(searchQuery.toLowerCase())) return false
+    return true
+  })
 
   const sorted = [...filtered].sort((a, b) => {
     let av, bv
@@ -281,11 +363,35 @@ export default function SpendAnalyzer() {
   const topMerchants = buildTopMerchants(monthFiltered)
   const hasData = transactions.length > 0
 
+  const lastTxDate = transactions.reduce((max, t) => (t.date > max ? t.date : max), '0000-00-00')
+  const cutoff = dayjs(lastTxDate).subtract(30, 'day').format('YYYY-MM-DD')
+  const monthSpend = {}
+  for (const t of transactions) {
+    if (!t.date || t.date < cutoff || !t.category) continue
+    monthSpend[t.category] = (monthSpend[t.category] || 0) + Math.abs(t.amount)
+  }
+  const categoryBudgets = settings?.categoryBudgets || {}
+  const hasBudgets = Object.keys(categoryBudgets).length > 0
+
   return (
-    <div className="p-6">
-      <div className="flex items-center justify-between mb-6">
+    <div className="p-3 sm:p-6">
+      <div className="flex items-center justify-between mb-6 gap-3 flex-wrap">
         <h1 className="text-2xl font-semibold text-gray-900">Spend Analyzer</h1>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          <button
+            onClick={() => {
+              if (goals.length === 0) {
+                setShowGoalGuard(true)
+              } else {
+                setShowGoalGuard(false)
+                setShowBudgetBuilder(true)
+              }
+            }}
+            className="flex items-center gap-1.5 px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
+          >
+            <Sparkles size={15} />
+            Budget Builder
+          </button>
           <button
             onClick={() => setShowAddModal(true)}
             className="px-4 py-2 text-sm border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
@@ -309,6 +415,57 @@ export default function SpendAnalyzer() {
         </div>
       </div>
 
+      {budgetSavedToast && (
+        <div className="mb-4 px-4 py-3 rounded-lg bg-green-50 border border-green-200 text-sm text-green-800 flex items-center justify-between gap-3">
+          <span>{budgetSavedToast}</span>
+          <button
+            onClick={() => setBudgetSavedToast('')}
+            className="shrink-0 text-green-400 hover:text-green-600 text-lg leading-none"
+            aria-label="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {showGoalGuard && (
+        <div className="mb-4 px-4 py-3 rounded-lg bg-blue-50 border border-blue-200 text-sm text-blue-800 flex items-center justify-between gap-3">
+          <span>
+            Budget Builder needs at least one goal to optimize toward.{' '}
+            <button
+              onClick={() => onTabChange?.('goals')}
+              className="underline font-medium hover:text-blue-900"
+            >
+              Create a goal first →
+            </button>
+          </span>
+          <button
+            onClick={() => setShowGoalGuard(false)}
+            className="shrink-0 text-blue-400 hover:text-blue-600 text-lg leading-none"
+            aria-label="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {uncategorizedCount > 0 && (
+        <div className="mb-4 px-4 py-3 rounded-lg bg-yellow-50 border border-yellow-200 text-sm text-yellow-800 flex items-center justify-between gap-3">
+          <span>
+            You have <strong>{uncategorizedCount}</strong> uncategorized transaction{uncategorizedCount !== 1 ? 's' : ''}. Resolve before running Budget Builder.
+          </span>
+          <button
+            onClick={() => {
+              setShowUncategorizedOnly(true)
+              setTimeout(() => tableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
+            }}
+            className="shrink-0 px-3 py-1 text-xs font-medium bg-yellow-100 hover:bg-yellow-200 border border-yellow-300 rounded-md transition-colors"
+          >
+            Review Now
+          </button>
+        </div>
+      )}
+
       {importStatus && (
         <div
           className={`mb-4 px-4 py-3 rounded-lg text-sm flex items-center justify-between ${
@@ -323,6 +480,122 @@ export default function SpendAnalyzer() {
           {importStatus.type !== 'loading' && (
             <button onClick={() => setImportStatus(null)} className="ml-4 opacity-60 hover:opacity-100">✕</button>
           )}
+        </div>
+      )}
+
+      {pdfConfirmData && (
+        <div className="mb-4 px-4 py-3 rounded-lg bg-blue-50 border border-blue-200 text-sm flex items-center justify-between gap-4 flex-wrap">
+          <div>
+            <span className="font-medium text-blue-900">Recognized format: {pdfConfirmData.sourceName}</span>
+            <span className="text-blue-700 ml-2">— use saved column mapping?</span>
+          </div>
+          <div className="flex gap-2 shrink-0">
+            <button onClick={handlePdfConfirmNo} className="px-3 py-1.5 rounded-lg border border-blue-300 text-blue-700 hover:bg-blue-100 text-sm">
+              No, remap
+            </button>
+            <button onClick={handlePdfConfirmYes} className="px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-sm">
+              Yes, use it
+            </button>
+          </div>
+        </div>
+      )}
+
+      {hasBudgets && (
+        <div className="mb-6 bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between gap-3 flex-wrap">
+            <h2 className="text-base font-semibold text-gray-900">
+              Budget Tracking — Last 30 Days
+            </h2>
+            <button
+              onClick={() => setShowBudgetBuilder(true)}
+              className="text-sm text-indigo-600 hover:text-indigo-800 font-medium"
+            >
+              Edit with Budget Builder →
+            </button>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-gray-50 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                  <th className="px-5 py-3">Category</th>
+                  <th className="px-5 py-3">Budget Cap</th>
+                  <th className="px-5 py-3">Spent (Last 30 Days)</th>
+                  <th className="px-5 py-3">Remaining</th>
+                  <th className="px-5 py-3 w-36">Usage</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {Object.entries(categoryBudgets).map(([cat, cap]) => {
+                  const spent = Math.round((monthSpend[cat] || 0) * 100) / 100
+                  const remaining = cap - spent
+                  const pct = cap > 0 ? Math.round(spent / cap * 100) : 0
+                  const over = remaining < 0
+                  const nearLimit = !over && pct >= 80
+                  const barColor = over ? 'bg-red-400' : nearLimit ? 'bg-yellow-400' : 'bg-green-400'
+                  const isEditing = editingBudget?.cat === cat
+
+                  return (
+                    <tr key={cat} className={over ? 'bg-red-50' : 'bg-white'}>
+                      <td className="px-5 py-3 font-medium text-gray-800">{cat}</td>
+                      <td className="px-5 py-3 text-gray-700">
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            min="0"
+                            autoFocus
+                            value={editingBudget.value}
+                            onChange={e => setEditingBudget(prev => ({ ...prev, value: e.target.value }))}
+                            onBlur={() => {
+                              const val = Number(editingBudget.value)
+                              if (!isNaN(val) && val >= 0) {
+                                budgetMutation.mutate({ ...categoryBudgets, [cat]: val })
+                              }
+                              setEditingBudget(null)
+                            }}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') e.target.blur()
+                              if (e.key === 'Escape') setEditingBudget(null)
+                            }}
+                            className="w-24 border border-indigo-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                          />
+                        ) : (
+                          <button
+                            onClick={() => setEditingBudget({ cat, value: String(cap) })}
+                            className="font-medium hover:text-indigo-600 hover:underline transition-colors"
+                            title="Click to edit"
+                          >
+                            ${cap.toLocaleString()}
+                          </button>
+                        )}
+                      </td>
+                      <td className="px-5 py-3 text-gray-700">${spent.toLocaleString()}</td>
+                      <td className={`px-5 py-3 font-medium ${over ? 'text-red-600' : 'text-green-600'}`}>
+                        {over
+                          ? `-$${Math.abs(remaining).toLocaleString()} over`
+                          : `$${remaining.toLocaleString()} left`}
+                      </td>
+                      <td className="px-5 py-3">
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all ${barColor}`}
+                              style={{ width: `${Math.min(100, pct)}%` }}
+                            />
+                          </div>
+                          <span className="text-xs text-gray-400 w-8 text-right">{pct}%</span>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="px-5 py-3 border-t border-gray-100">
+            <p className="text-xs text-gray-400">Click any budget cap to edit it inline. Only categories with a saved cap are shown.</p>
+          </div>
         </div>
       )}
 
@@ -454,21 +727,135 @@ export default function SpendAnalyzer() {
               </ResponsiveContainer>
             </div>
           )}
+
+          {/* AI Insights */}
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 mb-5">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-medium text-gray-500">AI Insights</h2>
+                <span className="text-xs px-1.5 py-0.5 bg-violet-100 text-violet-600 rounded font-medium">AI</span>
+              </div>
+              {settings?.hasClaudeApiKey && (
+                <button
+                  onClick={() => insightsMutation.mutate(filterMonth)}
+                  disabled={insightsMutation.isPending}
+                  className="px-3 py-1.5 text-sm bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-60 transition-colors flex items-center gap-1.5"
+                >
+                  {insightsMutation.isPending ? (
+                    <>
+                      <span className="inline-block w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      Analyzing…
+                    </>
+                  ) : 'Generate Insights'}
+                </button>
+              )}
+            </div>
+
+            {!settings?.hasClaudeApiKey && (
+              <p className="text-sm text-gray-400 py-4 text-center">
+                Connect your Claude API key in Settings to enable AI insights.
+              </p>
+            )}
+
+            {settings?.hasClaudeApiKey && insightsError && (
+              <p className="text-sm text-red-500 mb-4">{insightsError}</p>
+            )}
+
+            {settings?.hasClaudeApiKey && insights.length === 0 && !insightsMutation.isPending && !insightsError && (
+              <p className="text-sm text-gray-400 py-4 text-center">
+                Click "Generate Insights" to get AI analysis of your{' '}
+                {filterMonth === 'all' ? 'all-time' : dayjs(filterMonth + '-01').format('MMMM YYYY')} spending.
+              </p>
+            )}
+
+            {insights.length > 0 && (
+              <>
+                {insightsPeriod !== filterMonth && (
+                  <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-4">
+                    These insights are for a different period. Click "Generate Insights" to refresh.
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5">
+                  {insights.map((insight, i) => (
+                    <div key={i} className="bg-gray-50 rounded-lg p-4 border border-gray-100">
+                      <p className="text-sm font-semibold text-gray-800 mb-1.5">{insight.title}</p>
+                      <p className="text-sm text-gray-600 leading-relaxed">{insight.body}</p>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Chat follow-up */}
+                <div className="border-t border-gray-100 pt-4">
+                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-3">Ask a follow-up</p>
+
+                  {chatMessages.length > 0 && (
+                    <div className="space-y-3 mb-4 max-h-64 overflow-y-auto">
+                      {chatMessages.map((msg, i) => (
+                        <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                          <div className={`max-w-[75%] px-3 py-2 rounded-xl text-sm leading-relaxed ${
+                            msg.role === 'user'
+                              ? 'bg-violet-600 text-white rounded-br-sm'
+                              : 'bg-gray-100 text-gray-800 rounded-bl-sm'
+                          }`}>
+                            {msg.content}
+                          </div>
+                        </div>
+                      ))}
+                      {chatLoading && (
+                        <div className="flex justify-start">
+                          <div className="bg-gray-100 text-gray-400 px-3 py-2 rounded-xl rounded-bl-sm text-sm italic">
+                            Thinking…
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <form onSubmit={handleSendChat} className="flex gap-2">
+                    <input
+                      type="text"
+                      value={chatInput}
+                      onChange={e => setChatInput(e.target.value)}
+                      placeholder="E.g. What should I cut to save more this month?"
+                      disabled={chatLoading}
+                      className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-violet-500 disabled:opacity-60"
+                    />
+                    <button
+                      type="submit"
+                      disabled={chatLoading || !chatInput.trim()}
+                      className="px-4 py-2 text-sm bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-60 transition-colors"
+                    >
+                      Send
+                    </button>
+                  </form>
+                </div>
+              </>
+            )}
+          </div>
         </>
       )}
 
       <CategoryManager />
 
       {/* Transaction list */}
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
+      <div ref={tableRef} className="bg-white rounded-xl border border-gray-200 shadow-sm">
         <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3 flex-wrap">
           <input
             type="text"
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
             placeholder="Search transactions…"
-            className="text-sm border border-gray-200 rounded-md px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 w-56"
+            className="text-sm border border-gray-200 rounded-md px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 w-full sm:w-56"
           />
+          {showUncategorizedOnly && (
+            <button
+              onClick={() => setShowUncategorizedOnly(false)}
+              className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium bg-yellow-100 text-yellow-800 border border-yellow-300 rounded-full hover:bg-yellow-200 transition-colors"
+            >
+              Uncategorized only ✕
+            </button>
+          )}
           {settings?.hasClaudeApiKey && transactions.some(t => !t.category || t.category === 'Other') && (
             <button
               onClick={handleRecategorize}
@@ -502,7 +889,7 @@ export default function SpendAnalyzer() {
                   <SortTh label="Date" field="date" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                   <SortTh label="Description" field="description" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                   <SortTh label="Category" field="category" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-                  <SortTh label="Source" field="source" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                  <SortTh label="Source" field="source" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="hidden sm:table-cell" />
                   <SortTh label="Amount" field="amount" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="text-right" />
                   <th className="px-4 py-3 w-8"></th>
                 </tr>
@@ -546,7 +933,7 @@ export default function SpendAnalyzer() {
                         </span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-xs text-gray-400">{tx.source || '—'}</td>
+                    <td className="px-4 py-3 text-xs text-gray-400 hidden sm:table-cell">{tx.source || '—'}</td>
                     <td className="px-4 py-3 text-sm font-medium text-right whitespace-nowrap text-red-500">
                       −${Math.abs(tx.amount).toFixed(2)}
                     </td>
@@ -570,8 +957,10 @@ export default function SpendAnalyzer() {
 
       {csvModalData && (
         <CsvMappingModal
+          key={csvModalData.headers.join('\0')}
           headers={csvModalData.headers}
           existingSources={settings?.csvSources || {}}
+          initialSourceName={csvModalData.initialSourceName || ''}
           onConfirm={handleMappingConfirm}
           onCancel={() => setCsvModalData(null)}
         />
@@ -581,6 +970,16 @@ export default function SpendAnalyzer() {
           categories={allCategories}
           onConfirm={data => addMutation.mutate(data)}
           onCancel={() => setShowAddModal(false)}
+        />
+      )}
+      {showBudgetBuilder && (
+        <BudgetBuilderModal
+          goals={goals}
+          settings={settings}
+          transactions={bankTransactions}
+          onTabChange={onTabChange}
+          onClose={() => setShowBudgetBuilder(false)}
+          onBudgetSaved={(msg) => setBudgetSavedToast(msg || 'Budget saved. Tracking active in Spend Analyzer.')}
         />
       )}
     </div>

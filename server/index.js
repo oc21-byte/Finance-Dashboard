@@ -15,25 +15,35 @@ const DEFAULT_DB = {
   holdings: [],
   goals: [],
   savings_accounts: [],
+  netWorthHistory: [],
   settings: {
     claudeApiKey: '',
     customCategories: [],
     cashBalance: 0,
+    confirmedMonthlyIncome: null,
   },
 }
 
 function ensureDb() {
-  if (fs.existsSync(DB_PATH)) return
-  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true })
-  fs.writeFileSync(DB_PATH, JSON.stringify(DEFAULT_DB, null, 2))
-  console.log(`Initialized empty db at ${DB_PATH}`)
+  if (!fs.existsSync(DB_PATH)) {
+    fs.mkdirSync(path.dirname(DB_PATH), { recursive: true })
+    fs.writeFileSync(DB_PATH, JSON.stringify(DEFAULT_DB, null, 2))
+    console.log(`Initialized empty db at ${DB_PATH}`)
+    return
+  }
+  const db = JSON.parse(fs.readFileSync(DB_PATH, 'utf8'))
+  let dirty = false
+  for (const [key, val] of Object.entries(DEFAULT_DB)) {
+    if (!(key in db)) { db[key] = val; dirty = true }
+  }
+  if (dirty) fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2))
 }
 
 ensureDb()
 
 const app = express()
 app.use(cors())
-app.use(express.json())
+app.use(express.json({ limit: '20mb' }))
 
 function readDb() {
   return JSON.parse(fs.readFileSync(DB_PATH, 'utf8'))
@@ -78,6 +88,26 @@ app.delete('/api/transactions/:id', (req, res) => {
 
 // --- Holdings ---
 
+function ensurePurchasesArray(holding) {
+  if (!holding.purchases || holding.purchases.length === 0) {
+    holding.purchases = [{
+      id: uuidv4(),
+      shares: holding.shares,
+      purchasePrice: holding.purchasePrice,
+      purchaseDate: holding.purchaseDate,
+    }]
+  }
+}
+
+function recalculateHoldingTotals(holding) {
+  const totalShares = holding.purchases.reduce((s, p) => s + p.shares, 0)
+  const weightedAvg = holding.purchases.reduce((s, p) => s + p.purchasePrice * p.shares, 0) / totalShares
+  const latestDate = holding.purchases.reduce((d, p) => (p.purchaseDate > d ? p.purchaseDate : d), '')
+  holding.shares = totalShares
+  holding.purchasePrice = Math.round(weightedAvg * 10000) / 10000
+  holding.purchaseDate = latestDate
+}
+
 app.get('/api/holdings', (req, res) => {
   const db = readDb()
   res.json(db.holdings)
@@ -85,10 +115,31 @@ app.get('/api/holdings', (req, res) => {
 
 app.post('/api/holdings', (req, res) => {
   const db = readDb()
-  const holding = { id: uuidv4(), ...req.body }
-  db.holdings.push(holding)
+  const { ticker: rawTicker, shares, purchasePrice, purchaseDate, accountType } = req.body
+  const ticker = (rawTicker || '').toUpperCase()
+
+  const existing = db.holdings.find(h => h.ticker === ticker && h.accountType === accountType)
+
+  if (!existing) {
+    const holding = {
+      id: uuidv4(),
+      ticker,
+      shares,
+      purchasePrice,
+      purchaseDate,
+      accountType,
+      purchases: [{ id: uuidv4(), shares, purchasePrice, purchaseDate }],
+    }
+    db.holdings.push(holding)
+    writeDb(db)
+    return res.status(201).json(holding)
+  }
+
+  ensurePurchasesArray(existing)
+  existing.purchases.push({ id: uuidv4(), shares, purchasePrice, purchaseDate })
+  recalculateHoldingTotals(existing)
   writeDb(db)
-  res.status(201).json(holding)
+  res.json(existing)
 })
 
 app.put('/api/holdings/:id', (req, res) => {
@@ -107,6 +158,29 @@ app.delete('/api/holdings/:id', (req, res) => {
   const [removed] = db.holdings.splice(idx, 1)
   writeDb(db)
   res.json(removed)
+})
+
+app.delete('/api/holdings/:holdingId/purchases/:purchaseId', (req, res) => {
+  const db = readDb()
+  const holding = db.holdings.find(h => h.id === req.params.holdingId)
+  if (!holding) return res.status(404).json({ error: 'Holding not found' })
+
+  ensurePurchasesArray(holding)
+  const purchaseIdx = holding.purchases.findIndex(p => p.id === req.params.purchaseId)
+  if (purchaseIdx === -1) return res.status(404).json({ error: 'Purchase not found' })
+
+  holding.purchases.splice(purchaseIdx, 1)
+
+  if (holding.purchases.length === 0) {
+    const holdingIdx = db.holdings.findIndex(h => h.id === req.params.holdingId)
+    db.holdings.splice(holdingIdx, 1)
+    writeDb(db)
+    return res.json({ deleted: true, holdingId: req.params.holdingId })
+  }
+
+  recalculateHoldingTotals(holding)
+  writeDb(db)
+  res.json(holding)
 })
 
 // --- Prices (Yahoo Finance) ---
@@ -300,6 +374,75 @@ app.delete('/api/categories/:name', (req, res) => {
 
 // --- LLM ---
 
+function buildSpendContextFromTransactions(ccTransactions, period) {
+  const filtered = period === 'all'
+    ? ccTransactions
+    : ccTransactions.filter(t => t.date?.startsWith(period))
+
+  const totalSpend = filtered.reduce((s, t) => s + Math.abs(t.amount), 0)
+
+  const catMap = {}
+  for (const t of filtered) {
+    const cat = t.category || 'Other'
+    catMap[cat] = (catMap[cat] || 0) + Math.abs(t.amount)
+  }
+  const categories = Object.entries(catMap)
+    .map(([name, amount]) => ({ name, amount: Math.round(amount * 100) / 100 }))
+    .sort((a, b) => b.amount - a.amount)
+
+  const merchantMap = {}
+  const merchantCount = {}
+  for (const t of filtered) {
+    const key = t.description || 'Unknown'
+    merchantMap[key] = (merchantMap[key] || 0) + Math.abs(t.amount)
+    merchantCount[key] = (merchantCount[key] || 0) + 1
+  }
+  const topMerchants = Object.entries(merchantMap)
+    .map(([name, amount]) => ({ name, amount: Math.round(amount * 100) / 100, visits: merchantCount[name] }))
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, 10)
+
+  const largestTxs = [...filtered]
+    .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
+    .slice(0, 10)
+    .map(t => ({ description: t.description, amount: Math.round(Math.abs(t.amount) * 100) / 100, date: t.date, category: t.category || 'Other' }))
+
+  return { filtered, totalSpend: Math.round(totalSpend * 100) / 100, txCount: filtered.length, categories, topMerchants, largestTxs }
+}
+
+function formatPeriodLabel(period) {
+  if (period === 'all') return 'all time'
+  const [year, month] = period.split('-')
+  const names = ['January','February','March','April','May','June','July','August','September','October','November','December']
+  return `${names[parseInt(month, 10) - 1]} ${year}`
+}
+
+function buildSpendSummaryText(period, { totalSpend, txCount, categories, topMerchants, largestTxs }) {
+  const periodLabel = formatPeriodLabel(period)
+  const catLines = categories.map(c => {
+    const pct = totalSpend > 0 ? Math.round(c.amount / totalSpend * 100) : 0
+    return `- ${c.name}: $${c.amount.toFixed(2)} (${pct}%)`
+  }).join('\n')
+  const merchantLines = topMerchants.map((m, i) =>
+    `${i + 1}. ${m.name}: $${m.amount.toFixed(2)} (${m.visits} transaction${m.visits !== 1 ? 's' : ''})`
+  ).join('\n')
+  const largeTxLines = largestTxs.map(t =>
+    `- $${t.amount.toFixed(2)} at ${t.description} on ${t.date} [${t.category}]`
+  ).join('\n')
+
+  return `Credit card spending for ${periodLabel}:
+Total: $${totalSpend.toFixed(2)} across ${txCount} transaction${txCount !== 1 ? 's' : ''}
+
+Categories:
+${catLines || '  (none)'}
+
+Top merchants:
+${merchantLines || '  (none)'}
+
+Largest transactions:
+${largeTxLines || '  (none)'}`
+}
+
 function buildCategoryTotals(transactions, days = 30) {
   const cutoff = new Date()
   cutoff.setDate(cutoff.getDate() - days)
@@ -472,6 +615,361 @@ Write 2–3 sentences: (1) timeline at current savings rate and how it compares 
     console.error('LLM goal-analysis error:', err.message)
     res.status(500).json({ error: err.message })
   }
+})
+
+app.post('/api/llm/spend-insights', async (req, res) => {
+  const db = readDb()
+  const apiKey = db.settings.claudeApiKey
+  if (!apiKey) return res.status(400).json({ error: 'No API key configured' })
+
+  const { period = 'all' } = req.body
+  const context = buildSpendContextFromTransactions(db.credit_card_transactions || [], period)
+
+  if (context.txCount === 0) {
+    return res.json({ insights: [{ title: 'No Data', body: 'No credit card transactions found for the selected period.' }] })
+  }
+
+  const summaryText = buildSpendSummaryText(period, context)
+  const userMsg = `${summaryText}
+
+Provide exactly 3 insights as JSON:
+{"insights":[{"title":"...","body":"..."},{"title":"...","body":"..."},{"title":"...","body":"..."}]}
+
+Cover exactly these three areas:
+1. Category spending patterns — which categories dominate and whether the distribution looks healthy
+2. Notable merchant habits — repeat merchants or high-spend vendors worth noting
+3. Anomalies or outliers — large one-offs, unexpected charges, or patterns worth flagging
+
+Be specific with dollar amounts. No markdown. Valid JSON only.`
+
+  try {
+    const client = new Anthropic({ apiKey })
+    const message = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 768,
+      system: 'You are a personal finance assistant analyzing credit card spending. Respond with valid JSON only.',
+      messages: [{ role: 'user', content: userMsg }],
+    })
+    const raw = message.content[0].text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
+    const result = JSON.parse(raw)
+    res.json({ insights: result.insights })
+  } catch (err) {
+    console.error('LLM spend-insights error:', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.post('/api/llm/spend-chat', async (req, res) => {
+  const db = readDb()
+  const apiKey = db.settings.claudeApiKey
+  if (!apiKey) return res.status(400).json({ error: 'No API key configured' })
+
+  const { period = 'all', messages = [] } = req.body
+  if (!messages.length) return res.status(400).json({ error: 'No messages provided' })
+
+  const context = buildSpendContextFromTransactions(db.credit_card_transactions || [], period)
+  const summaryText = buildSpendSummaryText(period, context)
+
+  const systemMsg = `You are a personal finance assistant. The user is asking follow-up questions about their credit card spending.
+
+${summaryText}
+
+Be concise and specific. Answer in 2–4 sentences.`
+
+  try {
+    const client = new Anthropic({ apiKey })
+    const message = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 512,
+      system: systemMsg,
+      messages,
+    })
+    res.json({ reply: message.content[0].text.trim() })
+  } catch (err) {
+    console.error('LLM spend-chat error:', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.post('/api/llm/dashboard-chat', async (req, res) => {
+  const db = readDb()
+  const apiKey = db.settings.claudeApiKey
+  if (!apiKey) return res.status(400).json({ error: 'No API key configured' })
+
+  const { messages = [] } = req.body
+  if (!messages.length) return res.status(400).json({ error: 'No messages provided' })
+
+  const categoryTotals = buildCategoryTotals(db.transactions, 90)
+  const income = Object.values(categoryTotals).filter(v => v > 0).reduce((s, v) => s + v, 0)
+  const expenses = Object.values(categoryTotals).filter(v => v < 0).reduce((s, v) => s + Math.abs(v), 0)
+
+  const spendingLines = Object.entries(categoryTotals)
+    .filter(([, v]) => v < 0)
+    .sort(([, a], [, b]) => a - b)
+    .map(([cat, amt]) => `  ${cat}: $${Math.abs(amt).toFixed(2)}`)
+    .join('\n')
+
+  const goalLines = db.goals.map(g => {
+    const pct = g.targetAmount > 0 ? Math.round(g.currentAmount / g.targetAmount * 100) : 0
+    return `  ${g.name}: $${g.currentAmount} / $${g.targetAmount} (${pct}%)${g.monthlySavings ? `, saving $${g.monthlySavings}/mo` : ''}`
+  }).join('\n')
+
+  const cashBalance = db.settings.cashBalance ?? 0
+  const savingsTotal = (db.savings_accounts ?? []).reduce((s, a) => s + a.balance, 0)
+  const portfolioValue = (db.holdings ?? []).reduce((s, h) => s + h.purchasePrice * h.shares, 0)
+  const netWorth = cashBalance + savingsTotal + portfolioValue
+
+  const systemMsg = `You are a personal finance assistant. Here is the user's current financial picture:
+
+Net worth: $${netWorth.toFixed(2)} (Cash: $${cashBalance.toFixed(2)}, Savings: $${savingsTotal.toFixed(2)}, Portfolio cost basis: $${portfolioValue.toFixed(2)})
+
+Last 90 days — Income: $${income.toFixed(2)}, Expenses: $${expenses.toFixed(2)}, Net: $${(income - expenses).toFixed(2)}
+
+Spending by category (last 90 days):
+${spendingLines || '  No expense data'}
+
+Goals:
+${goalLines || '  No goals set'}
+
+Be concise and specific. Answer in 2–4 sentences.`
+
+  try {
+    const client = new Anthropic({ apiKey })
+    const message = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 512,
+      system: systemMsg,
+      messages,
+    })
+    res.json({ reply: message.content[0].text.trim() })
+  } catch (err) {
+    console.error('LLM dashboard-chat error:', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.post('/api/llm/goal-chat', async (req, res) => {
+  const db = readDb()
+  const apiKey = db.settings.claudeApiKey
+  if (!apiKey) return res.status(400).json({ error: 'No API key configured' })
+
+  const { goalId, messages = [] } = req.body
+  if (!messages.length) return res.status(400).json({ error: 'No messages provided' })
+
+  const goal = db.goals.find(g => g.id === goalId)
+  if (!goal) return res.status(404).json({ error: 'Goal not found' })
+
+  const categoryTotals = buildCategoryTotals(db.transactions, 90)
+  const expenseLines = Object.entries(categoryTotals)
+    .filter(([, v]) => v < 0)
+    .sort(([, a], [, b]) => a - b)
+    .map(([cat, amt]) => `  ${cat}: $${Math.abs(amt).toFixed(2)}`)
+    .join('\n')
+
+  const allGoalLines = db.goals.map(g => {
+    const pct = g.targetAmount > 0 ? Math.round(g.currentAmount / g.targetAmount * 100) : 0
+    return `  ${g.name}: $${g.currentAmount} / $${g.targetAmount} (${pct}%)${g.monthlySavings ? `, saving $${g.monthlySavings}/mo` : ''}`
+  }).join('\n')
+
+  const cashBalance = db.settings.cashBalance ?? 0
+  const savingsTotal = (db.savings_accounts ?? []).reduce((s, a) => s + a.balance, 0)
+  const portfolioValue = (db.holdings ?? []).reduce((s, h) => s + h.purchasePrice * h.shares, 0)
+
+  const remaining = Math.max(0, goal.targetAmount - goal.currentAmount)
+  const monthsAtCurrent = goal.monthlySavings > 0 ? Math.ceil(remaining / goal.monthlySavings) : null
+  const pct = goal.targetAmount > 0 ? Math.round(goal.currentAmount / goal.targetAmount * 100) : 0
+
+  const systemMsg = `You are a personal finance advisor helping with a savings goal.
+
+Goal: ${goal.name}
+Target: $${goal.targetAmount} | Saved: $${goal.currentAmount} (${pct}%)
+Monthly savings rate: ${goal.monthlySavings ? '$' + goal.monthlySavings : 'not set'}
+Target date: ${goal.targetDate}
+Months to goal at current rate: ${monthsAtCurrent ?? 'unknown'}
+
+All goals:
+${allGoalLines || '  No other goals'}
+
+Net worth: Cash $${cashBalance.toFixed(2)}, Savings $${savingsTotal.toFixed(2)}, Portfolio cost basis $${portfolioValue.toFixed(2)}
+
+Monthly spending by category (last 90 days):
+${expenseLines || '  No expense data'}
+
+Be concise and specific. Answer in 2–4 sentences.`
+
+  try {
+    const client = new Anthropic({ apiKey })
+    const message = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 512,
+      system: systemMsg,
+      messages,
+    })
+    res.json({ reply: message.content[0].text.trim() })
+  } catch (err) {
+    console.error('LLM goal-chat error:', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.post('/api/llm/budget-builder', async (req, res) => {
+  const db = readDb()
+  const apiKey = db.settings.claudeApiKey
+  if (!apiKey) return res.status(400).json({ error: 'No API key configured' })
+
+  const { income, timelinePreference, excludeNote } = req.body
+
+  const activeGoals = (db.goals || []).filter(g => Number(g.currentAmount) < Number(g.targetAmount))
+  if (activeGoals.length === 0) return res.json({ allGoalsComplete: true })
+
+  const cutoff = new Date()
+  cutoff.setDate(cutoff.getDate() - 90)
+
+  const recentCC = (db.credit_card_transactions || []).filter(t => new Date(t.date) >= cutoff)
+  const catTotals = {}
+  for (const t of recentCC) {
+    if (!t.category) continue
+    catTotals[t.category] = (catTotals[t.category] || 0) + Math.abs(Number(t.amount))
+  }
+  const avgMonthlySpend = Object.fromEntries(
+    Object.entries(catTotals).map(([cat, total]) => [cat, Math.round(total / 3)])
+  )
+
+  const goalLines = activeGoals.map(g =>
+    `- ${g.name}: target $${g.targetAmount}, current $${g.currentAmount}` +
+    (g.monthlySavings ? `, saving $${g.monthlySavings}/mo` : '') +
+    (g.targetDate ? `, due ${g.targetDate}` : '')
+  ).join('\n')
+
+  const spendLines = Object.entries(avgMonthlySpend)
+    .map(([cat, amt]) => `- ${cat}: $${amt}`)
+    .join('\n')
+
+  const userMsg = `You are a personal finance advisor. Generate a monthly budget that maximizes progress toward the user's financial goals.
+
+Monthly take-home income: $${income}
+Timeline preference: ${timelinePreference}
+  - aggressive: maximize savings, cut discretionary spend hard
+  - balanced: reasonable cuts, maintain quality of life
+  - comfortable: minimal cuts, small optimizations only
+
+Active goals (exclude funded ones):
+${goalLines}
+
+Average monthly spend by category (last 90 days):
+${spendLines || 'No spend data available'}
+
+One-time expenses to exclude: ${excludeNote || 'None'}
+
+Return ONLY valid JSON — no markdown, no code fences, no explanation outside the JSON:
+{
+  "budgets": { "Category Name": number },
+  "projectedMonthlySurplus": number,
+  "monthsToGoal": { "Goal Name": number },
+  "rationale": "2-3 sentence plain English explanation of key tradeoffs"
+}
+
+Only include categories that have spend data. Do not invent categories.`
+
+  try {
+    const client = new Anthropic({ apiKey })
+    const message = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1024,
+      system: 'You are a personal finance advisor. You always respond with valid JSON only.',
+      messages: [{ role: 'user', content: userMsg }],
+    })
+    const raw = message.content[0].text.trim()
+      .replace(/^```json?\n?/, '').replace(/\n?```$/, '').trim()
+    const result = JSON.parse(raw)
+    res.json(result)
+  } catch (err) {
+    console.error('LLM budget-builder error:', err.message)
+    if (err instanceof SyntaxError) {
+      return res.status(500).json({ error: 'Failed to parse AI response' })
+    }
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// --- PDF Vision ---
+
+app.post('/api/parse-pdf-vision', async (req, res) => {
+  const db = readDb()
+  const apiKey = db.settings.claudeApiKey
+  if (!apiKey) return res.status(400).json({ error: 'No Claude API key configured. Add one in Settings.' })
+
+  const { pages } = req.body
+  if (!Array.isArray(pages) || pages.length === 0) {
+    return res.status(400).json({ error: 'No pages provided' })
+  }
+
+  try {
+    const client = new Anthropic({ apiKey })
+    const message = await client.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 4096,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: `Extract all bank transactions from this scanned bank statement. Return ONLY a JSON array of transaction objects:
+- "date": YYYY-MM-DD (infer the year from the statement period shown on the page)
+- "description": transaction description
+- "amount": number, positive for deposits/credits, negative for withdrawals/debits
+
+Exclude balance summaries, running totals, and any non-transaction rows. Return valid JSON only, no markdown.`,
+          },
+          ...pages.map(data => ({
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/jpeg', data },
+          })),
+        ],
+      }],
+    })
+
+    const raw = message.content[0].text.trim()
+      .replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
+    const transactions = JSON.parse(raw)
+    res.json({ transactions })
+  } catch (err) {
+    console.error('PDF vision error:', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// --- Net Worth History ---
+
+app.post('/api/net-worth-snapshot', (req, res) => {
+  const db = readDb()
+  const cash = db.settings.cashBalance ?? 0
+  const savings = (db.savings_accounts ?? []).reduce((s, a) => s + a.balance, 0)
+  const portfolio = (db.holdings ?? []).reduce((s, h) => s + h.shares * h.purchasePrice, 0)
+  const netWorth = Math.round((cash + savings + portfolio) * 100) / 100
+  const breakdown = {
+    cash: Math.round(cash * 100) / 100,
+    savings: Math.round(savings * 100) / 100,
+    portfolio: Math.round(portfolio * 100) / 100,
+  }
+  const date = new Date().toISOString().slice(0, 10)
+
+  if (!db.netWorthHistory) db.netWorthHistory = []
+  const idx = db.netWorthHistory.findIndex(e => e.date === date)
+  const entry = { date, netWorth, breakdown }
+  if (idx !== -1) {
+    db.netWorthHistory[idx] = entry
+  } else {
+    db.netWorthHistory.push(entry)
+  }
+  writeDb(db)
+  res.json(entry)
+})
+
+app.get('/api/net-worth-history', (req, res) => {
+  const db = readDb()
+  const history = (db.netWorthHistory ?? []).slice().sort((a, b) => a.date.localeCompare(b.date))
+  res.json(history)
 })
 
 // --- Start ---

@@ -11,9 +11,11 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.95.1",
     "@tanstack/react-query": "^5.100.9",
+    "@vitejs/plugin-react-oxc": "^0.4.3",
     "cors": "^2.8.5",
     "dayjs": "^1.11.20",
     "express": "^4.19.2",
+    "lucide-react": "^1.14.0",
     "papaparse": "^5.5.3",
     "pdfjs-dist": "^5.7.284",
     "react": "^18.3.1",

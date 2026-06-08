@@ -6,6 +6,55 @@ const TABS = [
   { id: 'goals', label: 'Goals' },
 ]
 
+const BOTTOM_NAV = [
+  {
+    id: 'dashboard',
+    label: 'Home',
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+        <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z" />
+      </svg>
+    ),
+  },
+  {
+    id: 'finances',
+    label: 'Finances',
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+        <path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4z" />
+        <path fillRule="evenodd" d="M18 9H2v5a2 2 0 002 2h12a2 2 0 002-2V9zM4 13a1 1 0 011-1h1a1 1 0 110 2H5a1 1 0 01-1-1zm5-1a1 1 0 100 2h1a1 1 0 100-2H9z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
+    id: 'spend-analyzer',
+    label: 'Spend',
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+        <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
+    id: 'investments',
+    label: 'Invest',
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+        <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" />
+      </svg>
+    ),
+  },
+  {
+    id: 'goals',
+    label: 'Goals',
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+]
+
 export default function Layout({ activeTab, onTabChange, children }) {
   return (
     <div className="min-h-screen bg-gray-50">
@@ -16,7 +65,7 @@ export default function Layout({ activeTab, onTabChange, children }) {
               <span className="text-lg font-bold text-gray-900 tracking-tight">
                 FinanceDash
               </span>
-              <div className="flex gap-1">
+              <div className="hidden sm:flex gap-1">
                 {TABS.map((tab) => (
                   <button
                     key={tab.id}
@@ -52,9 +101,30 @@ export default function Layout({ activeTab, onTabChange, children }) {
           </div>
         </div>
       </nav>
-      <main className="max-w-7xl mx-auto">
+
+      <main className="max-w-7xl mx-auto pb-16 sm:pb-0">
         {children}
       </main>
+
+      {/* Mobile bottom navigation */}
+      <nav className="sm:hidden fixed bottom-0 left-0 right-0 z-50 bg-white border-t border-gray-200">
+        <div className="flex">
+          {BOTTOM_NAV.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => onTabChange(tab.id)}
+              className={`flex-1 flex flex-col items-center justify-center py-2 gap-0.5 transition-colors ${
+                activeTab === tab.id
+                  ? 'text-blue-600'
+                  : 'text-gray-400 hover:text-gray-600'
+              }`}
+            >
+              {tab.icon}
+              <span className="text-[10px] font-medium leading-tight">{tab.label}</span>
+            </button>
+          ))}
+        </div>
+      </nav>
     </div>
   )
 }

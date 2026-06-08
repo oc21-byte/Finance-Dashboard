@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client.js'
 
@@ -9,11 +9,19 @@ export default function Settings() {
   const [showInput, setShowInput] = useState(false)
   const [keyInput, setKeyInput] = useState('')
   const [saved, setSaved] = useState(false)
+  const [incomeInput, setIncomeInput] = useState('')
+  const [incomeSaved, setIncomeSaved] = useState(false)
 
   const { data: settings } = useQuery({
     queryKey: ['settings'],
     queryFn: api.settings.get,
   })
+
+  useEffect(() => {
+    if (settings?.confirmedMonthlyIncome != null) {
+      setIncomeInput(String(settings.confirmedMonthlyIncome))
+    }
+  }, [settings])
 
   const saveKey = useMutation({
     mutationFn: (claudeApiKey) => api.settings.update({ claudeApiKey }),
@@ -28,14 +36,30 @@ export default function Settings() {
 
   const hasKey = settings?.hasClaudeApiKey
 
+  const saveIncome = useMutation({
+    mutationFn: (val) => api.settings.update({
+      confirmedMonthlyIncome: val === '' ? null : Number(val),
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+      setIncomeSaved(true)
+      setTimeout(() => setIncomeSaved(false), 3000)
+    },
+  })
+
   function handleSave(e) {
     e.preventDefault()
     if (!keyInput.trim()) return
     saveKey.mutate(keyInput.trim())
   }
 
+  function handleSaveIncome(e) {
+    e.preventDefault()
+    saveIncome.mutate(incomeInput.trim())
+  }
+
   return (
-    <div className="p-8 max-w-2xl">
+    <div className="p-4 sm:p-8 max-w-2xl">
       <h1 className="text-2xl font-semibold text-gray-800 mb-6">Settings</h1>
 
       {/* Claude API Key */}
@@ -91,6 +115,52 @@ export default function Settings() {
             )}
           </form>
         )}
+      </div>
+
+      {/* Income Baseline */}
+      <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm mt-4">
+        <h2 className="text-sm font-semibold text-gray-700 mb-1">Monthly Income Baseline</h2>
+        <p className="text-xs text-gray-400 mb-4">
+          Your confirmed monthly take-home income. Used by Budget Builder as the income baseline — overrides the CSV-derived average when set.
+        </p>
+
+        {incomeSaved && (
+          <p className="text-xs text-green-600 mb-3">Saved ✓</p>
+        )}
+
+        <form onSubmit={handleSaveIncome} className="flex gap-2 items-center">
+          <div className="relative flex-1">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="Monthly take-home (e.g. 5000)"
+              value={incomeInput}
+              onChange={(e) => setIncomeInput(e.target.value)}
+              className="w-full border border-gray-200 rounded-lg pl-7 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={saveIncome.isPending}
+            className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors whitespace-nowrap"
+          >
+            {saveIncome.isPending ? 'Saving…' : 'Save'}
+          </button>
+          {incomeInput !== '' && (
+            <button
+              type="button"
+              onClick={() => {
+                setIncomeInput('')
+                saveIncome.mutate('')
+              }}
+              className="px-3 py-2 text-sm text-gray-400 hover:text-gray-600"
+            >
+              Clear
+            </button>
+          )}
+        </form>
       </div>
     </div>
   )

@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import dayjs from 'dayjs'
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Cell, PieChart, Pie,
 } from 'recharts'
 import { api } from '../api/client.js'
@@ -31,6 +31,12 @@ function buildNetCashFlowData(transactions) {
 
 function fmt(n) {
   return Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function fmtK(v) {
+  const abs = Math.abs(v)
+  const sign = v < 0 ? '-' : ''
+  return abs >= 1000 ? `${sign}$${(abs / 1000).toFixed(0)}K` : `${sign}$${abs}`
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -89,6 +95,20 @@ function InsightCard({ index, text }) {
   )
 }
 
+function NetWorthTooltip({ active, payload }) {
+  if (!active || !payload?.length) return null
+  const { netWorth, breakdown, label } = payload[0].payload
+  return (
+    <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: '8px 12px', fontSize: 12 }}>
+      <p style={{ fontWeight: 600, marginBottom: 6, color: '#111827' }}>{label}</p>
+      <p style={{ color: '#111827', marginBottom: 4 }}>Net Worth: <strong>${fmt(netWorth)}</strong></p>
+      <p style={{ color: '#22c55e' }}>Cash: ${fmt(breakdown?.cash ?? 0)}</p>
+      <p style={{ color: '#f59e0b' }}>Savings: ${fmt(breakdown?.savings ?? 0)}</p>
+      <p style={{ color: '#3b82f6' }}>Portfolio: ${fmt(breakdown?.portfolio ?? 0)}</p>
+    </div>
+  )
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
@@ -96,6 +116,9 @@ export default function Dashboard() {
   const [editingCash, setEditingCash] = useState(false)
   const [cashInput, setCashInput] = useState('')
   const [insights, setInsights] = useState(null)
+  const [chatMessages, setChatMessages] = useState([])
+  const [chatInput, setChatInput] = useState('')
+  const [chatLoading, setChatLoading] = useState(false)
 
   const { data: transactions = [], isLoading: txLoading } = useQuery({
     queryKey: ['transactions'],
@@ -131,6 +154,11 @@ export default function Dashboard() {
     queryFn: api.settings.get,
   })
 
+  const { data: netWorthHistory = [] } = useQuery({
+    queryKey: ['net-worth-history'],
+    queryFn: api.netWorth.history,
+  })
+
   const cashMutation = useMutation({
     mutationFn: (value) => api.settings.update({ cashBalance: value }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['settings'] }),
@@ -138,8 +166,38 @@ export default function Dashboard() {
 
   const insightsMutation = useMutation({
     mutationFn: () => api.llm.insights({}),
-    onSuccess: (data) => setInsights(data.insights ?? []),
+    onSuccess: (data) => {
+      setInsights(data.insights ?? [])
+      setChatMessages([])
+    },
   })
+
+  const snapshotMutation = useMutation({ mutationFn: () => api.netWorth.snapshot() })
+  useEffect(() => { snapshotMutation.mutate() }, [])
+
+  async function handleDashboardChat(e) {
+    e.preventDefault()
+    const message = chatInput.trim()
+    if (!message || chatLoading) return
+    const newMessages = [...chatMessages, { role: 'user', content: message }]
+    setChatMessages(newMessages)
+    setChatInput('')
+    setChatLoading(true)
+    try {
+      const result = await api.llm.dashboardChat(newMessages)
+      setChatMessages(prev => [...prev, { role: 'assistant', content: result.reply }])
+    } catch {
+      setChatMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, something went wrong. Please try again.' }])
+    } finally {
+      setChatLoading(false)
+    }
+  }
+
+  const historyChartData = netWorthHistory.map(e => ({
+    label: dayjs(e.date).format('MMM D'),
+    netWorth: e.netWorth,
+    breakdown: e.breakdown,
+  }))
 
   const isLoading = txLoading || goalsLoading || holdingsLoading
 
@@ -207,7 +265,7 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-3 sm:p-6 space-y-6">
       {/* Header */}
       <h1 className="text-2xl font-semibold text-gray-900">Dashboard</h1>
 
@@ -265,6 +323,51 @@ export default function Dashboard() {
         />
       </div>
 
+      {/* Net Worth Over Time */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+        <h2 className="text-sm font-medium text-gray-500 mb-4">Net Worth Over Time</h2>
+        {historyChartData.length < 2 ? (
+          <div className="flex items-center justify-center h-[200px] text-sm text-gray-400 text-center px-6">
+            Your net worth history will appear here as you use the app. Come back tomorrow to see your first data point.
+          </div>
+        ) : (
+          <ResponsiveContainer width="100%" height={220}>
+            <AreaChart data={historyChartData}>
+              <defs>
+                <linearGradient id="netWorthGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.15} />
+                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+              <XAxis
+                dataKey="label"
+                tick={{ fontSize: 12, fill: '#6b7280' }}
+                axisLine={false}
+                tickLine={false}
+              />
+              <YAxis
+                tick={{ fontSize: 12, fill: '#6b7280' }}
+                tickFormatter={fmtK}
+                axisLine={false}
+                tickLine={false}
+                width={56}
+              />
+              <Tooltip content={<NetWorthTooltip />} />
+              <Area
+                type="monotone"
+                dataKey="netWorth"
+                stroke="#3b82f6"
+                strokeWidth={2}
+                fill="url(#netWorthGradient)"
+                dot={false}
+                activeDot={{ r: 4, fill: '#3b82f6' }}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+
       {/* Net worth breakdown donut */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
         <h2 className="text-sm font-medium text-gray-500 mb-4">Net Worth Breakdown</h2>
@@ -275,7 +378,7 @@ export default function Dashboard() {
         ) : (
           <div className="flex flex-col md:flex-row items-center gap-8">
             {/* Donut with center label */}
-            <div className="relative shrink-0" style={{ width: 220, height: 220 }}>
+            <div className="relative w-full sm:w-[220px] shrink-0" style={{ height: 220 }}>
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
@@ -425,11 +528,54 @@ export default function Dashboard() {
           ) : insightsMutation.isError ? (
             <p className="text-sm text-red-400 text-center py-4">Failed to generate insights. Check your API key in Settings.</p>
           ) : insights ? (
-            <div className="space-y-3">
-              {insights.map((text, i) => (
-                <InsightCard key={i} index={i + 1} text={text} />
-              ))}
-            </div>
+            <>
+              <div className="space-y-3">
+                {insights.map((text, i) => (
+                  <InsightCard key={i} index={i + 1} text={text} />
+                ))}
+              </div>
+              {/* Chat follow-up */}
+              <div className="border-t border-gray-100 mt-4 pt-4">
+                <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-3">Ask a follow-up</p>
+                {chatMessages.length > 0 && (
+                  <div className="space-y-2 mb-3 max-h-48 overflow-y-auto">
+                    {chatMessages.map((msg, i) => (
+                      <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                        <div className={`max-w-[80%] px-3 py-2 rounded-xl text-sm leading-relaxed ${
+                          msg.role === 'user'
+                            ? 'bg-blue-600 text-white rounded-br-sm'
+                            : 'bg-gray-100 text-gray-800 rounded-bl-sm'
+                        }`}>
+                          {msg.content}
+                        </div>
+                      </div>
+                    ))}
+                    {chatLoading && (
+                      <div className="flex justify-start">
+                        <div className="bg-gray-100 text-gray-400 px-3 py-2 rounded-xl rounded-bl-sm text-sm italic">Thinking…</div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                <form onSubmit={handleDashboardChat} className="flex gap-2">
+                  <input
+                    type="text"
+                    value={chatInput}
+                    onChange={e => setChatInput(e.target.value)}
+                    placeholder="E.g. Where am I overspending?"
+                    disabled={chatLoading}
+                    className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
+                  />
+                  <button
+                    type="submit"
+                    disabled={chatLoading || !chatInput.trim()}
+                    className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors"
+                  >
+                    Send
+                  </button>
+                </form>
+              </div>
+            </>
           ) : (
             <div className="flex flex-col items-center justify-center py-6 gap-3">
               <p className="text-sm text-gray-400">Claude API key is configured.</p>

@@ -39,6 +39,9 @@ export default function Goals() {
   const [editForm, setEditForm] = useState({})
   const [goalAnalysis, setGoalAnalysis] = useState({})
   const [goalAnalysisLoading, setGoalAnalysisLoading] = useState({})
+  const [goalChatMessages, setGoalChatMessages] = useState({})
+  const [goalChatInput, setGoalChatInput] = useState({})
+  const [goalChatLoading, setGoalChatLoading] = useState({})
 
   const { data: goals = [], isLoading } = useQuery({
     queryKey: ['goals'],
@@ -120,6 +123,7 @@ export default function Goals() {
 
   async function handleGoalAnalysis(goal) {
     setGoalAnalysisLoading((prev) => ({ ...prev, [goal.id]: true }))
+    setGoalChatMessages((prev) => ({ ...prev, [goal.id]: [] }))
     try {
       const result = await api.llm.goalAnalysis({ goalId: goal.id })
       setGoalAnalysis((prev) => ({ ...prev, [goal.id]: result.analysis }))
@@ -130,10 +134,29 @@ export default function Goals() {
     }
   }
 
+  async function handleGoalChat(goalId, e) {
+    e.preventDefault()
+    const message = (goalChatInput[goalId] || '').trim()
+    if (!message || goalChatLoading[goalId]) return
+    const prev = goalChatMessages[goalId] || []
+    const newMessages = [...prev, { role: 'user', content: message }]
+    setGoalChatMessages(m => ({ ...m, [goalId]: newMessages }))
+    setGoalChatInput(i => ({ ...i, [goalId]: '' }))
+    setGoalChatLoading(l => ({ ...l, [goalId]: true }))
+    try {
+      const result = await api.llm.goalChat(goalId, newMessages)
+      setGoalChatMessages(m => ({ ...m, [goalId]: [...newMessages, { role: 'assistant', content: result.reply }] }))
+    } catch {
+      setGoalChatMessages(m => ({ ...m, [goalId]: [...newMessages, { role: 'assistant', content: 'Sorry, something went wrong. Please try again.' }] }))
+    } finally {
+      setGoalChatLoading(l => ({ ...l, [goalId]: false }))
+    }
+  }
+
   const hasApiKey = settings?.hasClaudeApiKey
 
   return (
-    <div className="p-8">
+    <div className="p-4 sm:p-8">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-semibold text-gray-800">Goals</h1>
@@ -387,15 +410,58 @@ export default function Goals() {
                   ) : analysisLoading ? (
                     <p className="text-xs text-gray-400 text-center py-2">Analyzing…</p>
                   ) : analysis ? (
-                    <div className="bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2">
-                      <p className="text-xs text-indigo-700">{analysis}</p>
-                      <button
-                        onClick={() => handleGoalAnalysis(goal)}
-                        className="text-xs text-indigo-400 hover:text-indigo-600 mt-1"
-                      >
-                        Refresh
-                      </button>
-                    </div>
+                    <>
+                      <div className="bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2">
+                        <p className="text-xs text-indigo-700">{analysis}</p>
+                        <button
+                          onClick={() => handleGoalAnalysis(goal)}
+                          className="text-xs text-indigo-400 hover:text-indigo-600 mt-1"
+                        >
+                          Refresh
+                        </button>
+                      </div>
+                      {/* Goal chat */}
+                      <div className="border-t border-gray-100 pt-3">
+                        <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">Ask a follow-up</p>
+                        {(goalChatMessages[goal.id] || []).length > 0 && (
+                          <div className="space-y-2 mb-2 max-h-40 overflow-y-auto">
+                            {(goalChatMessages[goal.id] || []).map((msg, i) => (
+                              <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                <div className={`max-w-[80%] px-2.5 py-1.5 rounded-xl text-xs leading-relaxed ${
+                                  msg.role === 'user'
+                                    ? 'bg-indigo-600 text-white rounded-br-sm'
+                                    : 'bg-gray-100 text-gray-700 rounded-bl-sm'
+                                }`}>
+                                  {msg.content}
+                                </div>
+                              </div>
+                            ))}
+                            {goalChatLoading[goal.id] && (
+                              <div className="flex justify-start">
+                                <div className="bg-gray-100 text-gray-400 px-2.5 py-1.5 rounded-xl rounded-bl-sm text-xs italic">Thinking…</div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        <form onSubmit={(e) => handleGoalChat(goal.id, e)} className="flex gap-2">
+                          <input
+                            type="text"
+                            value={goalChatInput[goal.id] || ''}
+                            onChange={e => setGoalChatInput(i => ({ ...i, [goal.id]: e.target.value }))}
+                            placeholder="E.g. How can I reach this faster?"
+                            disabled={goalChatLoading[goal.id]}
+                            className="flex-1 text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-60"
+                          />
+                          <button
+                            type="submit"
+                            disabled={goalChatLoading[goal.id] || !(goalChatInput[goal.id] || '').trim()}
+                            className="px-3 py-1.5 text-xs bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-60 transition-colors"
+                          >
+                            Send
+                          </button>
+                        </form>
+                      </div>
+                    </>
                   ) : (
                     <button
                       onClick={() => handleGoalAnalysis(goal)}

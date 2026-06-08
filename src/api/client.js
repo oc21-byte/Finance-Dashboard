@@ -23,6 +23,7 @@ export const api = {
     create: (data) => request('POST', '/holdings', data),
     update: (id, data) => request('PUT', `/holdings/${id}`, data),
     remove: (id) => request('DELETE', `/holdings/${id}`),
+    removePurchase: (holdingId, purchaseId) => request('DELETE', `/holdings/${holdingId}/purchases/${purchaseId}`),
   },
   goals: {
     list: () => request('GET', '/goals'),
@@ -55,9 +56,18 @@ export const api = {
     create: (data) => request('POST', '/categories', data),
     remove: (name) => request('DELETE', `/categories/${encodeURIComponent(name)}`),
   },
+  netWorth: {
+    snapshot: () => request('POST', '/net-worth-snapshot'),
+    history:  () => request('GET',  '/net-worth-history'),
+  },
   llm: {
     insights: (payload) => request('POST', '/llm/insights', payload),
     goalAnalysis: (payload) => request('POST', '/llm/goal-analysis', payload),
     categorize: (transactions) => request('POST', '/llm/categorize', { transactions }),
+    spendInsights: (period) => request('POST', '/llm/spend-insights', { period }),
+    spendChat: (period, messages) => request('POST', '/llm/spend-chat', { period, messages }),
+    dashboardChat: (messages) => request('POST', '/llm/dashboard-chat', { messages }),
+    goalChat: (goalId, messages) => request('POST', '/llm/goal-chat', { goalId, messages }),
+    budgetBuilder: (payload) => request('POST', '/llm/budget-builder', payload),
   },
 }

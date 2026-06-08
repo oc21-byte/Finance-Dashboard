@@ -1,9 +1,9 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 
-export default function CsvMappingModal({ headers, existingSources, onConfirm, onCancel }) {
+export default function CsvMappingModal({ headers, existingSources, onConfirm, onCancel, initialSourceName = '' }) {
   const firstHeader = headers[0] || ''
 
-  const [sourceName, setSourceName] = useState('')
+  const [sourceName, setSourceName] = useState(initialSourceName)
   const [dateCol, setDateCol] = useState(firstHeader)
   const [descCol, setDescCol] = useState(headers[1] || firstHeader)
   const [splitMode, setSplitMode] = useState(false)
@@ -13,6 +13,10 @@ export default function CsvMappingModal({ headers, existingSources, onConfirm, o
   const [invertAmounts, setInvertAmounts] = useState(true)
   const [categoryCol, setCategoryCol] = useState('')
   const [statementType, setStatementType] = useState('credit_card')
+
+  useEffect(() => {
+    if (initialSourceName) applyExistingSource(initialSourceName)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   function applyExistingSource(name) {
     const m = existingSources[name]
