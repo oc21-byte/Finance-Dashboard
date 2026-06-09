@@ -925,7 +925,7 @@ Return ONLY a JSON object with these exact keys:
   "suggestedSourceName": "<best guess at institution name from the data, or empty string>"
 }
 
-For invertAmounts: most credit card CSVs (Chase, Discover, Capital One) export purchases as positive → true. Bank CSVs typically export expenses as negative → false.`,
+For invertAmounts: look at the sample rows. If typical purchase/spending amounts appear as POSITIVE numbers (e.g. 50.00 for a store charge), set true so they get negated to expenses. If purchases appear as NEGATIVE numbers (e.g. -50.00), set false. Do not guess by bank name — read the actual values in the samples.`,
       }],
     })
     const raw = message.content[0].text.trim()
@@ -963,7 +963,7 @@ app.post('/api/parse-pdf-vision', async (req, res) => {
 - "description": transaction description
 - "amount": number, positive for deposits/credits, negative for withdrawals/debits
 
-Exclude balance summaries, running totals, fee summaries, and any non-transaction rows. For credit card statements, also exclude payment transactions (payments made TO the card, e.g. "PAYMENT THANK YOU", "AUTOPAY", "DIRECTPAY"). Return valid JSON only, no markdown.`,
+Exclude balance summaries, running totals, fee summaries, and any non-transaction rows. Return valid JSON only, no markdown.`,
           },
           ...pages.map(data => ({
             type: 'image',

@@ -9,8 +9,7 @@ import {
 } from 'recharts'
 import { api } from '../api/client.js'
 import { CATEGORIES, CATEGORY_COLORS } from '../constants/categories.js'
-import { detectSource, processCSVRows, parsePdfToTableData, parsePdfVision } from '../utils/csvHelpers.js'
-import CsvMappingModal from '../components/CsvMappingModal.jsx'
+import { detectSource, processCSVRows, parsePdfVision } from '../utils/csvHelpers.js'
 import VisionReviewModal from '../components/VisionReviewModal.jsx'
 import AddTransactionModal from '../components/AddTransactionModal.jsx'
 import CategoryManager from '../components/CategoryManager.jsx'
@@ -88,12 +87,8 @@ function SortTh({ label, field, sortKey, sortDir, onSort, className = '' }) {
 export default function SpendAnalyzer({ onTabChange }) {
   const fileInputRef = useRef()
   const tableRef = useRef()
-  const pendingFileRef = useRef(null)
   const queryClient = useQueryClient()
-
-  const [csvModalData, setCsvModalData] = useState(null)
-  const [pdfConfirmData, setPdfConfirmData] = useState(null)
-  const [visionData, setVisionData] = useState(null)
+const [visionData, setVisionData] = useState(null)
   const [autoDetectData, setAutoDetectData] = useState(null)
   const [showAddModal, setShowAddModal] = useState(false)
   const [filterMonth, setFilterMonth] = useState('all')
@@ -154,7 +149,6 @@ export default function SpendAnalyzer({ onTabChange }) {
     mutationFn: api.creditCardTransactions.batch,
     onSuccess: (imported) => {
       queryClient.invalidateQueries({ queryKey: ['credit_card_transactions'] })
-      setCsvModalData(null)
       setVisionData(null)
       setAutoDetectData(null)
       setImportStatus({ type: 'success', message: `Imported ${imported.length} transactions.` })
@@ -248,10 +242,9 @@ export default function SpendAnalyzer({ onTabChange }) {
     }
   }
 
-  const PAYMENT_RE = /\b(payment\s*thank\s*you|autopay|auto\s*pay|directpay)\b/i
+  const PAYMENT_RE = /\b(payment\s*(-\s*)?(thank\s*you|received|applied|posted)|autopay|auto\s*pay|directpay|online\s*payment|electronic\s*payment|ach\s*payment|mobile\s*payment)\b/i
 
   async function triggerVision(file) {
-    setCsvModalData(null)
     setImportStatus({ type: 'loading', message: 'Scanned PDF detected — analyzing with AI…' })
     try {
       const { transactions } = await parsePdfVision(file)
@@ -287,25 +280,7 @@ export default function SpendAnalyzer({ onTabChange }) {
     e.target.value = ''
 
     if (file.name.toLowerCase().endsWith('.pdf')) {
-      setImportStatus({ type: 'loading', message: 'Parsing PDF…' })
-      try {
-        const result = await parsePdfToTableData(file)
-        setImportStatus(null)
-        if (!result) {
-          triggerVision(file)
-          return
-        }
-        const { headers, rows, statementYear, statementEndYear, statementEndMonth } = result
-        const detected = detectSource(headers, settings?.csvSources || {}, 'credit_card')
-        if (detected) {
-          setPdfConfirmData({ sourceName: detected.name, mapping: detected.mapping, headers, rows, statementYear, statementEndYear, statementEndMonth })
-        } else {
-          await runAutoDetect(headers, rows, { statementYear, statementEndYear, statementEndMonth })
-        }
-      } catch (e) {
-        console.error('PDF parse error:', e)
-        setImportStatus({ type: 'error', message: 'Failed to parse PDF. Please try a different file.' })
-      }
+      triggerVision(file)
       return
     }
 
@@ -324,59 +299,38 @@ export default function SpendAnalyzer({ onTabChange }) {
           }
           batchMutation.mutate(txs)
         } else {
-          await runAutoDetect(headers, rows, {})
+          await runAutoDetect(null, headers, rows, {})
         }
       },
       error: () => setImportStatus({ type: 'error', message: 'Could not parse CSV file.' }),
     })
   }
 
-  async function handlePdfConfirmYes() {
-    const { sourceName, mapping, rows, statementYear, statementEndYear, statementEndMonth } = pdfConfirmData
-    let txs = processCSVRows(rows, { ...mapping, sourceName, statementYear, statementEndYear, statementEndMonth })
-    if (settings?.hasClaudeApiKey) {
-      setImportStatus({ type: 'loading', message: 'Categorizing with AI…' })
-      txs = await categorizeTxs(txs)
+async function runAutoDetect(file, headers, rows, { statementYear, statementEndYear, statementEndMonth } = {}) {
+    if (!settings?.hasClaudeApiKey) {
+      if (file) triggerVision(file)
+      else setImportStatus({ type: 'error', message: 'Claude API key required. Add one in Settings.' })
+      return
     }
-    batchMutation.mutate(txs)
-    setPdfConfirmData(null)
-  }
-
-  function handlePdfConfirmNo() {
-    const { sourceName, headers, rows, statementYear, statementEndYear, statementEndMonth } = pdfConfirmData
-    setCsvModalData({ headers, rows, statementYear, statementEndYear, statementEndMonth, initialSourceName: sourceName })
-    setPdfConfirmData(null)
-  }
-
-  async function handleMappingConfirm(sourceName, mapping) {
-    const newSources = { ...(settings?.csvSources || {}), [sourceName]: mapping }
-    saveMappingMutation.mutate(newSources)
-    let txs = processCSVRows(csvModalData.rows, { ...mapping, sourceName, statementYear: csvModalData.statementYear, statementEndYear: csvModalData.statementEndYear, statementEndMonth: csvModalData.statementEndMonth })
-    if (settings?.hasClaudeApiKey) {
-      setImportStatus({ type: 'loading', message: 'Categorizing with AI…' })
-      txs = await categorizeTxs(txs)
-    }
-    batchMutation.mutate(txs)
-  }
-
-  async function runAutoDetect(headers, rows, { statementYear, statementEndYear, statementEndMonth } = {}) {
-    if (settings?.hasClaudeApiKey) {
-      setImportStatus({ type: 'loading', message: 'Auto-detecting columns…' })
-      try {
-        const { mapping } = await api.llm.detectColumns(headers, rows.slice(0, 3))
-        let txs = processCSVRows(rows, { ...mapping, statementYear, statementEndYear, statementEndMonth })
-        if (settings?.hasClaudeApiKey) {
-          setImportStatus({ type: 'loading', message: 'Categorizing with AI…' })
-          txs = await categorizeTxs(txs)
-        }
-        setImportStatus(null)
-        setAutoDetectData({ transactions: txs, mapping, suggestedSourceName: mapping.suggestedSourceName || '' })
-      } catch {
-        setImportStatus(null)
-        setCsvModalData({ headers, rows, statementYear, statementEndYear, statementEndMonth })
+    setImportStatus({ type: 'loading', message: 'Auto-detecting columns…' })
+    try {
+      const purchaseRows = rows.filter(r =>
+        !Object.values(r).some(v => /\bpayment\b/i.test(String(v)))
+      )
+      const samples = (purchaseRows.length >= 1 ? purchaseRows : rows).slice(0, 3)
+      const { mapping } = await api.llm.detectColumns(headers, samples)
+      let txs = processCSVRows(rows, { ...mapping, statementYear, statementEndYear, statementEndMonth }, { skipTypeFilter: true })
+        .filter(tx => !PAYMENT_RE.test(tx.description))
+      if (settings?.hasClaudeApiKey) {
+        setImportStatus({ type: 'loading', message: 'Categorizing with AI…' })
+        txs = await categorizeTxs(txs)
       }
-    } else {
-      setCsvModalData({ headers, rows, statementYear, statementEndYear, statementEndMonth })
+      setImportStatus(null)
+      setAutoDetectData({ transactions: txs, mapping, suggestedSourceName: mapping.suggestedSourceName || '' })
+    } catch {
+      setImportStatus(null)
+      if (file) triggerVision(file)
+      else setImportStatus({ type: 'error', message: 'Could not auto-detect columns. Please try again.' })
     }
   }
 
@@ -553,22 +507,6 @@ export default function SpendAnalyzer({ onTabChange }) {
         </div>
       )}
 
-      {pdfConfirmData && (
-        <div className="mb-4 px-4 py-3 rounded-lg bg-blue-50 border border-blue-200 text-sm flex items-center justify-between gap-4 flex-wrap">
-          <div>
-            <span className="font-medium text-blue-900">Recognized format: {pdfConfirmData.sourceName}</span>
-            <span className="text-blue-700 ml-2">— use saved column mapping?</span>
-          </div>
-          <div className="flex gap-2 shrink-0">
-            <button onClick={handlePdfConfirmNo} className="px-3 py-1.5 rounded-lg border border-blue-300 text-blue-700 hover:bg-blue-100 text-sm">
-              No, remap
-            </button>
-            <button onClick={handlePdfConfirmYes} className="px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-sm">
-              Yes, use it
-            </button>
-          </div>
-        </div>
-      )}
 
       {hasBudgets && (
         <div className="mb-6 bg-white rounded-xl border border-gray-200 overflow-hidden">
@@ -1040,18 +978,7 @@ export default function SpendAnalyzer({ onTabChange }) {
           onCancel={() => setAutoDetectData(null)}
         />
       )}
-      {csvModalData && (
-        <CsvMappingModal
-          key={csvModalData.headers.join('\0')}
-          headers={csvModalData.headers}
-          existingSources={settings?.csvSources || {}}
-          initialSourceName={csvModalData.initialSourceName || ''}
-          onConfirm={handleMappingConfirm}
-          onCancel={() => setCsvModalData(null)}
-          onUseVision={pendingFileRef.current ? () => triggerVision(pendingFileRef.current) : null}
-        />
-      )}
-      {showAddModal && (
+{showAddModal && (
         <AddTransactionModal
           categories={allCategories}
           onConfirm={data => addMutation.mutate(data)}

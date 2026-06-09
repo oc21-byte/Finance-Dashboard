@@ -8,7 +8,7 @@ import {
 } from 'recharts'
 import { api } from '../api/client.js'
 import { FINANCE_CATEGORIES, FINANCE_CATEGORY_COLORS } from '../constants/categories.js'
-import { detectSource, processCSVRows, parsePdfToTableData, parsePdfVision, isCitizensBankCsv, parseCitizensBankCsv } from '../utils/csvHelpers.js'
+import { detectSource, processCSVRows, parsePdfVision, isCitizensBankCsv, parseCitizensBankCsv } from '../utils/csvHelpers.js'
 import CsvMappingModal from '../components/CsvMappingModal.jsx'
 import VisionReviewModal from '../components/VisionReviewModal.jsx'
 import AddTransactionModal from '../components/AddTransactionModal.jsx'
@@ -131,7 +131,7 @@ export default function Finances() {
     URL.revokeObjectURL(a.href)
   }
 
-  const PAYMENT_RE = /\b(payment\s*thank\s*you|autopay|auto\s*pay|directpay)\b/i
+  const PAYMENT_RE = /\b(payment\s*(-\s*)?(thank\s*you|received|applied|posted)|autopay|auto\s*pay|directpay|online\s*payment|electronic\s*payment|ach\s*payment|mobile\s*payment)\b/i
 
   async function triggerVision(file) {
     setCsvModalData(null)
@@ -165,25 +165,7 @@ export default function Finances() {
     e.target.value = ''
 
     if (file.name.toLowerCase().endsWith('.pdf')) {
-      setImportStatus({ type: 'loading', message: 'Parsing PDF…' })
-      try {
-        const result = await parsePdfToTableData(file)
-        setImportStatus(null)
-        if (!result) {
-          triggerVision(file)
-          return
-        }
-        const { headers, rows, statementYear, statementEndYear, statementEndMonth } = result
-        const detected = detectSource(headers, settings?.csvSources || {}, 'bank')
-        if (detected) {
-          setPdfConfirmData({ sourceName: detected.name, mapping: detected.mapping, headers, rows, statementYear, statementEndYear, statementEndMonth })
-        } else {
-          await runAutoDetect(headers, rows, { statementYear, statementEndYear, statementEndMonth })
-        }
-      } catch (e) {
-        console.error('PDF parse error:', e)
-        setImportStatus({ type: 'error', message: 'Failed to parse PDF. Please try a different file.' })
-      }
+      triggerVision(file)
       return
     }
 

@@ -107,7 +107,7 @@ export function detectSource(headers, csvSources, statementTypeFilter = null) {
   return null
 }
 
-export function processCSVRows(rows, mapping) {
+export function processCSVRows(rows, mapping, { skipTypeFilter = false } = {}) {
   return rows
     .map(row => {
       let amount
@@ -175,7 +175,7 @@ export function processCSVRows(rows, mapping) {
       }
     })
     .filter(tx => tx.description || tx.amount !== 0)
-    .filter(tx => mapping.statementType === 'credit_card' ? tx.type === 'expense' : true)
+    .filter(tx => skipTypeFilter ? true : mapping.statementType === 'credit_card' ? tx.type === 'expense' : true)
 }
 
 export async function parsePdfToTableData(file) {
