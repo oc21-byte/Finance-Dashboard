@@ -966,7 +966,11 @@ async function runAutoDetect(file, headers, rows, { statementYear, statementEndY
       {visionData && (
         <VisionReviewModal
           transactions={visionData.transactions}
-          onConfirm={(sourceName, txs) => batchMutation.mutate(txs)}
+          initialSourceName={localStorage.getItem('visionSource_spendAnalyzer') || ''}
+          onConfirm={(sourceName, txs) => {
+            localStorage.setItem('visionSource_spendAnalyzer', sourceName)
+            batchMutation.mutate(txs)
+          }}
           onCancel={() => setVisionData(null)}
         />
       )}

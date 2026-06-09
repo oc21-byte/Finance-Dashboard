@@ -608,7 +608,11 @@ export default function Finances() {
       {visionData && (
         <VisionReviewModal
           transactions={visionData.transactions}
-          onConfirm={(sourceName, txs) => batchMutation.mutate(txs)}
+          initialSourceName={localStorage.getItem('visionSource_finances') || 'Bank Statement'}
+          onConfirm={(sourceName, txs) => {
+            localStorage.setItem('visionSource_finances', sourceName)
+            batchMutation.mutate(txs)
+          }}
           onCancel={() => setVisionData(null)}
         />
       )}
