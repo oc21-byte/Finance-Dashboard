@@ -30,13 +30,138 @@ function timelineText(goal) {
   return `At $${fmt(goal.monthlySavings)}/mo — ~${months} month${months === 1 ? '' : 's'} to go (est. ${reachDate})`
 }
 
+// One-click suggestion to fill the monthly-savings field from the user's real average contribution.
+// Pure convenience — it does not attribute contributions to this specific goal.
+function SuggestSavings({ suggested, monthsCovered, windowLabel, onUse }) {
+  if (!suggested) return null
+  return (
+    <button
+      type="button"
+      onClick={() => onUse(suggested)}
+      className="block text-xs text-blue-600 hover:text-blue-700 mt-1 text-left"
+      title="Fill from your average monthly savings contributions"
+    >
+      Your avg savings: ${fmt(suggested)}/mo over {monthsCovered} mo ({windowLabel}) — Use this
+    </button>
+  )
+}
+
+// Editor for a goal's linked accounts. Each link earmarks a % of a source (a savings account or a
+// holdings account-type bucket). Capacity is capped at 100% per source across all goals; the
+// available remainder is computed from the source catalog minus what other goals already use.
+function LinksEditor({ links, setLinks, sources, originalLinks = [] }) {
+  const [pickKey, setPickKey] = useState('')
+  const [pickPct, setPickPct] = useState('')
+
+  const keyOf = (s) => `${s.sourceType}::${s.sourceId}`
+  const used = (links || []).map(keyOf)
+
+  // % this goal already had saved for a source (so editing it back doesn't count against itself).
+  const savedPct = (s) => (originalLinks || [])
+    .filter(l => l.sourceType === s.sourceType && l.sourceId === s.sourceId)
+    .reduce((sum, l) => sum + l.percent, 0)
+  const availableFor = (s) => Math.max(0, Math.round((100 - (s.allocatedPct - savedPct(s))) * 100) / 100)
+
+  const candidates = sources.filter(s => !used.includes(keyOf(s)) && availableFor(s) > 0)
+  const selected = sources.find(s => keyOf(s) === pickKey)
+  const maxPct = selected ? availableFor(selected) : 0
+
+  function addLink() {
+    if (!selected) return
+    const pct = Math.min(maxPct, parseFloat(pickPct))
+    if (!pct || pct <= 0) return
+    setLinks([...(links || []), { sourceType: selected.sourceType, sourceId: selected.sourceId, percent: pct }])
+    setPickKey('')
+    setPickPct('')
+  }
+
+  return (
+    <div className="sm:col-span-2 border-t border-gray-100 pt-3">
+      <label className="block text-xs font-medium text-gray-600 mb-2">Linked accounts (auto-tracks balances)</label>
+
+      {(links || []).length > 0 && (
+        <div className="space-y-1.5 mb-2">
+          {links.map((l, i) => {
+            const src = sources.find(s => s.sourceType === l.sourceType && s.sourceId === l.sourceId)
+            const value = src ? (src.currentValue * l.percent) / 100 : null
+            return (
+              <div key={i} className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-1.5 text-xs">
+                <span className="text-gray-700">
+                  {src ? src.name : `${l.sourceId}`} — {l.percent}%
+                  {value != null && <span className="text-gray-400"> → ${fmt(value)}</span>}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setLinks(links.filter((_, j) => j !== i))}
+                  className="text-gray-300 hover:text-red-400"
+                >
+                  Remove
+                </button>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {candidates.length > 0 ? (
+        <div className="flex gap-2 items-center">
+          <select
+            className={inputClass + ' flex-1'}
+            value={pickKey}
+            onChange={(e) => { setPickKey(e.target.value); setPickPct('') }}
+          >
+            <option value="">Add an account…</option>
+            {candidates.map(s => (
+              <option key={keyOf(s)} value={keyOf(s)}>
+                {s.name} (${fmt(s.currentValue)}, {availableFor(s)}% free)
+              </option>
+            ))}
+          </select>
+          <input
+            className="w-20 border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            type="number"
+            min="0"
+            max={maxPct}
+            step="0.01"
+            placeholder="%"
+            value={pickPct}
+            disabled={!selected}
+            onChange={(e) => setPickPct(e.target.value)}
+          />
+          <button
+            type="button"
+            onClick={addLink}
+            disabled={!selected || !pickPct}
+            className="px-3 py-2 bg-gray-800 text-white text-xs font-medium rounded-lg hover:bg-gray-700 disabled:opacity-40 transition-colors whitespace-nowrap"
+          >
+            Add
+          </button>
+        </div>
+      ) : (
+        <p className="text-xs text-gray-400">No accounts available to link. Add savings accounts or holdings on the Investments page.</p>
+      )}
+      {(links || []).length > 0 && (
+        <p className="text-xs text-blue-600 mt-2">
+          Linked total: ${fmt(links.reduce((sum, l) => {
+            const src = sources.find(s => s.sourceType === l.sourceType && s.sourceId === l.sourceId)
+            return sum + (src ? (src.currentValue * l.percent) / 100 : 0)
+          }, 0))} — this becomes the goal's current amount.
+        </p>
+      )}
+    </div>
+  )
+}
+
 export default function Goals() {
   const queryClient = useQueryClient()
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState(DEFAULT_FORM)
+  const [createLinks, setCreateLinks] = useState([])
   const [addFunds, setAddFunds] = useState({})
   const [editingId, setEditingId] = useState(null)
   const [editForm, setEditForm] = useState({})
+  const [editLinks, setEditLinks] = useState([])
+  const [editOriginalLinks, setEditOriginalLinks] = useState([])
   const [goalAnalysis, setGoalAnalysis] = useState({})
   const [goalAnalysisLoading, setGoalAnalysisLoading] = useState({})
   const [goalChatMessages, setGoalChatMessages] = useState({})
@@ -53,23 +178,46 @@ export default function Goals() {
     queryFn: api.settings.get,
   })
 
+  // Catalog of linkable sources (with live values + remaining capacity). Only fetched while a
+  // create/edit form is open, since it hits live prices server-side.
+  const linkEditorOpen = showForm || editingId !== null
+  const { data: sources = [] } = useQuery({
+    queryKey: ['goal-sources'],
+    queryFn: api.goals.sources,
+    enabled: linkEditorOpen,
+  })
+
+  // Average monthly contribution from real transaction history, suggested for the savings rate field.
+  const { data: contribRate } = useQuery({
+    queryKey: ['contribution-rate'],
+    queryFn: api.goals.contributionRate,
+    enabled: linkEditorOpen,
+  })
+  const suggestedSavings = contribRate?.savingsContrib || 0
+
+  const invalidateGoals = () => {
+    queryClient.invalidateQueries({ queryKey: ['goals'] })
+    queryClient.invalidateQueries({ queryKey: ['goal-sources'] })
+  }
+
   const createGoal = useMutation({
     mutationFn: (data) => api.goals.create(data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['goals'] })
+      invalidateGoals()
       setForm(DEFAULT_FORM)
+      setCreateLinks([])
       setShowForm(false)
     },
   })
 
   const updateGoal = useMutation({
     mutationFn: ({ id, data }) => api.goals.update(id, data),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['goals'] }),
+    onSuccess: invalidateGoals,
   })
 
   const deleteGoal = useMutation({
     mutationFn: (id) => api.goals.remove(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['goals'] }),
+    onSuccess: invalidateGoals,
   })
 
   function handleCreate(e) {
@@ -81,6 +229,7 @@ export default function Goals() {
       targetDate: form.targetDate,
       currentAmount: 0,
       monthlySavings: form.monthlySavings ? parseFloat(form.monthlySavings) : 0,
+      links: createLinks,
     })
   }
 
@@ -92,6 +241,8 @@ export default function Goals() {
       targetDate: goal.targetDate,
       monthlySavings: goal.monthlySavings || '',
     })
+    setEditLinks(goal.links || [])
+    setEditOriginalLinks(goal.links || [])
   }
 
   function handleEdit(e) {
@@ -105,6 +256,7 @@ export default function Goals() {
           targetAmount: parseFloat(editForm.targetAmount),
           targetDate: editForm.targetDate,
           monthlySavings: editForm.monthlySavings ? parseFloat(editForm.monthlySavings) : 0,
+          links: editLinks,
         },
       },
       { onSuccess: () => setEditingId(null) }
@@ -217,7 +369,14 @@ export default function Goals() {
                 value={form.monthlySavings}
                 onChange={(e) => setForm((f) => ({ ...f, monthlySavings: e.target.value }))}
               />
+              <SuggestSavings
+                suggested={suggestedSavings}
+                monthsCovered={contribRate?.monthsCovered}
+                windowLabel={contribRate?.windowLabel}
+                onUse={(v) => setForm((f) => ({ ...f, monthlySavings: String(v) }))}
+              />
             </div>
+            <LinksEditor links={createLinks} setLinks={setCreateLinks} sources={sources} />
           </div>
           <div className="mt-4 flex justify-end">
             <button
@@ -304,7 +463,14 @@ export default function Goals() {
                         value={editForm.monthlySavings}
                         onChange={(e) => setEditForm((f) => ({ ...f, monthlySavings: e.target.value }))}
                       />
+                      <SuggestSavings
+                        suggested={suggestedSavings}
+                        monthsCovered={contribRate?.monthsCovered}
+                        windowLabel={contribRate?.windowLabel}
+                        onUse={(v) => setEditForm((f) => ({ ...f, monthlySavings: String(v) }))}
+                      />
                     </div>
+                    <LinksEditor links={editLinks} setLinks={setEditLinks} sources={sources} originalLinks={editOriginalLinks} />
                   </div>
                   <div className="flex gap-2 justify-end">
                     <button
@@ -366,6 +532,22 @@ export default function Goals() {
                     <p className="text-xs text-gray-400 mt-1">of ${fmt(goal.targetAmount)}</p>
                   </div>
 
+                  {/* Linked accounts breakdown */}
+                  {goal.isLinked && goal.linkedBreakdown?.length > 0 && (
+                    <div className="text-xs bg-gray-50 border border-gray-100 rounded-lg px-3 py-2">
+                      <p className="font-medium text-gray-500 mb-1">Funded by linked accounts</p>
+                      <ul className="space-y-0.5">
+                        {goal.linkedBreakdown.map((b, i) => (
+                          <li key={i} className="flex justify-between text-gray-600">
+                            <span>{b.name} — {b.percent}%</span>
+                            <span>${fmt(b.value)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                      <p className="text-gray-400 mt-1">Auto-updates as balances and prices change.</p>
+                    </div>
+                  )}
+
                   {/* Monthly savings */}
                   {goal.monthlySavings > 0 && (
                     <p className="text-xs text-gray-500">Saving ${fmt(goal.monthlySavings)} / mo</p>
@@ -375,12 +557,18 @@ export default function Goals() {
                   {!reached && timeline && (
                     <p className="text-xs text-blue-600 bg-blue-50 rounded-lg px-3 py-2">{timeline}</p>
                   )}
+                  {/* Optimistic growth projection — additive, clearly labeled as an assumption */}
+                  {!reached && goal.growthVerdict && (
+                    <p className="text-xs text-gray-500 bg-gray-50 border border-dashed border-gray-200 rounded-lg px-3 py-2">
+                      📈 {goal.growthVerdict}
+                    </p>
+                  )}
                   {reached && (
                     <p className="text-xs text-green-600 bg-green-50 rounded-lg px-3 py-2 font-medium">Goal reached!</p>
                   )}
 
-                  {/* Add funds */}
-                  {!reached && (
+                  {/* Add funds — only for unlinked goals (linked goals track their accounts) */}
+                  {!reached && !goal.isLinked && (
                     <div className="flex gap-2 items-center">
                       <input
                         className="flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"

@@ -21,6 +21,7 @@ const DEFAULT_DB = {
     customCategories: [],
     cashBalance: 0,
     confirmedMonthlyIncome: null,
+    assumedAnnualReturn: 0.06,
   },
 }
 
@@ -185,35 +186,160 @@ app.delete('/api/holdings/:holdingId/purchases/:purchaseId', (req, res) => {
 
 // --- Prices (Yahoo Finance) ---
 
-app.get('/api/prices', async (req, res) => {
-  const tickers = (req.query.tickers || '').split(',').filter(Boolean)
-  if (!tickers.length) return res.json({})
+// Fetch live prices for a list of tickers. Returns { TICKER: price|null }. Shared by the
+// /api/prices route and all goal valuation (holdings priced server-side, never in the browser).
+async function fetchPrices(tickers) {
+  const unique = [...new Set(tickers.filter(Boolean).map(t => t.toUpperCase()))]
+  if (!unique.length) return {}
   const entries = await Promise.all(
-    tickers.map(async (ticker) => {
+    unique.map(async (ticker) => {
       try {
         const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=1d`
         const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
-        if (!r.ok) return [ticker.toUpperCase(), null]
+        if (!r.ok) return [ticker, null]
         const data = await r.json()
         const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice ?? null
-        return [ticker.toUpperCase(), price]
+        return [ticker, price]
       } catch {
-        return [ticker.toUpperCase(), null]
+        return [ticker, null]
       }
     })
   )
-  res.json(Object.fromEntries(entries))
+  return Object.fromEntries(entries)
+}
+
+app.get('/api/prices', async (req, res) => {
+  const tickers = (req.query.tickers || '').split(',').filter(Boolean)
+  res.json(await fetchPrices(tickers))
 })
 
 // --- Goals ---
 
-app.get('/api/goals', (req, res) => {
+// A goal can earmark a percentage of real accounts via `links[]`:
+//   { sourceType: 'savings', sourceId: '<savings_account_id>', percent }
+//   { sourceType: 'holdingsAccountType', sourceId: '<accountType>', percent }
+// Linked goals derive their currentAmount from those sources (the stored value is ignored).
+
+// Full current value of a single source (before applying the link percentage).
+function sourceValue(db, link, priceMap) {
+  if (link.sourceType === 'savings') {
+    const acct = (db.savings_accounts ?? []).find(a => a.id === link.sourceId)
+    return acct ? acct.balance : 0
+  }
+  if (link.sourceType === 'holdingsAccountType') {
+    return (db.holdings ?? [])
+      .filter(h => (h.accountType || 'Other') === link.sourceId)
+      .reduce((s, h) => {
+        const price = h.ticker ? (priceMap[h.ticker.toUpperCase()] ?? null) : null
+        return s + (price !== null ? price * h.shares : h.purchasePrice * h.shares)
+      }, 0)
+  }
+  return 0
+}
+
+// Human-readable name for a link's source, e.g. "Capital One HYSA" or "TFSA holdings".
+function sourceName(db, link) {
+  if (link.sourceType === 'savings') {
+    const acct = (db.savings_accounts ?? []).find(a => a.id === link.sourceId)
+    return acct ? acct.name : 'Unknown account'
+  }
+  if (link.sourceType === 'holdingsAccountType') return `${link.sourceId} holdings`
+  return 'Unknown source'
+}
+
+// Tickers needed to price every holdings bucket linked by any goal (so we only hit Yahoo
+// when a holdings-backed goal actually exists).
+function tickersForGoalLinks(db) {
+  const buckets = new Set()
+  for (const g of db.goals ?? []) {
+    for (const link of g.links ?? []) {
+      if (link.sourceType === 'holdingsAccountType') buckets.add(link.sourceId)
+    }
+  }
+  if (!buckets.size) return []
+  return (db.holdings ?? [])
+    .filter(h => buckets.has(h.accountType || 'Other'))
+    .map(h => h.ticker)
+    .filter(Boolean)
+}
+
+// Derived progress for a goal. Linked goals sum (sourceValue × percent); unlinked goals keep
+// their stored currentAmount. Returns { currentAmount, breakdown[], isLinked }.
+function computeGoalProgress(db, goal, priceMap = {}) {
+  const links = goal.links ?? []
+  if (!links.length) {
+    return { currentAmount: goal.currentAmount ?? 0, breakdown: [], isLinked: false }
+  }
+  const breakdown = links.map(link => {
+    const value = Math.round(sourceValue(db, link, priceMap) * (link.percent / 100) * 100) / 100
+    return { sourceType: link.sourceType, sourceId: link.sourceId, name: sourceName(db, link), percent: link.percent, value }
+  })
+  const currentAmount = Math.round(breakdown.reduce((s, b) => s + b.value, 0) * 100) / 100
+  return { currentAmount, breakdown, isLinked: true }
+}
+
+// Sum of percent already allocated for a source across all goals, optionally excluding one goal.
+function allocatedPercent(db, sourceType, sourceId, excludeGoalId = null) {
+  let total = 0
+  for (const g of db.goals ?? []) {
+    if (g.id === excludeGoalId) continue
+    for (const link of g.links ?? []) {
+      if (link.sourceType === sourceType && link.sourceId === sourceId) total += link.percent
+    }
+  }
+  return total
+}
+
+// Validate a goal's links: shape, that the source exists, and that allocations across all other
+// goals stay within 100%. Returns an error string, or null if valid.
+function validateGoalLinks(db, links, excludeGoalId = null) {
+  if (links === undefined) return null
+  if (!Array.isArray(links)) return 'links must be an array'
+  for (const link of links) {
+    const { sourceType, sourceId, percent } = link
+    if (sourceType !== 'savings' && sourceType !== 'holdingsAccountType') return `Invalid sourceType: ${sourceType}`
+    if (typeof percent !== 'number' || percent <= 0 || percent > 100) return 'percent must be between 0 and 100'
+    if (sourceType === 'savings' && !(db.savings_accounts ?? []).some(a => a.id === sourceId)) {
+      return `Savings account not found: ${sourceId}`
+    }
+    if (sourceType === 'holdingsAccountType' && !(db.holdings ?? []).some(h => (h.accountType || 'Other') === sourceId)) {
+      return `No holdings in account type: ${sourceId}`
+    }
+    const used = allocatedPercent(db, sourceType, sourceId, excludeGoalId)
+    if (used + percent > 100) {
+      return `${sourceName(db, link)} is over-allocated: ${used}% already used, cannot add ${percent}% (max ${100 - used}%)`
+    }
+  }
+  return null
+}
+
+app.get('/api/goals', async (req, res) => {
   const db = readDb()
-  res.json(db.goals)
+  const priceMap = await fetchPrices(tickersForGoalLinks(db))
+  const goals = (db.goals ?? []).map(g => {
+    const { currentAmount, breakdown, isLinked } = computeGoalProgress(db, g, priceMap)
+    const withAmount = { ...g, currentAmount }
+    const tl = goalTimeline(withAmount, goalGrowthRate(db, withAmount, priceMap))
+    return {
+      ...g,
+      currentAmount,
+      linkedBreakdown: breakdown,
+      isLinked,
+      growthMonths: tl.growthMonths,
+      growthDate: tl.growthDate,
+      growthVerdict: tl.growthVerdict,
+      blendedAnnualRate: tl.blendedAnnualRate,
+      assumedReturnUsed: tl.assumedReturnUsed,
+      hasInvestments: tl.hasInvestments,
+    }
+  })
+  res.json(goals)
 })
 
 app.post('/api/goals', (req, res) => {
   const db = readDb()
+  const err = validateGoalLinks(db, req.body.links)
+  if (err) return res.status(400).json({ error: err })
   const goal = { id: uuidv4(), ...req.body }
   db.goals.push(goal)
   writeDb(db)
@@ -224,6 +350,8 @@ app.put('/api/goals/:id', (req, res) => {
   const db = readDb()
   const idx = db.goals.findIndex(g => g.id === req.params.id)
   if (idx === -1) return res.status(404).json({ error: 'Not found' })
+  const err = validateGoalLinks(db, req.body.links, req.params.id)
+  if (err) return res.status(400).json({ error: err })
   db.goals[idx] = { ...db.goals[idx], ...req.body, id: req.params.id }
   writeDb(db)
   res.json(db.goals[idx])
@@ -238,12 +366,52 @@ app.delete('/api/goals/:id', (req, res) => {
   res.json(removed)
 })
 
+// Catalog of linkable sources for the goal link picker: every savings account plus every
+// holdings account-type bucket, with live current value and how much capacity is still free.
+app.get('/api/goal-sources', async (req, res) => {
+  const db = readDb()
+  const buckets = [...new Set((db.holdings ?? []).map(h => h.accountType || 'Other'))]
+  const tickers = (db.holdings ?? []).map(h => h.ticker).filter(Boolean)
+  const priceMap = await fetchPrices(tickers)
+
+  const build = (link) => {
+    const allocatedPct = allocatedPercent(db, link.sourceType, link.sourceId)
+    return {
+      sourceType: link.sourceType,
+      sourceId: link.sourceId,
+      name: sourceName(db, link),
+      currentValue: Math.round(sourceValue(db, link, priceMap) * 100) / 100,
+      allocatedPct,
+      remainingPct: Math.max(0, 100 - allocatedPct),
+    }
+  }
+
+  const sources = [
+    ...(db.savings_accounts ?? []).map(a => build({ sourceType: 'savings', sourceId: a.id })),
+    ...buckets.map(b => build({ sourceType: 'holdingsAccountType', sourceId: b })),
+  ]
+  res.json(sources)
+})
+
+// Average monthly savings/investment contributions from real transaction history, surfaced as a
+// suggestion for a goal's monthly savings rate. Read-only; no per-goal attribution.
+app.get('/api/contribution-rate', (req, res) => {
+  const db = readDb()
+  const fin = buildMonthlyFinancials(db)
+  res.json({
+    savingsContrib: fin.savingsContrib,
+    investContrib: fin.investContrib,
+    monthsCovered: fin.monthsCovered,
+    windowLabel: fin.windowLabel,
+  })
+})
+
 // --- Settings ---
 
 app.get('/api/settings', (req, res) => {
   const db = readDb()
   const { claudeApiKey, ...rest } = db.settings
-  res.json({ ...rest, hasClaudeApiKey: !!(claudeApiKey) })
+  res.json({ ...rest, assumedAnnualReturn: rest.assumedAnnualReturn ?? 0.06, hasClaudeApiKey: !!(claudeApiKey) })
 })
 
 app.put('/api/settings', (req, res) => {
@@ -443,15 +611,267 @@ Largest transactions:
 ${largeTxLines || '  (none)'}`
 }
 
-function buildCategoryTotals(transactions, days = 30) {
-  const cutoff = new Date()
-  cutoff.setDate(cutoff.getDate() - days)
-  const recent = transactions.filter(t => new Date(t.date) >= cutoff)
-  const totals = {}
-  for (const t of recent) {
-    totals[t.category] = (totals[t.category] ?? 0) + t.amount
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+function monthLabel(yyyymm) {
+  const [y, m] = yyyymm.split('-').map(Number)
+  return `${MONTH_NAMES[m - 1]} ${y}`
+}
+
+// Matches FINANCE_CATEGORIES in src/constants/categories.js — the reserved bank-side
+// category tags. Used to fall back to a transaction's type only for non-finance categories.
+const FINANCE_CAT_SET = new Set(['Income', 'Expense', 'Savings', 'Investments'])
+
+// Calendar months that the bank data FULLY spans — the overall date range covers the 1st
+// through the last day of the month. Excludes leading/trailing partial months (e.g. data
+// starting Nov 14 or ending May 24) and the current incomplete month, so monthly averages
+// are computed only over genuinely complete months.
+function fullMonthsWithData(transactions) {
+  const dates = transactions.map(t => t.date).filter(Boolean).sort()
+  if (!dates.length) return []
+  const min = dates[0], max = dates[dates.length - 1]
+  const daysInMonth = ym => { const [y, m] = ym.split('-').map(Number); return new Date(y, m, 0).getDate() }
+  const present = [...new Set(dates.map(d => d.slice(0, 7)))].sort()
+  return present.filter(ym =>
+    min <= `${ym}-01` && max >= `${ym}-${String(daysInMonth(ym)).padStart(2, '0')}`
+  )
+}
+
+// Monthly financials for insight prompts, using the SAME definitions as the Finances tab
+// (src/pages/Finances.jsx buildMonthlyData) so the numbers the model cites equal what the
+// user sees in the app:
+//   income / expenses / savings / investments  ->  from BANK transactions, by category.
+// Expenses are the bank "Expense" category, which already includes credit-card bill
+// payments — so credit-card transactions are NOT added to the total (that would
+// double-count the same spending). Card transactions are used only to break down WHERE
+// card spending went (a subset of expenses: $/month and % of card spend) for category
+// advice. Averages use only FULL calendar months of bank data, divided by that count,
+// limited to the most recent `maxMonths`.
+function buildMonthlyFinancials(db, maxMonths = 6) {
+  const bank = db.transactions || []
+  const cc = db.credit_card_transactions || []
+
+  const empty = {
+    monthsCovered: 0, windowLabel: 'no data', excluded: [],
+    income: 0, expenses: 0, savingsContrib: 0, investContrib: 0,
+    cardSpendMonthly: 0, cardBreakdown: [],
   }
-  return totals
+  const allFull = fullMonthsWithData(bank)
+  if (!allFull.length) return empty
+
+  const months = allFull.slice(-maxMonths)   // most recent full months
+  const windowSet = new Set(months)
+  const divisor = months.length
+  const inWindow = d => d && windowSet.has(d.slice(0, 7))
+
+  let income = 0, expenses = 0, savingsContrib = 0, investContrib = 0
+  for (const t of bank) {
+    if (!inWindow(t.date)) continue
+    const amt = Math.abs(Number(t.amount))
+    const cat = t.category
+    if (cat === 'Savings') savingsContrib += amt
+    else if (cat === 'Investments') investContrib += amt
+    else if (cat === 'Income' || (t.type === 'income' && !FINANCE_CAT_SET.has(cat))) income += amt
+    else if (cat === 'Expense' || (t.type === 'expense' && !FINANCE_CAT_SET.has(cat))) expenses += amt
+  }
+
+  // Credit-card category breakdown over the same full-month window (advice only).
+  const cardByCat = {}
+  let cardTotal = 0
+  for (const t of cc) {
+    if (!inWindow(t.date)) continue
+    const amt = Math.abs(Number(t.amount))
+    cardTotal += amt
+    const cat = t.category || 'Other'
+    cardByCat[cat] = (cardByCat[cat] || 0) + amt
+  }
+  const cardBreakdown = Object.entries(cardByCat)
+    .map(([category, total]) => ({
+      category,
+      monthly: Math.round(total / divisor),
+      pct: cardTotal > 0 ? Math.round(total / cardTotal * 100) : 0,
+    }))
+    .sort((a, b) => b.monthly - a.monthly)
+
+  const perMonth = x => Math.round(x / divisor)
+  const windowLabel = months.length === 1
+    ? monthLabel(months[0])
+    : `${monthLabel(months[0])}–${monthLabel(months[months.length - 1])}`
+  const excluded = [...new Set(bank.map(t => t.date?.slice(0, 7)).filter(Boolean))]
+    .filter(m => !windowSet.has(m)).sort()
+
+  return {
+    monthsCovered: divisor,
+    windowLabel,
+    excluded,
+    income: perMonth(income),
+    expenses: perMonth(expenses),
+    savingsContrib: perMonth(savingsContrib),
+    investContrib: perMonth(investContrib),
+    cardSpendMonthly: Math.round(cardTotal / divisor),
+    cardBreakdown,
+  }
+}
+
+// Transparent monthly summary block for insight/chat prompts. States the data window,
+// source, and the no-double-count rule explicitly so the model can explain its basis.
+function formatMonthlyFinancials(fin) {
+  if (!fin.monthsCovered) return 'No complete months of transaction data are available yet.'
+  const lines = [
+    `DATA BASIS — figures below are averaged over ${fin.monthsCovered} FULL month(s) of bank data (${fin.windowLabel}), each total divided by ${fin.monthsCovered}. Partial/empty months are excluded${fin.excluded.length ? ` (excluded: ${fin.excluded.join(', ')})` : ''}.`,
+    `Source: bank-account transactions by category. The expense total already includes credit-card bill payments, so individual card transactions are NOT added again (avoids double-counting).`,
+    ``,
+    `Average monthly income: $${fin.income}`,
+    `Average monthly expenses: $${fin.expenses}`,
+  ]
+  if (fin.savingsContrib > 0) lines.push(`Average monthly savings contributions: $${fin.savingsContrib}`)
+  if (fin.investContrib > 0) lines.push(`Average monthly investment contributions: $${fin.investContrib}`)
+  if (fin.cardBreakdown.length) {
+    lines.push(``)
+    lines.push(`Where credit-card spending went ($${fin.cardSpendMonthly}/mo of card purchases — this is a SUBSET of the expenses above, for category-level advice only; do NOT add it to total expenses):`)
+    for (const c of fin.cardBreakdown) lines.push(`  ${c.category}: $${c.monthly}/mo (${c.pct}% of card spend)`)
+  }
+  return lines.join('\n')
+}
+
+// Claude has no knowledge of the real current date, so any prompt that reasons
+// about timelines (goal target dates, "months from now", etc.) must state it.
+function todayLine() {
+  return `Today's date is ${new Date().toISOString().slice(0, 10)}.`
+}
+
+// Whole months from today until a YYYY-MM-DD target date (rounded to nearest
+// month). Computed server-side so the model never has to do date arithmetic.
+// Returns null for a missing/unparseable date, negative if the date is past.
+function monthsUntil(targetDate) {
+  if (!targetDate) return null
+  const target = new Date(targetDate)
+  if (Number.isNaN(target.getTime())) return null
+  const days = (target - new Date()) / (1000 * 60 * 60 * 24)
+  return Math.round(days / 30.4375)
+}
+
+// "Aug 2027" from a YYYY-MM-DD date. Computed server-side so the model never has to
+// translate a month count into a calendar date (a step Haiku frequently gets wrong).
+function monthYearLabel(date) {
+  const d = new Date(date)
+  if (Number.isNaN(d.getTime())) return 'unknown'
+  return `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`
+}
+
+// Calendar month `n` whole months from today, e.g. dateAfterMonths(29) => "Nov 2028".
+function dateAfterMonths(months) {
+  const d = new Date()
+  d.setMonth(d.getMonth() + months)
+  return monthYearLabel(d)
+}
+
+// Blended expected annual growth rate for a goal, weighted by the value of each linked source:
+// savings sources contribute their APY (stored as a percent), holdings buckets the user's assumed
+// return (stored as a decimal). Unlinked goals — or links with no yield — return rate 0.
+function goalGrowthRate(db, goal, priceMap = {}) {
+  const assumedReturn = db.settings.assumedAnnualReturn ?? 0.06
+  let weighted = 0, total = 0, hasInvestments = false, hasYield = false
+  for (const link of goal.links ?? []) {
+    const value = sourceValue(db, link, priceMap) * (link.percent / 100)
+    if (value <= 0) continue
+    let rate = 0
+    if (link.sourceType === 'savings') {
+      const acct = (db.savings_accounts ?? []).find(a => a.id === link.sourceId)
+      rate = acct && acct.apy ? acct.apy / 100 : 0
+      if (rate > 0) hasYield = true
+    } else if (link.sourceType === 'holdingsAccountType') {
+      rate = assumedReturn
+      hasInvestments = true
+    }
+    weighted += value * rate
+    total += value
+  }
+  return { blendedAnnualRate: total > 0 ? weighted / total : 0, hasInvestments, hasYield, assumedReturn }
+}
+
+// Months to grow `balance` to `target`, compounding monthly at annualRate and adding `monthly`
+// each month. Returns { months, date } or null if unreachable within the cap.
+function projectWithGrowth({ balance, monthly, target, annualRate }) {
+  if (balance >= target) return { months: 0, date: dateAfterMonths(0) }
+  const r = annualRate / 12
+  let bal = balance
+  for (let m = 1; m <= 1200; m++) {
+    bal = bal * (1 + r) + monthly
+    if (bal >= target) return { months: m, date: dateAfterMonths(m) }
+  }
+  return null
+}
+
+// Pre-computed, plain-English timeline verdict for a goal so the prompt never asks the
+// model to do date arithmetic. Returns the linear (baseline) verdict plus, when a meaningful
+// `growth` rate is supplied, an additive, clearly-labeled optimistic "with growth" projection.
+function goalTimeline(goal, growth = null) {
+  const remaining = Math.max(0, goal.targetAmount - goal.currentAmount)
+  const monthsAtCurrent = goal.monthlySavings > 0 ? Math.ceil(remaining / goal.monthlySavings) : null
+  const monthsToTarget = monthsUntil(goal.targetDate)
+  const projectedDate = monthsAtCurrent == null ? null : dateAfterMonths(monthsAtCurrent)
+  const requiredMonthly = (monthsToTarget != null && monthsToTarget > 0) ? Math.ceil(remaining / monthsToTarget) : null
+
+  let verdict
+  if (monthsAtCurrent == null) {
+    verdict = 'No monthly savings rate is set, so a completion date cannot be projected.'
+  } else if (monthsToTarget == null) {
+    verdict = `At the current rate the goal is reached in ${monthsAtCurrent} months (${projectedDate}). No target date is set.`
+  } else if (monthsAtCurrent <= monthsToTarget) {
+    verdict = `ON TRACK: at the current rate the goal is reached in ${monthsAtCurrent} months (${projectedDate}), about ${monthsToTarget - monthsAtCurrent} month(s) BEFORE the ${monthYearLabel(goal.targetDate)} target.`
+  } else {
+    verdict = `BEHIND: at the current rate the goal is reached in ${monthsAtCurrent} months (${projectedDate}), which is ${monthsAtCurrent - monthsToTarget} month(s) AFTER the ${monthYearLabel(goal.targetDate)} target. To hit the target date the user must save about $${requiredMonthly}/month (currently $${goal.monthlySavings || 0}/month).`
+  }
+
+  let growthMonths = null, growthDate = null, growthVerdict = null, blendedAnnualRate = null, assumedReturnUsed = null, hasInvestments = false
+  if (growth && growth.blendedAnnualRate > 0 && remaining > 0) {
+    blendedAnnualRate = Math.round(growth.blendedAnnualRate * 10000) / 10000
+    assumedReturnUsed = growth.assumedReturn
+    hasInvestments = growth.hasInvestments
+    const proj = projectWithGrowth({
+      balance: goal.currentAmount,
+      monthly: goal.monthlySavings || 0,
+      target: goal.targetAmount,
+      annualRate: growth.blendedAnnualRate,
+    })
+    if (proj) {
+      const comp = []
+      if (growth.hasYield) comp.push('savings APY')
+      if (growth.hasInvestments) comp.push(`${Math.round(growth.assumedReturn * 100)}% assumed investment return`)
+      const rateLabel = `~${(growth.blendedAnnualRate * 100).toFixed(1)}%/yr (${comp.join(' + ')})`
+      if (monthsAtCurrent != null) {
+        const sooner = monthsAtCurrent - proj.months
+        if (sooner >= 1) {
+          growthMonths = proj.months
+          growthDate = proj.date
+          growthVerdict = `With growth ${rateLabel}: reached in ${proj.months} months (${proj.date}), about ${sooner} month(s) sooner than the no-growth estimate. Optimistic — assumes returns hold.`
+        }
+      } else {
+        growthMonths = proj.months
+        growthDate = proj.date
+        growthVerdict = `With growth ${rateLabel} and no monthly contributions, the linked balance compounds to the target in ${proj.months} months (${proj.date}). Optimistic — assumes returns hold.`
+      }
+    }
+  }
+
+  return { remaining, monthsAtCurrent, monthsToTarget, projectedDate, requiredMonthly, verdict, growthMonths, growthDate, growthVerdict, blendedAnnualRate, assumedReturnUsed, hasInvestments }
+}
+
+// Plain-English line describing which accounts back a goal, e.g.
+// "Funded by: Capital One HYSA (50% = $30,000.00), TFSA holdings (50% = $25,300.00, live market value)".
+function goalFundingLine(breakdown) {
+  if (!breakdown.length) return null
+  const parts = breakdown.map(b => {
+    const live = b.sourceType === 'holdingsAccountType' ? ', live market value' : ''
+    return `${b.name} (${b.percent}% = $${b.value.toFixed(2)}${live})`
+  })
+  return `Funded by linked accounts: ${parts.join(', ')}.`
+}
+
+// Returns a goal with its derived currentAmount and breakdown folded in, for use in prompts.
+function goalWithProgress(db, goal, priceMap) {
+  const { currentAmount, breakdown } = computeGoalProgress(db, goal, priceMap)
+  return { ...goal, currentAmount, breakdown }
 }
 
 app.post('/api/llm/insights', async (req, res) => {
@@ -459,19 +879,17 @@ app.post('/api/llm/insights', async (req, res) => {
   const apiKey = db.settings.claudeApiKey
   if (!apiKey) return res.status(400).json({ error: 'No API key configured' })
 
-  const categoryTotals = buildCategoryTotals(db.transactions, 90)
-  const income = Object.values(categoryTotals).filter(v => v > 0).reduce((s, v) => s + v, 0)
-  const expenses = Object.values(categoryTotals).filter(v => v < 0).reduce((s, v) => s + Math.abs(v), 0)
-  const goalSummaries = db.goals.map(g =>
-    `${g.name}: $${g.currentAmount} of $${g.targetAmount} (${g.targetAmount > 0 ? Math.round(g.currentAmount / g.targetAmount * 100) : 0}%)` +
-    (g.monthlySavings ? `, saving $${g.monthlySavings}/mo` : '')
-  ).join('\n')
+  const fin = buildMonthlyFinancials(db)
+  const priceMap = await fetchPrices(tickersForGoalLinks(db))
+  const goalSummaries = db.goals.map(g => {
+    const { currentAmount } = computeGoalProgress(db, g, priceMap)
+    return `${g.name}: $${currentAmount} of $${g.targetAmount} (${g.targetAmount > 0 ? Math.round(currentAmount / g.targetAmount * 100) : 0}%)` +
+      (g.monthlySavings ? `, saving $${g.monthlySavings}/mo` : '')
+  }).join('\n')
 
-  const userMsg = `Financial data — last 90 days:
-Spending by category: ${JSON.stringify(categoryTotals, null, 2)}
-Total income: $${income.toFixed(2)}
-Total expenses: $${expenses.toFixed(2)}
-Net: $${(income - expenses).toFixed(2)}
+  const userMsg = `Financial data (monthly averages):
+${formatMonthlyFinancials(fin)}
+Net monthly cash flow (income − expenses): $${fin.income - fin.expenses}
 
 Goals:
 ${goalSummaries || 'No goals set'}
@@ -483,7 +901,7 @@ Return ONLY a valid JSON array of exactly 3 strings. Each string is one concise,
     const message = await client.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 512,
-      system: 'You are a personal finance assistant. You always respond with valid JSON only.',
+      system: `You are a personal finance assistant. ${todayLine()} You always respond with valid JSON only.`,
       messages: [{ role: 'user', content: userMsg }],
     })
     const raw = message.content[0].text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
@@ -548,27 +966,19 @@ app.post('/api/llm/goal-analysis', async (req, res) => {
   if (!apiKey) return res.status(400).json({ error: 'No API key configured' })
 
   const { goalId } = req.body
-  const goal = db.goals.find(g => g.id === goalId)
-  if (!goal) return res.status(404).json({ error: 'Goal not found' })
+  const rawGoal = db.goals.find(g => g.id === goalId)
+  if (!rawGoal) return res.status(404).json({ error: 'Goal not found' })
 
-  const categoryTotals = buildCategoryTotals(db.transactions, 90)
-
-  const incomeLines = Object.entries(categoryTotals)
-    .filter(([, v]) => v > 0)
-    .sort(([, a], [, b]) => b - a)
-    .map(([cat, amt]) => `  ${cat}: $${amt.toFixed(2)}`)
-    .join('\n')
-
-  const expenseLines = Object.entries(categoryTotals)
-    .filter(([, v]) => v < 0)
-    .sort(([, a], [, b]) => a - b)
-    .map(([cat, amt]) => `  ${cat}: $${Math.abs(amt).toFixed(2)}`)
-    .join('\n')
+  const fin = buildMonthlyFinancials(db)
+  const priceMap = await fetchPrices((db.holdings ?? []).map(h => h.ticker).filter(Boolean))
+  const goal = goalWithProgress(db, rawGoal, priceMap)
+  const fundingLine = goalFundingLine(goal.breakdown)
 
   const allGoalsSummary = db.goals
     .map(g => {
-      const pct = g.targetAmount > 0 ? Math.round(g.currentAmount / g.targetAmount * 100) : 0
-      const line = `  ${g.name}: $${g.currentAmount} / $${g.targetAmount} (${pct}%)`
+      const { currentAmount } = computeGoalProgress(db, g, priceMap)
+      const pct = g.targetAmount > 0 ? Math.round(currentAmount / g.targetAmount * 100) : 0
+      const line = `  ${g.name}: $${currentAmount} / $${g.targetAmount} (${pct}%)`
       return g.monthlySavings ? line + `, saving $${g.monthlySavings}/mo` : line
     })
     .join('\n')
@@ -579,14 +989,19 @@ app.post('/api/llm/goal-analysis', async (req, res) => {
   const netWorth = cashBalance + savingsTotal + portfolioValue
   const netWorthSummary = `Cash: $${cashBalance.toFixed(2)}, Savings accounts: $${savingsTotal.toFixed(2)}, Portfolio (cost basis): $${portfolioValue.toFixed(2)}, Total: $${netWorth.toFixed(2)}`
 
-  const remaining = Math.max(0, goal.targetAmount - goal.currentAmount)
-  const monthsAtCurrent = goal.monthlySavings > 0 ? Math.ceil(remaining / goal.monthlySavings) : null
+  const tl = goalTimeline(goal, goalGrowthRate(db, goal, priceMap))
+  const volatilityNote = goal.breakdown.some(b => b.sourceType === 'holdingsAccountType')
+    ? '\nNote: part of this goal is backed by investments, so its value moves with the market — mention this volatility if relevant.'
+    : ''
 
   const userMsg = `Goal being analyzed: ${goal.name}
 Target: $${goal.targetAmount} | Saved: $${goal.currentAmount} (${goal.targetAmount > 0 ? Math.round(goal.currentAmount / goal.targetAmount * 100) : 0}%)
+Remaining: $${tl.remaining}
 Monthly savings rate: ${goal.monthlySavings ? '$' + goal.monthlySavings : 'not set'}
-Target date: ${goal.targetDate}
-Months to goal at current rate: ${monthsAtCurrent ?? 'unknown (no savings rate set)'}
+Target date: ${goal.targetDate || 'not set'}${tl.monthsToTarget == null ? '' : ` (${monthYearLabel(goal.targetDate)}, ${tl.monthsToTarget} months from today)`}
+${fundingLine ? fundingLine + '\n' : ''}
+Timeline (already computed — use these figures, do NOT recompute dates yourself):
+${tl.verdict}${tl.growthVerdict ? `\nOptimistic projection (assumes investment/interest returns hold — do NOT present as guaranteed): ${tl.growthVerdict}` : ''}
 
 All goals:
 ${allGoalsSummary || '  No other goals'}
@@ -594,20 +1009,16 @@ ${allGoalsSummary || '  No other goals'}
 Net worth snapshot:
 ${netWorthSummary}
 
-Monthly income by category (last 90 days):
-${incomeLines || '  No income data'}
+${formatMonthlyFinancials(fin)}${volatilityNote}
 
-Monthly spending by category (last 90 days):
-${expenseLines || '  No expense data'}
-
-Write 2–3 sentences: (1) timeline at current savings rate and how it compares to the target date, (2) one specific spending category to reduce and how much faster it would get them to the goal. Be specific and practical. Plain text only, no markdown.`
+Write 3–4 sentences: (1) state plainly whether they are on track or behind for the target date using the Timeline above — if behind, say so directly and give the monthly savings rate needed to hit the date; (2) name one specific credit-card spending category (from the breakdown) to reduce and roughly how much sooner it would get them there; (3) briefly state the data basis you used — how many full months and that expenses come from bank transactions — so the user understands where the numbers come from. Be specific, practical, and honest. Do not add the card breakdown to total expenses. Plain text only, no markdown.`
 
   try {
     const client = new Anthropic({ apiKey })
     const message = await client.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 256,
-      system: 'You are a practical personal finance advisor. Be concise and specific.',
+      system: `You are a practical personal finance advisor. ${todayLine()} Be concise and specific.`,
       messages: [{ role: 'user', content: userMsg }],
     })
     res.json({ analysis: message.content[0].text.trim() })
@@ -699,15 +1110,7 @@ app.post('/api/llm/dashboard-chat', async (req, res) => {
   const { messages = [] } = req.body
   if (!messages.length) return res.status(400).json({ error: 'No messages provided' })
 
-  const categoryTotals = buildCategoryTotals(db.transactions, 90)
-  const income = Object.values(categoryTotals).filter(v => v > 0).reduce((s, v) => s + v, 0)
-  const expenses = Object.values(categoryTotals).filter(v => v < 0).reduce((s, v) => s + Math.abs(v), 0)
-
-  const spendingLines = Object.entries(categoryTotals)
-    .filter(([, v]) => v < 0)
-    .sort(([, a], [, b]) => a - b)
-    .map(([cat, amt]) => `  ${cat}: $${Math.abs(amt).toFixed(2)}`)
-    .join('\n')
+  const fin = buildMonthlyFinancials(db)
 
   const goalLines = db.goals.map(g => {
     const pct = g.targetAmount > 0 ? Math.round(g.currentAmount / g.targetAmount * 100) : 0
@@ -719,14 +1122,11 @@ app.post('/api/llm/dashboard-chat', async (req, res) => {
   const portfolioValue = (db.holdings ?? []).reduce((s, h) => s + h.purchasePrice * h.shares, 0)
   const netWorth = cashBalance + savingsTotal + portfolioValue
 
-  const systemMsg = `You are a personal finance assistant. Here is the user's current financial picture:
+  const systemMsg = `You are a personal finance assistant. ${todayLine()} Here is the user's current financial picture:
 
 Net worth: $${netWorth.toFixed(2)} (Cash: $${cashBalance.toFixed(2)}, Savings: $${savingsTotal.toFixed(2)}, Portfolio cost basis: $${portfolioValue.toFixed(2)})
 
-Last 90 days — Income: $${income.toFixed(2)}, Expenses: $${expenses.toFixed(2)}, Net: $${(income - expenses).toFixed(2)}
-
-Spending by category (last 90 days):
-${spendingLines || '  No expense data'}
+${formatMonthlyFinancials(fin)}
 
 Goals:
 ${goalLines || '  No goals set'}
@@ -756,46 +1156,46 @@ app.post('/api/llm/goal-chat', async (req, res) => {
   const { goalId, messages = [] } = req.body
   if (!messages.length) return res.status(400).json({ error: 'No messages provided' })
 
-  const goal = db.goals.find(g => g.id === goalId)
-  if (!goal) return res.status(404).json({ error: 'Goal not found' })
+  const rawGoal = db.goals.find(g => g.id === goalId)
+  if (!rawGoal) return res.status(404).json({ error: 'Goal not found' })
 
-  const categoryTotals = buildCategoryTotals(db.transactions, 90)
-  const expenseLines = Object.entries(categoryTotals)
-    .filter(([, v]) => v < 0)
-    .sort(([, a], [, b]) => a - b)
-    .map(([cat, amt]) => `  ${cat}: $${Math.abs(amt).toFixed(2)}`)
-    .join('\n')
+  const fin = buildMonthlyFinancials(db)
+  const priceMap = await fetchPrices((db.holdings ?? []).map(h => h.ticker).filter(Boolean))
+  const goal = goalWithProgress(db, rawGoal, priceMap)
+  const fundingLine = goalFundingLine(goal.breakdown)
 
   const allGoalLines = db.goals.map(g => {
-    const pct = g.targetAmount > 0 ? Math.round(g.currentAmount / g.targetAmount * 100) : 0
-    return `  ${g.name}: $${g.currentAmount} / $${g.targetAmount} (${pct}%)${g.monthlySavings ? `, saving $${g.monthlySavings}/mo` : ''}`
+    const { currentAmount } = computeGoalProgress(db, g, priceMap)
+    const pct = g.targetAmount > 0 ? Math.round(currentAmount / g.targetAmount * 100) : 0
+    return `  ${g.name}: $${currentAmount} / $${g.targetAmount} (${pct}%)${g.monthlySavings ? `, saving $${g.monthlySavings}/mo` : ''}`
   }).join('\n')
 
   const cashBalance = db.settings.cashBalance ?? 0
   const savingsTotal = (db.savings_accounts ?? []).reduce((s, a) => s + a.balance, 0)
   const portfolioValue = (db.holdings ?? []).reduce((s, h) => s + h.purchasePrice * h.shares, 0)
 
-  const remaining = Math.max(0, goal.targetAmount - goal.currentAmount)
-  const monthsAtCurrent = goal.monthlySavings > 0 ? Math.ceil(remaining / goal.monthlySavings) : null
   const pct = goal.targetAmount > 0 ? Math.round(goal.currentAmount / goal.targetAmount * 100) : 0
+  const tl = goalTimeline(goal, goalGrowthRate(db, goal, priceMap))
 
-  const systemMsg = `You are a personal finance advisor helping with a savings goal.
+  const systemMsg = `You are a personal finance advisor helping with a savings goal. ${todayLine()}
 
 Goal: ${goal.name}
 Target: $${goal.targetAmount} | Saved: $${goal.currentAmount} (${pct}%)
+Remaining: $${tl.remaining}
 Monthly savings rate: ${goal.monthlySavings ? '$' + goal.monthlySavings : 'not set'}
-Target date: ${goal.targetDate}
-Months to goal at current rate: ${monthsAtCurrent ?? 'unknown'}
+Target date: ${goal.targetDate || 'not set'}${tl.monthsToTarget == null ? '' : ` (${monthYearLabel(goal.targetDate)}, ${tl.monthsToTarget} months from today)`}
+${fundingLine ? fundingLine + '\n' : ''}
+Timeline (already computed — use these figures, do NOT recompute dates yourself):
+${tl.verdict}${tl.growthVerdict ? `\nOptimistic projection (assumes investment/interest returns hold — do NOT present as guaranteed): ${tl.growthVerdict}` : ''}
 
 All goals:
 ${allGoalLines || '  No other goals'}
 
 Net worth: Cash $${cashBalance.toFixed(2)}, Savings $${savingsTotal.toFixed(2)}, Portfolio cost basis $${portfolioValue.toFixed(2)}
 
-Monthly spending by category (last 90 days):
-${expenseLines || '  No expense data'}
+${formatMonthlyFinancials(fin)}
 
-Be concise and specific. Answer in 2–4 sentences.`
+Be concise, specific, and honest about whether they are on track. Answer in 2–4 sentences.`
 
   try {
     const client = new Anthropic({ apiKey })
@@ -822,27 +1222,17 @@ app.post('/api/llm/budget-builder', async (req, res) => {
   const activeGoals = (db.goals || []).filter(g => Number(g.currentAmount) < Number(g.targetAmount))
   if (activeGoals.length === 0) return res.json({ allGoalsComplete: true })
 
-  const cutoff = new Date()
-  cutoff.setDate(cutoff.getDate() - 90)
+  const fin = buildMonthlyFinancials(db)
 
-  const recentCC = (db.credit_card_transactions || []).filter(t => new Date(t.date) >= cutoff)
-  const catTotals = {}
-  for (const t of recentCC) {
-    if (!t.category) continue
-    catTotals[t.category] = (catTotals[t.category] || 0) + Math.abs(Number(t.amount))
-  }
-  const avgMonthlySpend = Object.fromEntries(
-    Object.entries(catTotals).map(([cat, total]) => [cat, Math.round(total / 3)])
-  )
+  const goalLines = activeGoals.map(g => {
+    const m = monthsUntil(g.targetDate)
+    return `- ${g.name}: target $${g.targetAmount}, current $${g.currentAmount}` +
+      (g.monthlySavings ? `, saving $${g.monthlySavings}/mo` : '') +
+      (g.targetDate ? `, due ${g.targetDate}${m == null ? '' : ` (${m} months from today)`}` : '')
+  }).join('\n')
 
-  const goalLines = activeGoals.map(g =>
-    `- ${g.name}: target $${g.targetAmount}, current $${g.currentAmount}` +
-    (g.monthlySavings ? `, saving $${g.monthlySavings}/mo` : '') +
-    (g.targetDate ? `, due ${g.targetDate}` : '')
-  ).join('\n')
-
-  const spendLines = Object.entries(avgMonthlySpend)
-    .map(([cat, amt]) => `- ${cat}: $${amt}`)
+  const spendLines = fin.cardBreakdown
+    .map(c => `- ${c.category}: $${c.monthly}`)
     .join('\n')
 
   const userMsg = `You are a personal finance advisor. Generate a monthly budget that maximizes progress toward the user's financial goals.
@@ -856,7 +1246,7 @@ Timeline preference: ${timelinePreference}
 Active goals (exclude funded ones):
 ${goalLines}
 
-Average monthly spend by category (last 90 days):
+Average monthly spend by category (${fin.windowLabel}):
 ${spendLines || 'No spend data available'}
 
 One-time expenses to exclude: ${excludeNote || 'None'}
@@ -876,7 +1266,7 @@ Only include categories that have spend data. Do not invent categories.`
     const message = await client.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 1024,
-      system: 'You are a personal finance advisor. You always respond with valid JSON only.',
+      system: `You are a personal finance advisor. ${todayLine()} You always respond with valid JSON only.`,
       messages: [{ role: 'user', content: userMsg }],
     })
     const raw = message.content[0].text.trim()
