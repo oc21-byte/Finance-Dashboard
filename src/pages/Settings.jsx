@@ -12,6 +12,8 @@ export default function Settings() {
   const [incomeInput, setIncomeInput] = useState('')
   const [incomeSaved, setIncomeSaved] = useState(false)
   const [sourcesSaved, setSourcesSaved] = useState(false)
+  const [returnInput, setReturnInput] = useState('')
+  const [returnSaved, setReturnSaved] = useState(false)
 
   const { data: settings } = useQuery({
     queryKey: ['settings'],
@@ -21,6 +23,10 @@ export default function Settings() {
   useEffect(() => {
     if (settings?.confirmedMonthlyIncome != null) {
       setIncomeInput(String(settings.confirmedMonthlyIncome))
+    }
+    // Stored as a decimal (0.06); shown as a percent (6).
+    if (settings?.assumedAnnualReturn != null) {
+      setReturnInput(String(Math.round(settings.assumedAnnualReturn * 10000) / 100))
     }
   }, [settings])
 
@@ -78,6 +84,24 @@ export default function Settings() {
   function handleSaveIncome(e) {
     e.preventDefault()
     saveIncome.mutate(incomeInput.trim())
+  }
+
+  const saveReturn = useMutation({
+    // Input is a percent; store as a decimal. Blank resets to the 6% default.
+    mutationFn: (val) => api.settings.update({
+      assumedAnnualReturn: val === '' ? 0.06 : Number(val) / 100,
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+      queryClient.invalidateQueries({ queryKey: ['goals'] })
+      setReturnSaved(true)
+      setTimeout(() => setReturnSaved(false), 3000)
+    },
+  })
+
+  function handleSaveReturn(e) {
+    e.preventDefault()
+    saveReturn.mutate(returnInput.trim())
   }
 
   return (
@@ -182,6 +206,39 @@ export default function Settings() {
               Clear
             </button>
           )}
+        </form>
+      </div>
+      {/* Assumed Investment Return */}
+      <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm mt-4">
+        <h2 className="text-sm font-semibold text-gray-700 mb-1">Assumed Annual Investment Return</h2>
+        <p className="text-xs text-gray-400 mb-4">
+          Used only for the optimistic "with growth" projection on linked goals. Savings accounts use their own APY; investment holdings use this assumed rate. Default 6%.
+        </p>
+
+        {returnSaved && (
+          <p className="text-xs text-green-600 mb-3">Saved ✓</p>
+        )}
+
+        <form onSubmit={handleSaveReturn} className="flex gap-2 items-center">
+          <div className="relative flex-1">
+            <input
+              type="number"
+              min="0"
+              step="0.1"
+              placeholder="6"
+              value={returnInput}
+              onChange={(e) => setReturnInput(e.target.value)}
+              className="w-full border border-gray-200 rounded-lg pl-3 pr-7 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">%</span>
+          </div>
+          <button
+            type="submit"
+            disabled={saveReturn.isPending}
+            className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors whitespace-nowrap"
+          >
+            {saveReturn.isPending ? 'Saving…' : 'Save'}
+          </button>
         </form>
       </div>
       {/* CSV Sources */}

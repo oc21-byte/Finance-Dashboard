@@ -30,6 +30,8 @@ export const api = {
     create: (data) => request('POST', '/goals', data),
     update: (id, data) => request('PUT', `/goals/${id}`, data),
     remove: (id) => request('DELETE', `/goals/${id}`),
+    sources: () => request('GET', '/goal-sources'),
+    contributionRate: () => request('GET', '/contribution-rate'),
   },
   creditCardTransactions: {
     list: () => request('GET', '/credit-card-transactions'),
