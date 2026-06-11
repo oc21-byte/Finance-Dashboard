@@ -28,7 +28,7 @@ Take it one section at a time — you don't have to read it all at once.
 - [Finances — your bank account](#finances--your-bank-account)
 - [Spend Analyzer — your credit card spending](#spend-analyzer--your-credit-card-spending)
 - [Investments — your stocks and savings](#investments--your-stocks-and-savings)
-- [Goals — what you're saving toward](#goals--what-youre-saving-toward)
+- [Goals — what you're saving toward](#goals--what-youre-saving-toward) *(linking accounts, growth projection)*
 - [Settings — your preferences](#settings--your-preferences)
 - [Handy tips & good-to-knows](#handy-tips--good-to-knows)
 
@@ -339,20 +339,44 @@ a house down payment) and watch yourself get closer.
    - **Target amount** — how much you want to save.
    - **Target date** — when you'd like to hit it.
    - **Monthly savings** — how much you plan to put toward it each month (optional, but it
-     powers the timeline estimate).
-3. Click **Create Goal**.
+     powers the timeline estimate). If you've been saving consistently, you'll see a
+     suggestion like *"Your avg savings: $400/mo over 6 mo — Use this"* — click it to
+     fill in the field automatically.
+3. **Link accounts (optional but powerful)** — at the bottom of the form, you'll see a
+   **Linked accounts** section. This lets the goal automatically track money you already
+   have in savings accounts or investment holdings, instead of you manually adding funds.
+   - Pick an account from the dropdown and enter the **percentage** of that account to
+     count toward this goal (e.g. "50% of my High-Yield Savings").
+   - You can link multiple accounts. The app caps the total at 100% per account across
+     all goals — so two goals can't double-count the same money.
+   - Click **Add** for each account, then continue.
+4. Click **Create Goal**.
 
 Each goal shows up as a card with a progress bar, the percentage you've reached, and — if
 you entered a monthly amount — a friendly estimate like *"~12 months to go."*
 
 ### Keeping a goal updated
 
-- **Added some money?** Type the amount in the **Add amount…** box on the card and click
-  **Add Funds**. The progress bar jumps forward. 📈
-- **Need to change something?** Click **Edit** to adjust the target or date, then **Save**.
+- **Linked goal?** Nothing to do — the progress bar updates automatically as your account
+  balances and investment prices change. The card shows a breakdown ("Funded by linked
+  accounts") listing which accounts are contributing what.
+- **Unlinked goal?** Type the amount in the **Add amount…** box on the card and click
+  **Add Funds**. The progress bar jumps forward.
+- **Need to change something?** Click **Edit** to adjust the target, date, monthly savings,
+  or linked accounts, then **Save**.
 - **Want advice?** Click **Get AI Analysis** for thoughts on your goal, and use the chat box
   to ask things like *"How can I reach this faster?"* (needs your Claude key).
 - **Done with a goal?** Click **Delete** to remove it.
+
+### Growth projection
+
+Linked goals show an extra estimate in a dashed box:
+
+> 📈 With growth (6% return + APY), you'd reach this in ~9 months
+
+This is an optimistic "what if" that factors in compound growth — APY on savings, and an
+assumed return on investments. It's shown separately from the plain timeline so you can
+tell them apart. You can change the assumed investment return percentage in Settings.
 
 ---
 
@@ -364,6 +388,11 @@ you entered a monthly amount — a friendly estimate like *"~12 months to go."*
   A green **Configured ✓** badge means you're good to go.
 - **Monthly Income Baseline** — your usual take-home pay. The Budget Builder uses this to
   make smarter suggestions. Type it in and click **Save**.
+- **Assumed Annual Investment Return** — the return rate used for the optimistic growth
+  projection on linked goals. Defaults to **6%**. If your holdings are mostly conservative
+  (bonds, cash-equivalent ETFs) you might lower it; if you're in aggressive growth funds
+  you might raise it. Savings accounts always use their own APY regardless of this setting.
+  Type a new percentage and click **Save**.
 - **Saved CSV Sources** — a list of the bank and card accounts you've taught the app about.
   If an account's downloads change format and imports start looking off, delete it here and
   the app will re-learn it the next time you upload. You can remove them one at a time or
