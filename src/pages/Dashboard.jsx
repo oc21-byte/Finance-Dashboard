@@ -2,8 +2,8 @@ import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import dayjs from 'dayjs'
 import {
-  AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Cell, PieChart, Pie,
+  ComposedChart, AreaChart, Area, Line, BarChart, Bar, XAxis, YAxis,
+  CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell, PieChart, Pie,
 } from 'recharts'
 import { api } from '../api/client.js'
 import { FINANCE_CATEGORIES } from '../constants/categories.js'
@@ -38,6 +38,15 @@ function fmtK(v) {
   const sign = v < 0 ? '-' : ''
   return abs >= 1000 ? `${sign}$${(abs / 1000).toFixed(0)}K` : `${sign}$${abs}`
 }
+
+const PERIODS = [
+  { key: '7D',  label: '7D',  days: 7 },
+  { key: '1M',  label: '1M',  days: 30 },
+  { key: '3M',  label: '3M',  days: 90 },
+  { key: '6M',  label: '6M',  days: 180 },
+  { key: '1Y',  label: '1Y',  days: 365 },
+  { key: 'All', label: 'All', days: null },
+]
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
@@ -113,6 +122,7 @@ function NetWorthTooltip({ active, payload }) {
 
 export default function Dashboard() {
   const queryClient = useQueryClient()
+  const [netWorthPeriod, setNetWorthPeriod] = useState('6M')
   const [editingCash, setEditingCash] = useState(false)
   const [cashInput, setCashInput] = useState('')
   const [insights, setInsights] = useState(null)
@@ -194,9 +204,25 @@ export default function Dashboard() {
   }
 
   const historyChartData = netWorthHistory.map(e => ({
-    label: dayjs(e.date).format('MMM D'),
+    date: e.date,
     netWorth: e.netWorth,
+    cash: e.breakdown?.cash ?? 0,
+    savings: e.breakdown?.savings ?? 0,
+    portfolio: e.breakdown?.portfolio ?? 0,
     breakdown: e.breakdown,
+  }))
+
+  const filteredHistoryData = (() => {
+    const p = PERIODS.find(p => p.key === netWorthPeriod)
+    if (!p || p.days === null) return historyChartData
+    const cutoff = dayjs().subtract(p.days, 'day')
+    return historyChartData.filter(d => dayjs(d.date).isAfter(cutoff))
+  })()
+
+  const useLongLabel = netWorthPeriod === 'All' || netWorthPeriod === '1Y'
+  const netWorthChartData = filteredHistoryData.map(d => ({
+    ...d,
+    label: useLongLabel ? dayjs(d.date).format("MMM 'YY") : dayjs(d.date).format('MMM D'),
   }))
 
   const isLoading = txLoading || goalsLoading || holdingsLoading
@@ -325,45 +351,102 @@ export default function Dashboard() {
 
       {/* Net Worth Over Time */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-        <h2 className="text-sm font-medium text-gray-500 mb-4">Net Worth Over Time</h2>
-        {historyChartData.length < 2 ? (
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-medium text-gray-500">Net Worth Over Time</h2>
+          <div className="flex gap-1">
+            {PERIODS.map(p => (
+              <button
+                key={p.key}
+                onClick={() => setNetWorthPeriod(p.key)}
+                className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                  netWorthPeriod === p.key
+                    ? 'bg-blue-600 text-white'
+                    : 'text-gray-400 hover:text-gray-700 hover:bg-gray-100'
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        {netWorthChartData.length < 2 ? (
           <div className="flex items-center justify-center h-[200px] text-sm text-gray-400 text-center px-6">
             Your net worth history will appear here as you use the app. Come back tomorrow to see your first data point.
           </div>
         ) : (
-          <ResponsiveContainer width="100%" height={220}>
-            <AreaChart data={historyChartData}>
+          <ResponsiveContainer width="100%" height={260}>
+            <ComposedChart data={netWorthChartData}>
               <defs>
                 <linearGradient id="netWorthGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.15} />
+                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.12} />
                   <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
               <XAxis
                 dataKey="label"
-                tick={{ fontSize: 12, fill: '#6b7280' }}
+                tick={{ fontSize: 11, fill: '#6b7280' }}
                 axisLine={false}
                 tickLine={false}
+                interval="preserveStartEnd"
               />
               <YAxis
-                tick={{ fontSize: 12, fill: '#6b7280' }}
+                tick={{ fontSize: 11, fill: '#6b7280' }}
                 tickFormatter={fmtK}
                 axisLine={false}
                 tickLine={false}
                 width={56}
               />
               <Tooltip content={<NetWorthTooltip />} />
+              <Legend
+                iconType="plainline"
+                iconSize={16}
+                wrapperStyle={{ fontSize: 12, paddingTop: 14, color: '#6b7280' }}
+                formatter={name => ({
+                  netWorth: 'Net Worth',
+                  cash: 'Cash',
+                  savings: 'Savings',
+                  portfolio: 'Portfolio',
+                }[name] ?? name)}
+              />
               <Area
                 type="monotone"
                 dataKey="netWorth"
+                name="netWorth"
                 stroke="#3b82f6"
-                strokeWidth={2}
+                strokeWidth={2.5}
                 fill="url(#netWorthGradient)"
                 dot={false}
                 activeDot={{ r: 4, fill: '#3b82f6' }}
               />
-            </AreaChart>
+              <Line
+                type="monotone"
+                dataKey="cash"
+                name="cash"
+                stroke="#22c55e"
+                strokeWidth={1.5}
+                dot={false}
+                activeDot={{ r: 3, fill: '#22c55e' }}
+              />
+              <Line
+                type="monotone"
+                dataKey="savings"
+                name="savings"
+                stroke="#f59e0b"
+                strokeWidth={1.5}
+                dot={false}
+                activeDot={{ r: 3, fill: '#f59e0b' }}
+              />
+              <Line
+                type="monotone"
+                dataKey="portfolio"
+                name="portfolio"
+                stroke="#8b5cf6"
+                strokeWidth={1.5}
+                dot={false}
+                activeDot={{ r: 3, fill: '#8b5cf6' }}
+              />
+            </ComposedChart>
           </ResponsiveContainer>
         )}
       </div>
