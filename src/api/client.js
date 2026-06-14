@@ -58,9 +58,13 @@ export const api = {
     create: (data) => request('POST', '/categories', data),
     remove: (name) => request('DELETE', `/categories/${encodeURIComponent(name)}`),
   },
+  monthlyFinancials: {
+    get: () => request('GET', '/monthly-financials'),
+  },
   netWorth: {
     snapshot: () => request('POST', '/net-worth-snapshot'),
     history:  () => request('GET',  '/net-worth-history'),
+    backfill: () => request('POST', '/net-worth-backfill'),
   },
   llm: {
     insights: (payload) => request('POST', '/llm/insights', payload),

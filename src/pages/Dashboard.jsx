@@ -183,7 +183,16 @@ export default function Dashboard() {
   })
 
   const snapshotMutation = useMutation({ mutationFn: () => api.netWorth.snapshot() })
-  useEffect(() => { snapshotMutation.mutate() }, [])
+  const backfillMutation = useMutation({
+    mutationFn: () => api.netWorth.backfill(),
+    onSuccess: (data) => {
+      if (data.added > 0) queryClient.invalidateQueries({ queryKey: ['net-worth-history'] })
+    },
+  })
+  useEffect(() => {
+    snapshotMutation.mutate()
+    backfillMutation.mutate()
+  }, [])
 
   async function handleDashboardChat(e) {
     e.preventDefault()

@@ -1,5 +1,4 @@
 import { useRef, useState, useEffect } from 'react'
-import { Sparkles } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import Papa from 'papaparse'
 import dayjs from 'dayjs'
@@ -13,7 +12,6 @@ import { detectSource, processCSVRows, parsePdfVision } from '../utils/csvHelper
 import VisionReviewModal from '../components/VisionReviewModal.jsx'
 import AddTransactionModal from '../components/AddTransactionModal.jsx'
 import CategoryManager from '../components/CategoryManager.jsx'
-import BudgetBuilderModal from '../components/BudgetBuilderModal.jsx'
 
 const SOURCE_COLORS = ['#f87171', '#60a5fa', '#34d399', '#fbbf24', '#a78bfa', '#f472b6']
 
@@ -116,26 +114,6 @@ const [visionData, setVisionData] = useState(null)
     queryFn: api.settings.get,
   })
 
-  const { data: goals = [] } = useQuery({
-    queryKey: ['goals'],
-    queryFn: api.goals.list,
-  })
-
-  const { data: bankTransactions = [] } = useQuery({
-    queryKey: ['transactions'],
-    queryFn: api.transactions.list,
-  })
-
-  const [showGoalGuard, setShowGoalGuard] = useState(false)
-  const [showBudgetBuilder, setShowBudgetBuilder] = useState(false)
-  const [budgetSavedToast, setBudgetSavedToast] = useState('')
-  const [editingBudget, setEditingBudget] = useState(null)
-
-  useEffect(() => {
-    if (!budgetSavedToast) return
-    const t = setTimeout(() => setBudgetSavedToast(''), 4000)
-    return () => clearTimeout(t)
-  }, [budgetSavedToast])
 
   const { data: customCategories = [] } = useQuery({
     queryKey: ['categories'],
@@ -177,11 +155,6 @@ const [visionData, setVisionData] = useState(null)
 
   const saveMappingMutation = useMutation({
     mutationFn: (newSources) => api.settings.update({ csvSources: newSources }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['settings'] }),
-  })
-
-  const budgetMutation = useMutation({
-    mutationFn: (budgets) => api.settings.update({ categoryBudgets: budgets }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['settings'] }),
   })
 
@@ -387,35 +360,11 @@ async function runAutoDetect(file, headers, rows, { statementYear, statementEndY
   const topMerchants = buildTopMerchants(monthFiltered)
   const hasData = transactions.length > 0
 
-  const lastTxDate = transactions.reduce((max, t) => (t.date > max ? t.date : max), '0000-00-00')
-  const cutoff = dayjs(lastTxDate).subtract(30, 'day').format('YYYY-MM-DD')
-  const monthSpend = {}
-  for (const t of transactions) {
-    if (!t.date || t.date < cutoff || !t.category) continue
-    monthSpend[t.category] = (monthSpend[t.category] || 0) + Math.abs(t.amount)
-  }
-  const categoryBudgets = settings?.categoryBudgets || {}
-  const hasBudgets = Object.keys(categoryBudgets).length > 0
-
   return (
     <div className="p-3 sm:p-6">
       <div className="flex items-center justify-between mb-6 gap-3 flex-wrap">
         <h1 className="text-2xl font-semibold text-gray-900">Spend Analyzer</h1>
         <div className="flex items-center gap-3 flex-wrap">
-          <button
-            onClick={() => {
-              if (goals.length === 0) {
-                setShowGoalGuard(true)
-              } else {
-                setShowGoalGuard(false)
-                setShowBudgetBuilder(true)
-              }
-            }}
-            className="flex items-center gap-1.5 px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
-          >
-            <Sparkles size={15} />
-            Budget Builder
-          </button>
           <button
             onClick={() => setShowAddModal(true)}
             className="px-4 py-2 text-sm border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
@@ -439,44 +388,10 @@ async function runAutoDetect(file, headers, rows, { statementYear, statementEndY
         </div>
       </div>
 
-      {budgetSavedToast && (
-        <div className="mb-4 px-4 py-3 rounded-lg bg-green-50 border border-green-200 text-sm text-green-800 flex items-center justify-between gap-3">
-          <span>{budgetSavedToast}</span>
-          <button
-            onClick={() => setBudgetSavedToast('')}
-            className="shrink-0 text-green-400 hover:text-green-600 text-lg leading-none"
-            aria-label="Dismiss"
-          >
-            ✕
-          </button>
-        </div>
-      )}
-
-      {showGoalGuard && (
-        <div className="mb-4 px-4 py-3 rounded-lg bg-blue-50 border border-blue-200 text-sm text-blue-800 flex items-center justify-between gap-3">
-          <span>
-            Budget Builder needs at least one goal to optimize toward.{' '}
-            <button
-              onClick={() => onTabChange?.('goals')}
-              className="underline font-medium hover:text-blue-900"
-            >
-              Create a goal first →
-            </button>
-          </span>
-          <button
-            onClick={() => setShowGoalGuard(false)}
-            className="shrink-0 text-blue-400 hover:text-blue-600 text-lg leading-none"
-            aria-label="Dismiss"
-          >
-            ✕
-          </button>
-        </div>
-      )}
-
       {uncategorizedCount > 0 && (
         <div className="mb-4 px-4 py-3 rounded-lg bg-yellow-50 border border-yellow-200 text-sm text-yellow-800 flex items-center justify-between gap-3">
           <span>
-            You have <strong>{uncategorizedCount}</strong> uncategorized transaction{uncategorizedCount !== 1 ? 's' : ''}. Resolve before running Budget Builder.
+            You have <strong>{uncategorizedCount}</strong> uncategorized transaction{uncategorizedCount !== 1 ? 's' : ''}.
           </span>
           <button
             onClick={() => {
@@ -507,105 +422,6 @@ async function runAutoDetect(file, headers, rows, { statementYear, statementEndY
         </div>
       )}
 
-
-      {hasBudgets && (
-        <div className="mb-6 bg-white rounded-xl border border-gray-200 overflow-hidden">
-          <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between gap-3 flex-wrap">
-            <h2 className="text-base font-semibold text-gray-900">
-              Budget Tracking — Last 30 Days
-            </h2>
-            <button
-              onClick={() => setShowBudgetBuilder(true)}
-              className="text-sm text-indigo-600 hover:text-indigo-800 font-medium"
-            >
-              Edit with Budget Builder →
-            </button>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-gray-50 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                  <th className="px-5 py-3">Category</th>
-                  <th className="px-5 py-3">Budget Cap</th>
-                  <th className="px-5 py-3">Spent (Last 30 Days)</th>
-                  <th className="px-5 py-3">Remaining</th>
-                  <th className="px-5 py-3 w-36">Usage</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {Object.entries(categoryBudgets).map(([cat, cap]) => {
-                  const spent = Math.round((monthSpend[cat] || 0) * 100) / 100
-                  const remaining = cap - spent
-                  const pct = cap > 0 ? Math.round(spent / cap * 100) : 0
-                  const over = remaining < 0
-                  const nearLimit = !over && pct >= 80
-                  const barColor = over ? 'bg-red-400' : nearLimit ? 'bg-yellow-400' : 'bg-green-400'
-                  const isEditing = editingBudget?.cat === cat
-
-                  return (
-                    <tr key={cat} className={over ? 'bg-red-50' : 'bg-white'}>
-                      <td className="px-5 py-3 font-medium text-gray-800">{cat}</td>
-                      <td className="px-5 py-3 text-gray-700">
-                        {isEditing ? (
-                          <input
-                            type="number"
-                            min="0"
-                            autoFocus
-                            value={editingBudget.value}
-                            onChange={e => setEditingBudget(prev => ({ ...prev, value: e.target.value }))}
-                            onBlur={() => {
-                              const val = Number(editingBudget.value)
-                              if (!isNaN(val) && val >= 0) {
-                                budgetMutation.mutate({ ...categoryBudgets, [cat]: val })
-                              }
-                              setEditingBudget(null)
-                            }}
-                            onKeyDown={e => {
-                              if (e.key === 'Enter') e.target.blur()
-                              if (e.key === 'Escape') setEditingBudget(null)
-                            }}
-                            className="w-24 border border-indigo-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                          />
-                        ) : (
-                          <button
-                            onClick={() => setEditingBudget({ cat, value: String(cap) })}
-                            className="font-medium hover:text-indigo-600 hover:underline transition-colors"
-                            title="Click to edit"
-                          >
-                            ${cap.toLocaleString()}
-                          </button>
-                        )}
-                      </td>
-                      <td className="px-5 py-3 text-gray-700">${spent.toLocaleString()}</td>
-                      <td className={`px-5 py-3 font-medium ${over ? 'text-red-600' : 'text-green-600'}`}>
-                        {over
-                          ? `-$${Math.abs(remaining).toLocaleString()} over`
-                          : `$${remaining.toLocaleString()} left`}
-                      </td>
-                      <td className="px-5 py-3">
-                        <div className="flex items-center gap-2">
-                          <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
-                            <div
-                              className={`h-full rounded-full transition-all ${barColor}`}
-                              style={{ width: `${Math.min(100, pct)}%` }}
-                            />
-                          </div>
-                          <span className="text-xs text-gray-400 w-8 text-right">{pct}%</span>
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="px-5 py-3 border-t border-gray-100">
-            <p className="text-xs text-gray-400">Click any budget cap to edit it inline. Only categories with a saved cap are shown.</p>
-          </div>
-        </div>
-      )}
 
       {!hasData && (
         <div className="py-20 text-center">
@@ -987,16 +803,6 @@ async function runAutoDetect(file, headers, rows, { statementYear, statementEndY
           categories={allCategories}
           onConfirm={data => addMutation.mutate(data)}
           onCancel={() => setShowAddModal(false)}
-        />
-      )}
-      {showBudgetBuilder && (
-        <BudgetBuilderModal
-          goals={goals}
-          settings={settings}
-          transactions={bankTransactions}
-          onTabChange={onTabChange}
-          onClose={() => setShowBudgetBuilder(false)}
-          onBudgetSaved={(msg) => setBudgetSavedToast(msg || 'Budget saved. Tracking active in Spend Analyzer.')}
         />
       )}
     </div>
