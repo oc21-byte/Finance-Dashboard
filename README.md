@@ -19,7 +19,7 @@ Built with React + Vite (frontend) and Express (backend), with optional Claude A
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/oliverchau21/finance-dashboard.git
+git clone https://github.com/oc21-byte/finance-dashboard.git
 cd finance-dashboard
 ```
 
