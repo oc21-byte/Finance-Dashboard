@@ -302,7 +302,14 @@ export default function Finances() {
 
   const filtered = transactions
     .filter(t => filterMonth === 'all' || t.date?.startsWith(filterMonth))
-    .filter(t => filterType === 'all' || t.type === filterType)
+    .filter(t => {
+      if (filterType === 'all') return true
+      if (filterType === 'savings') return t.category === 'Savings'
+      if (filterType === 'investments') return t.category === 'Investments'
+      if (filterType === 'income') return t.type === 'income'
+      if (filterType === 'expense') return t.type === 'expense' && t.category !== 'Savings' && t.category !== 'Investments'
+      return t.type === filterType
+    })
     .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
 
   const periodData = buildPeriodData(transactions, summaryPeriod)
@@ -545,6 +552,8 @@ export default function Finances() {
             <option value="all">All types</option>
             <option value="income">Income</option>
             <option value="expense">Expenses</option>
+            <option value="savings">Savings</option>
+            <option value="investments">Investments</option>
           </select>
           <span className="ml-auto text-sm text-gray-400">
             {filtered.length} transaction{filtered.length !== 1 ? 's' : ''}

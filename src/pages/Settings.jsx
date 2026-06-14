@@ -14,6 +14,8 @@ export default function Settings() {
   const [sourcesSaved, setSourcesSaved] = useState(false)
   const [returnInput, setReturnInput] = useState('')
   const [returnSaved, setReturnSaved] = useState(false)
+  const [savingsRateInput, setSavingsRateInput] = useState('')
+  const [savingsRateSaved, setSavingsRateSaved] = useState(false)
 
   const { data: settings } = useQuery({
     queryKey: ['settings'],
@@ -27,6 +29,9 @@ export default function Settings() {
     // Stored as a decimal (0.06); shown as a percent (6).
     if (settings?.assumedAnnualReturn != null) {
       setReturnInput(String(Math.round(settings.assumedAnnualReturn * 10000) / 100))
+    }
+    if (settings?.budgetSavingsRate != null) {
+      setSavingsRateInput(String(settings.budgetSavingsRate))
     }
   }, [settings])
 
@@ -102,6 +107,22 @@ export default function Settings() {
   function handleSaveReturn(e) {
     e.preventDefault()
     saveReturn.mutate(returnInput.trim())
+  }
+
+  const saveSavingsRate = useMutation({
+    mutationFn: (val) => api.settings.update({
+      budgetSavingsRate: val === '' ? 15 : Math.min(100, Math.max(0, Number(val))),
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+      setSavingsRateSaved(true)
+      setTimeout(() => setSavingsRateSaved(false), 3000)
+    },
+  })
+
+  function handleSaveSavingsRate(e) {
+    e.preventDefault()
+    saveSavingsRate.mutate(savingsRateInput.trim())
   }
 
   return (
@@ -241,6 +262,41 @@ export default function Settings() {
           </button>
         </form>
       </div>
+      {/* Default Savings Rate */}
+      <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm mt-4">
+        <h2 className="text-sm font-semibold text-gray-700 mb-1">Default Savings Rate</h2>
+        <p className="text-xs text-gray-400 mb-4">
+          The percentage of monthly income used as the default general savings target on the Budget page. Default is 15%. Override the dollar amount directly in the Budget table.
+        </p>
+
+        {savingsRateSaved && (
+          <p className="text-xs text-green-600 mb-3">Saved ✓</p>
+        )}
+
+        <form onSubmit={handleSaveSavingsRate} className="flex gap-2 items-center">
+          <div className="relative flex-1">
+            <input
+              type="number"
+              min="0"
+              max="100"
+              step="1"
+              placeholder="15"
+              value={savingsRateInput}
+              onChange={(e) => setSavingsRateInput(e.target.value)}
+              className="w-full border border-gray-200 rounded-lg pl-3 pr-7 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">%</span>
+          </div>
+          <button
+            type="submit"
+            disabled={saveSavingsRate.isPending}
+            className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors whitespace-nowrap"
+          >
+            {saveSavingsRate.isPending ? 'Saving…' : 'Save'}
+          </button>
+        </form>
+      </div>
+
       {/* CSV Sources */}
       <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm mt-4">
         <div className="flex items-center justify-between mb-1">
