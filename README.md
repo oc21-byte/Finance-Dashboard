@@ -2,7 +2,7 @@
 
 A personal finance dashboard that runs entirely on your local machine. Track bank transactions, credit card spending, investments, savings goals, and net worth — all stored locally in a single JSON file with no cloud sync or third-party accounts required.
 
-Built with React + Vite (frontend) and Express (backend), with optional Claude AI integration for transaction categorization and spending insights.
+Built with React + Vite (frontend) and Express (backend), with Claude AI powering PDF statement parsing (Vision), transaction categorization, spending insights, and budget generation.
 
 ---
 
@@ -10,7 +10,7 @@ Built with React + Vite (frontend) and Express (backend), with optional Claude A
 
 - [Node.js](https://nodejs.org/) v18 or later
 - npm (comes with Node.js)
-- A [Claude API key](https://console.anthropic.com/) from Anthropic (optional, but enables AI features)
+- A [Claude API key](https://console.anthropic.com/) from Anthropic (**required** — used for PDF statement parsing, transaction categorization, and AI insights)
 
 ---
 
@@ -84,9 +84,9 @@ That's it! The app will download the latest code automatically. Your data files 
 
 ---
 
-## Adding your Claude API key (optional)
+## Adding your Claude API key (required)
 
-AI features (transaction categorization, spending insights, budget builder, PDF statement parsing) require a Claude API key from Anthropic.
+A Claude API key is required. It powers PDF statement parsing via Claude Vision, automatic transaction categorization, spending insights, and budget generation.
 
 1. Get a key at [console.anthropic.com](https://console.anthropic.com/)
 2. Go to the **Settings** tab inside the dashboard
