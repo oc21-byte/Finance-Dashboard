@@ -167,6 +167,7 @@ export default function Goals() {
   const [goalChatMessages, setGoalChatMessages] = useState({})
   const [goalChatInput, setGoalChatInput] = useState({})
   const [goalChatLoading, setGoalChatLoading] = useState({})
+  const [efMonths, setEfMonths] = useState(6)
 
   const { data: goals = [], isLoading } = useQuery({
     queryKey: ['goals'],
@@ -185,6 +186,11 @@ export default function Goals() {
     queryKey: ['goal-sources'],
     queryFn: api.goals.sources,
     enabled: linkEditorOpen,
+  })
+
+  const { data: fin } = useQuery({
+    queryKey: ['monthly-financials'],
+    queryFn: api.monthlyFinancials.get,
   })
 
   // Average monthly contribution from real transaction history, suggested for the savings rate field.
@@ -389,6 +395,113 @@ export default function Goals() {
           </div>
         </form>
       )}
+
+      {/* Emergency Fund Calculator */}
+      {(() => {
+        const monthlySpend = fin?.expenses || 0
+        const efTarget = monthlySpend * efMonths
+        const efGoal = goals.find(g => g.name.toLowerCase().includes('emergency'))
+        const cashBalance = settings?.cashBalance ?? 0
+        const totalCurrent = (efGoal?.currentAmount || 0) + cashBalance
+        const efPct = efTarget > 0 ? Math.min(100, (totalCurrent / efTarget) * 100) : 0
+        const gap = Math.max(0, efTarget - totalCurrent)
+        const targetMismatch = efGoal && Math.round(efGoal.targetAmount) !== Math.round(efTarget)
+
+        return (
+          <div className="bg-white border-l-4 border-teal-500 border border-gray-200 rounded-xl p-5 mb-6 shadow-sm">
+            <div className="flex items-center gap-2 mb-4">
+              <span className="text-teal-600 text-lg">🛡️</span>
+              <h2 className="text-sm font-semibold text-gray-700">Emergency Fund Calculator</h2>
+            </div>
+
+            {/* Month selector */}
+            <div className="flex gap-1.5 mb-4">
+              <span className="text-xs text-gray-500 self-center mr-1">Coverage:</span>
+              {[3, 6, 9, 12].map(m => (
+                <button
+                  key={m}
+                  onClick={() => setEfMonths(m)}
+                  className={`px-3 py-1 text-xs font-medium rounded-lg transition-colors ${
+                    efMonths === m
+                      ? 'bg-teal-600 text-white'
+                      : 'border border-gray-200 text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  {m}mo
+                </button>
+              ))}
+            </div>
+
+            {/* Stats */}
+            {fin?.monthsCovered === 0 || !fin ? (
+              <p className="text-xs text-gray-400 mb-4">Add transactions to calculate your target.</p>
+            ) : (
+              <div className="flex flex-wrap gap-3 mb-4">
+                <div className="bg-gray-50 rounded-lg px-3 py-2">
+                  <p className="text-xs text-gray-400">Avg monthly spend</p>
+                  <p className="text-sm font-semibold text-gray-800">${fmt(monthlySpend)}</p>
+                  <p className="text-xs text-gray-400">{fin.windowLabel}</p>
+                </div>
+                <div className="bg-teal-50 rounded-lg px-3 py-2">
+                  <p className="text-xs text-teal-600">Target ({efMonths}mo)</p>
+                  <p className="text-sm font-semibold text-teal-700">${fmt(efTarget)}</p>
+                </div>
+              </div>
+            )}
+
+            {/* Progress / create section */}
+            {efGoal ? (
+              <div className="space-y-2">
+                <div className="flex justify-between text-xs text-gray-500 mb-1">
+                  <span>${fmt(totalCurrent)} of ${fmt(efTarget)}</span>
+                  <span>{efPct.toFixed(1)}%</span>
+                </div>
+                <div className="w-full bg-gray-100 rounded-full h-2.5">
+                  <div
+                    className={`h-2.5 rounded-full transition-all ${progressColor(efPct)}`}
+                    style={{ width: `${efPct}%` }}
+                  />
+                </div>
+                <div className="text-xs text-gray-400 space-y-0.5 pt-1">
+                  <p>Goal balance: ${fmt(efGoal.currentAmount)}</p>
+                  <p>+ Cash balance: ${fmt(cashBalance)}</p>
+                  {gap > 0 && <p className="text-teal-600 font-medium">Gap: ${fmt(gap)}</p>}
+                  {gap === 0 && <p className="text-green-600 font-medium">Emergency fund fully funded!</p>}
+                </div>
+                {targetMismatch && efTarget > 0 && (
+                  <button
+                    onClick={() => updateGoal.mutate({ id: efGoal.id, data: { targetAmount: efTarget } })}
+                    disabled={updateGoal.isPending}
+                    className="text-xs text-teal-600 border border-teal-200 rounded-lg px-3 py-1.5 hover:bg-teal-50 transition-colors"
+                  >
+                    Sync target → ${fmt(efTarget)}
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div>
+                <button
+                  onClick={() => createGoal.mutate({
+                    name: 'Emergency Fund',
+                    targetAmount: efTarget || 0,
+                    targetDate: dayjs().add(efMonths * 2, 'month').format('YYYY-MM-DD'),
+                    currentAmount: cashBalance,
+                    monthlySavings: 0,
+                    links: [],
+                  })}
+                  disabled={createGoal.isPending || efTarget === 0}
+                  className="px-4 py-2 bg-teal-600 text-white text-xs font-medium rounded-lg hover:bg-teal-700 disabled:opacity-50 transition-colors"
+                >
+                  {createGoal.isPending ? 'Creating…' : 'Create Emergency Fund Goal'}
+                </button>
+                {cashBalance > 0 && (
+                  <p className="text-xs text-gray-400 mt-1.5">Your cash balance (${fmt(cashBalance)}) will be used as the starting amount.</p>
+                )}
+              </div>
+            )}
+          </div>
+        )
+      })()}
 
       {/* Loading */}
       {isLoading && (

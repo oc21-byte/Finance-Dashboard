@@ -12,10 +12,32 @@ import { FINANCE_CATEGORIES } from '../constants/categories.js'
 
 const FINANCE_CAT_SET = new Set(FINANCE_CATEGORIES)
 
-function buildNetCashFlowData(transactions) {
-  const months = Array.from({ length: 6 }, (_, i) =>
-    dayjs().subtract(5 - i, 'month').format('YYYY-MM')
-  )
+function buildNetCashFlowData(transactions, periodKey) {
+  let months
+  if (periodKey === 'All') {
+    const earliest = transactions.reduce((min, t) => {
+      const m = t.date?.slice(0, 7)
+      return m && (!min || m < min) ? m : min
+    }, null)
+    if (!earliest) return []
+    const start = dayjs(earliest + '-01')
+    const count = dayjs().diff(start, 'month') + 1
+    months = Array.from({ length: count }, (_, i) =>
+      start.add(i, 'month').format('YYYY-MM')
+    )
+  } else if (periodKey === 'YTD') {
+    const startOfYear = dayjs().startOf('year')
+    const count = dayjs().diff(startOfYear, 'month') + 1
+    months = Array.from({ length: count }, (_, i) =>
+      startOfYear.add(i, 'month').format('YYYY-MM')
+    )
+  } else {
+    const monthCount = periodKey === '1Y' ? 12 : periodKey === '3M' ? 3 : 6
+    months = Array.from({ length: monthCount }, (_, i) =>
+      dayjs().subtract(monthCount - 1 - i, 'month').format('YYYY-MM')
+    )
+  }
+
   return months.map(month => {
     const txs = transactions.filter(t => t.date?.startsWith(month))
     const income = txs
@@ -48,6 +70,8 @@ const PERIODS = [
   { key: 'YTD', label: 'YTD', days: null },
   { key: 'All', label: 'All', days: null },
 ]
+
+const CASH_FLOW_PERIODS = ['3M', '6M', '1Y', 'YTD', 'All']
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
@@ -124,6 +148,7 @@ function NetWorthTooltip({ active, payload }) {
 export default function Dashboard() {
   const queryClient = useQueryClient()
   const [netWorthPeriod, setNetWorthPeriod] = useState('6M')
+  const [cashFlowPeriod, setCashFlowPeriod] = useState('6M')
   const [editingCash, setEditingCash] = useState(false)
   const [cashInput, setCashInput] = useState('')
   const [insights, setInsights] = useState(null)
@@ -267,7 +292,7 @@ export default function Dashboard() {
     .reduce((s, t) => s + Math.abs(t.amount), 0)
   const monthNet = Math.round((monthIncome - monthExpenses) * 100) / 100
 
-  const cashFlowData = buildNetCashFlowData(transactions)
+  const cashFlowData = buildNetCashFlowData(transactions, cashFlowPeriod)
   const hasTransactions = transactions.length > 0
 
   // Donut chart — Cash + Savings + one slice per investment account type
@@ -540,7 +565,24 @@ export default function Dashboard() {
 
       {/* Cash flow chart */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-        <h2 className="text-sm font-medium text-gray-500 mb-4">Monthly Net Cash Flow (last 6 months)</h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-medium text-gray-500">Monthly Net Cash Flow</h2>
+          <div className="flex gap-1">
+            {CASH_FLOW_PERIODS.map(p => (
+              <button
+                key={p}
+                onClick={() => setCashFlowPeriod(p)}
+                className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                  cashFlowPeriod === p
+                    ? 'bg-blue-600 text-white'
+                    : 'text-gray-400 hover:text-gray-700 hover:bg-gray-100'
+                }`}
+              >
+                {p}
+              </button>
+            ))}
+          </div>
+        </div>
         {!hasTransactions ? (
           <div className="flex items-center justify-center h-[200px] text-sm text-gray-400">
             No transaction data yet

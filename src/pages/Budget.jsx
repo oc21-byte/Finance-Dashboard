@@ -42,11 +42,24 @@ export default function Budget({ onTabChange }) {
   const displayIncome = hasConfirmedIncome ? Number(confirmedIncome) : (fin?.income ?? 0)
 
   const categoryBudgets = settings?.categoryBudgets || {}
-  const budgetSavingsTarget = Number(settings?.budgetSavingsTarget) || 0
+  const budgetSavingsTarget = settings?.budgetSavingsTarget ?? null  // null = not set, use rate default
+  const budgetSavingsRate = Number(settings?.budgetSavingsRate) || 15
+
+  // Build breakdown maps first — needed for auto-fill goal and savings calculations below
+  const cardBreakdownMap = {}
+  for (const c of (fin?.cardBreakdown || [])) {
+    if (!EXCLUDE_CATS.has(c.category)) cardBreakdownMap[c.category] = c.monthly
+  }
+  const bankBreakdownMap = {}
+  for (const c of (fin?.bankBreakdown || [])) {
+    bankBreakdownMap[c.category] = c.monthly
+  }
+  // Fallback to pre-computed fin values in case bankBreakdown is absent (stale cache)
+  if (!bankBreakdownMap['Savings'] && fin?.savingsContrib) bankBreakdownMap['Savings'] = fin.savingsContrib
+  if (!bankBreakdownMap['Investments'] && fin?.investContrib) bankBreakdownMap['Investments'] = fin.investContrib
 
   const activeGoals = goals.filter(g => Number(g.currentAmount) < Number(g.targetAmount))
   const goalNames = new Set(activeGoals.map(g => g.name))
-  const totalGoalSavings = activeGoals.reduce((s, g) => s + (Number(g.monthlySavings) || 0), 0)
   const effectiveBudgets = pendingBudgets ?? categoryBudgets
   const totalSpendingCaps = Object.entries(effectiveBudgets)
     .filter(([cat]) => !SAVINGS_CATS.has(cat) && !goalNames.has(cat))
@@ -54,14 +67,20 @@ export default function Budget({ onTabChange }) {
   const totalSavingsCaps = Object.entries(effectiveBudgets)
     .filter(([cat]) => SAVINGS_CATS.has(cat))
     .reduce((s, [, v]) => s + v, 0)
-  const effectiveSavingsTarget = pendingSavingsTarget ?? budgetSavingsTarget
+
+  // Default savings target = budgetSavingsRate % of income; null means not manually overridden
+  const autoSavingsTarget = Math.round(displayIncome * budgetSavingsRate / 100)
+  const effectiveSavingsTarget = pendingSavingsTarget ?? (budgetSavingsTarget !== null ? Number(budgetSavingsTarget) : autoSavingsTarget)
+  const savingsTargetIsAuto = budgetSavingsTarget === null && pendingSavingsTarget == null
+
+  // Auto-fill goal monthlySavings from bank category avg when not manually set
+  const totalGoalSavings = activeGoals.reduce((s, g) => {
+    const manual = Number(g.monthlySavings) || 0
+    const bankAvg = bankBreakdownMap[g.name] || 0
+    return s + (manual > 0 ? manual : bankAvg)
+  }, 0)
   const totalSavingsPlanned = totalGoalSavings + effectiveSavingsTarget + totalSavingsCaps
   const unallocated = displayIncome - totalSpendingCaps - totalSavingsPlanned
-
-  const cardBreakdownMap = {}
-  for (const c of (fin?.cardBreakdown || [])) {
-    if (!EXCLUDE_CATS.has(c.category)) cardBreakdownMap[c.category] = c.monthly
-  }
 
   const totalAvgSpend = Object.entries(cardBreakdownMap)
     .filter(([cat]) => !SAVINGS_CATS.has(cat))
@@ -72,7 +91,10 @@ export default function Budget({ onTabChange }) {
   const allCategories = [...new Set([
     ...Object.keys(cardBreakdownMap),
     ...Object.keys(categoryBudgets).filter(k => !EXCLUDE_CATS.has(k)),
+    ...Object.keys(bankBreakdownMap).filter(k => SAVINGS_CATS.has(k)),
   ])].sort((a, b) => (cardBreakdownMap[b] || 0) - (cardBreakdownMap[a] || 0))
+
+  const incPct = val => displayIncome > 0 && val > 0 ? Math.round(val / displayIncome * 100) : null
 
   const settingsMutation = useMutation({
     mutationFn: (data) => api.settings.update(data),
@@ -112,12 +134,22 @@ export default function Budget({ onTabChange }) {
   }
 
   function saveSavingsTarget() {
-    const val = Number(savingsTargetValue)
-    if (!isNaN(val) && val >= 0) {
+    const trimmed = savingsTargetValue.trim()
+    if (trimmed === '') {
+      // Blank = clear override, revert to rate-based default
       if (pendingSavingsTarget !== null) {
-        setPendingSavingsTarget(val)
+        setPendingSavingsTarget(null)
       } else {
-        settingsMutation.mutate({ budgetSavingsTarget: val })
+        settingsMutation.mutate({ budgetSavingsTarget: null })
+      }
+    } else {
+      const val = Number(trimmed)
+      if (!isNaN(val) && val >= 0) {
+        if (pendingSavingsTarget !== null) {
+          setPendingSavingsTarget(val)
+        } else {
+          settingsMutation.mutate({ budgetSavingsTarget: val })
+        }
       }
     }
     setEditingSavingsTarget(false)
@@ -128,7 +160,15 @@ export default function Budget({ onTabChange }) {
     setAiError(null)
     try {
       const result = await api.llm.budgetBuilder({ income: displayIncome, timelinePreference: timeline })
-      if (result.budgets) setPendingBudgets(result.budgets)
+      if (result.budgets) {
+        const adjusted = { ...result.budgets }
+        for (const cat of Object.keys(adjusted)) {
+          if (SAVINGS_CATS.has(cat) && bankBreakdownMap[cat]) {
+            adjusted[cat] = bankBreakdownMap[cat]
+          }
+        }
+        setPendingBudgets(adjusted)
+      }
       if (result.suggestedSavingsTarget != null) setPendingSavingsTarget(result.suggestedSavingsTarget)
     } catch (err) {
       setAiError(err.message)
@@ -413,6 +453,7 @@ export default function Budget({ onTabChange }) {
                               className={`font-medium hover:text-indigo-600 hover:underline transition-colors ${isPending ? 'text-indigo-700' : ''}`}
                               title="Click to edit">
                               ${cap.toLocaleString()}
+                              {incPct(cap) != null && <span className="font-normal text-gray-400 ml-1">({incPct(cap)}%)</span>}
                               {isPending && <span className="ml-1 text-xs text-indigo-400">AI</span>}
                             </button>
                           ) : (
@@ -422,7 +463,9 @@ export default function Budget({ onTabChange }) {
                             </button>
                           )}
                         </td>
-                        <td className="px-5 py-3 text-gray-500">{avgMonthly > 0 ? `$${avgMonthly.toLocaleString()}` : '—'}</td>
+                        <td className="px-5 py-3 text-gray-500">
+                          {avgMonthly > 0 ? <><span>${avgMonthly.toLocaleString()}</span>{incPct(avgMonthly) != null && <span className="text-gray-400 ml-1">({incPct(avgMonthly)}%)</span>}</> : '—'}
+                        </td>
                         <td className="px-5 py-3">
                           {cap > 0 ? (
                             <div className="flex items-center gap-2">
@@ -444,18 +487,19 @@ export default function Budget({ onTabChange }) {
                     </td>
                   </tr>
 
-                  {/* Savings categories from card transactions / categoryBudgets */}
+                  {/* Savings categories — avg from bank transactions, not CC */}
                   {allCategories.filter(cat => SAVINGS_CATS.has(cat)).map(cat => {
                     const cap = effectiveBudgets[cat]
-                    const avgMonthly = Math.round((cardBreakdownMap[cat] || 0) * 100) / 100
+                    const bankAvg = bankBreakdownMap[cat] || 0
                     const isEditing = editingBudget?.cat === cat
                     const isPending = pendingBudgets && cat in pendingBudgets
+                    const badgeLabel = cat === 'Investments' || cat === 'Retirement' ? 'Investment' : 'Savings'
                     return (
                       <tr key={cat} className="bg-teal-50">
                         <td className="px-5 py-3 font-medium text-gray-800">
                           <div className="flex items-center gap-2">
                             {cat}
-                            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-700 uppercase tracking-wide">Savings</span>
+                            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-700 uppercase tracking-wide">{badgeLabel}</span>
                           </div>
                         </td>
                         <td className="px-5 py-3">
@@ -471,6 +515,7 @@ export default function Budget({ onTabChange }) {
                               className={`font-medium text-teal-600 hover:text-teal-800 hover:underline transition-colors ${isPending ? 'text-indigo-700' : ''}`}
                               title="Click to edit">
                               ${cap.toLocaleString()}
+                              {incPct(cap) != null && <span className="font-normal text-gray-400 ml-1">({incPct(cap)}%)</span>}
                               {isPending && <span className="ml-1 text-xs text-indigo-400">AI</span>}
                             </button>
                           ) : (
@@ -480,7 +525,9 @@ export default function Budget({ onTabChange }) {
                             </button>
                           )}
                         </td>
-                        <td className="px-5 py-3 text-gray-500">{avgMonthly > 0 ? `$${avgMonthly.toLocaleString()}` : '—'}</td>
+                        <td className="px-5 py-3 text-gray-500">
+                          {bankAvg > 0 ? <><span>${bankAvg.toLocaleString()}</span>{incPct(bankAvg) != null && <span className="text-gray-400 ml-1">({incPct(bankAvg)}%)</span>}</> : '—'}
+                        </td>
                         <td className="px-5 py-3"><span className="text-xs text-gray-300">—</span></td>
                       </tr>
                     )
@@ -489,6 +536,9 @@ export default function Budget({ onTabChange }) {
                   {/* Active goal rows */}
                   {activeGoals.map(goal => {
                     const monthlySavings = Number(goal.monthlySavings) || 0
+                    const bankAvg = bankBreakdownMap[goal.name] || 0
+                    const isAuto = monthlySavings === 0 && bankAvg > 0
+                    const displayAmount = isAuto ? bankAvg : monthlySavings
                     const isEditing = editingGoal?.goalId === goal.id
                     return (
                       <tr key={goal.id} className="bg-teal-50">
@@ -510,11 +560,15 @@ export default function Budget({ onTabChange }) {
                             <button onClick={() => setEditingGoal({ goalId: goal.id, value: String(monthlySavings) })}
                               className="font-medium text-teal-600 hover:text-teal-800 hover:underline transition-colors"
                               title="Click to edit">
-                              ${monthlySavings.toLocaleString()}
+                              ${displayAmount.toLocaleString()}
+                              {incPct(displayAmount) != null && <span className="font-normal text-gray-400 ml-1">({incPct(displayAmount)}%)</span>}
+                              {isAuto && <span className="ml-1 text-xs text-gray-400">auto</span>}
                             </button>
                           )}
                         </td>
-                        <td className="px-5 py-3 text-gray-400 text-xs">goal payment</td>
+                        <td className="px-5 py-3 text-gray-500">
+                          {bankAvg > 0 ? <><span>${bankAvg.toLocaleString()}</span>{incPct(bankAvg) != null && <span className="text-gray-400 ml-1">({incPct(bankAvg)}%)</span>}</> : <span className="text-xs text-gray-400">—</span>}
+                        </td>
                         <td className="px-5 py-3"><span className="text-xs text-gray-300">—</span></td>
                       </tr>
                     )
@@ -523,6 +577,12 @@ export default function Budget({ onTabChange }) {
                   {/* General savings target row */}
                   {(() => {
                     const isEditing = editingSavingsTarget
+                    const pctOfIncome = displayIncome > 0 ? Math.round(effectiveSavingsTarget / displayIncome * 100) : 0
+                    const explanation = pendingSavingsTarget != null
+                      ? `AI suggested ${pctOfIncome}% of income`
+                      : savingsTargetIsAuto
+                        ? `${budgetSavingsRate}% of income — default rate`
+                        : `${pctOfIncome}% of your monthly income`
                     return (
                       <tr className="bg-teal-50">
                         <td className="px-5 py-3 font-medium text-gray-800">
@@ -540,16 +600,23 @@ export default function Budget({ onTabChange }) {
                               className="w-24 border border-teal-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
                             />
                           ) : (
-                            <button
-                              onClick={() => { setSavingsTargetValue(String(effectiveSavingsTarget)); setEditingSavingsTarget(true) }}
-                              className={`font-medium hover:underline transition-colors ${pendingSavingsTarget != null ? 'text-indigo-700' : 'text-teal-600 hover:text-teal-800'}`}
-                              title="Click to edit">
-                              ${effectiveSavingsTarget.toLocaleString()}
-                              {pendingSavingsTarget != null && <span className="ml-1 text-xs text-indigo-400">AI</span>}
-                            </button>
+                            <div>
+                              <button
+                                onClick={() => { setSavingsTargetValue(budgetSavingsTarget !== null ? String(budgetSavingsTarget) : ''); setEditingSavingsTarget(true) }}
+                                className={`font-medium hover:underline transition-colors ${pendingSavingsTarget != null ? 'text-indigo-700' : 'text-teal-600 hover:text-teal-800'}`}
+                                title="Click to edit">
+                                ${effectiveSavingsTarget.toLocaleString()}
+                                {incPct(effectiveSavingsTarget) != null && <span className="font-normal text-gray-400 ml-1">({incPct(effectiveSavingsTarget)}%)</span>}
+                                {pendingSavingsTarget != null && <span className="ml-1 text-xs text-indigo-400">AI</span>}
+                                {savingsTargetIsAuto && <span className="ml-1 text-xs text-gray-400">auto</span>}
+                              </button>
+                              {explanation && <p className="text-[10px] text-gray-400 mt-0.5">{explanation}</p>}
+                            </div>
                           )}
                         </td>
-                        <td className="px-5 py-3 text-gray-400 text-xs">general savings</td>
+                        <td className="px-5 py-3 text-gray-500">
+                          {autoSavingsTarget > 0 ? <><span>${autoSavingsTarget.toLocaleString()}</span>{incPct(autoSavingsTarget) != null && <span className="text-gray-400 ml-1">({incPct(autoSavingsTarget)}%)</span>}</> : <span className="text-xs text-gray-400">—</span>}
+                        </td>
                         <td className="px-5 py-3"><span className="text-xs text-gray-300">—</span></td>
                       </tr>
                     )

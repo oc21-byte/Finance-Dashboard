@@ -22,7 +22,8 @@ const DEFAULT_DB = {
     cashBalance: 0,
     confirmedMonthlyIncome: null,
     assumedAnnualReturn: 0.06,
-    budgetSavingsTarget: 0,
+    budgetSavingsTarget: null,
+    budgetSavingsRate: 15,
   },
 }
 
@@ -40,6 +41,11 @@ function ensureDb() {
   }
   for (const [k, v] of Object.entries(DEFAULT_DB.settings)) {
     if (!(k in db.settings)) { db.settings[k] = v; dirty = true }
+  }
+  // Migrate: old default was 0 meaning "not set"; null is now the sentinel
+  if (db.settings.budgetSavingsTarget === 0) {
+    db.settings.budgetSavingsTarget = null
+    dirty = true
   }
   if (dirty) fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2))
 }
@@ -702,6 +708,21 @@ function buildMonthlyFinancials(db, maxMonths = 6) {
     }))
     .sort((a, b) => b.monthly - a.monthly)
 
+  // Bank transaction breakdown by category — captures savings contributions and goal payments
+  // that don't appear on credit cards (direct transfers, ACH, etc.).
+  const bankByCat = {}
+  for (const t of bank) {
+    if (!inWindow(t.date)) continue
+    const cat = t.category
+    if (!cat || cat === 'Income' || cat === 'Transfer') continue
+    if (t.type === 'income' && !FINANCE_CAT_SET.has(cat)) continue
+    const amt = Math.abs(Number(t.amount))
+    bankByCat[cat] = (bankByCat[cat] || 0) + amt
+  }
+  const bankBreakdown = Object.entries(bankByCat)
+    .map(([category, total]) => ({ category, monthly: Math.round(total / divisor) }))
+    .sort((a, b) => b.monthly - a.monthly)
+
   const perMonth = x => Math.round(x / divisor)
   const windowLabel = months.length === 1
     ? monthLabel(months[0])
@@ -719,6 +740,7 @@ function buildMonthlyFinancials(db, maxMonths = 6) {
     investContrib: perMonth(investContrib),
     cardSpendMonthly: Math.round(cardTotal / divisor),
     cardBreakdown,
+    bankBreakdown,
   }
 }
 
@@ -1262,6 +1284,8 @@ ${spendLines || 'No spend data available'}
 
 One-time expenses to exclude: ${excludeNote || 'None'}
 
+Goal names to EXCLUDE from budgets (tracked separately via monthlySavings on each goal): ${activeGoals.length > 0 ? activeGoals.map(g => g.name).join(', ') : 'none'}
+
 Return ONLY valid JSON — no markdown, no code fences, no explanation outside the JSON:
 {
   "budgets": { "Category Name": number },
@@ -1271,7 +1295,7 @@ Return ONLY valid JSON — no markdown, no code fences, no explanation outside t
   "rationale": "2-3 sentence plain English explanation of key tradeoffs"
 }
 
-Only include categories that have spend data. Do not invent categories. If no active goals, set monthsToGoal to {}. Always set suggestedSavingsTarget to a round monthly dollar amount representing 10-20% of income based on the timeline preference.`
+Only include categories that have spend data. Do not invent categories. Do NOT include goal names in budgets — goal funding is tracked via monthlySavings fields, not spending caps. If no active goals, set monthsToGoal to {}. Always set suggestedSavingsTarget to a round monthly dollar amount representing 10-20% of income based on the timeline preference.`
 
   try {
     const client = new Anthropic({ apiKey })

@@ -28,7 +28,7 @@ Take it one section at a time — you don't have to read it all at once.
 - [Finances — your bank account](#finances--your-bank-account)
 - [Spend Analyzer — your credit card spending](#spend-analyzer--your-credit-card-spending)
 - [Investments — your stocks and savings](#investments--your-stocks-and-savings)
-- [Goals — what you're saving toward](#goals--what-youre-saving-toward) *(linking accounts, growth projection)*
+- [Goals — what you're saving toward](#goals--what-youre-saving-toward) *(emergency fund calculator, linking accounts, growth projection)*
 - [Settings — your preferences](#settings--your-preferences)
 - [Handy tips & good-to-knows](#handy-tips--good-to-knows)
 
@@ -192,8 +192,9 @@ Here's what you'll find:
   fills in as you use the app, so it may look empty at first — that's normal.
 - **Net Worth Breakdown** — a colorful donut showing how your money is split between cash,
   savings, and different investment types.
-- **Monthly Net Cash Flow** — bars for the last six months. Green means you earned more
-  than you spent that month; red means you spent more.
+- **Monthly Net Cash Flow** — a bar chart showing months where you earned more than you
+  spent (green) versus months where spending exceeded income (red). Use the period buttons
+  (**3M / 6M / 1Y / YTD / All**) to zoom in or see your full history at once.
 - **Goal Progress** — a quick look at how close you are on each savings goal.
 
 ### Get AI insights (and ask questions)
@@ -229,8 +230,9 @@ What you can do here:
   - **Link a savings transfer to an account** — for money you moved to savings, click
     **+ Link account** to connect it to one of your savings accounts.
   - **Delete something** — click the **✕** on its row.
-- **Filter the view** — use the dropdowns to show just one month, or just income, or just
-  expenses, when the list gets long.
+- **Filter the view** — use the dropdowns to show just one month, or filter by type:
+  **Income**, **Expenses**, **Savings** (transactions categorized as Savings), or
+  **Investments** (contributions to investment accounts).
 
 ---
 
@@ -264,6 +266,27 @@ Once you set budget caps, a tracking table shows each category, your limit, what
 spent in the last 30 days, and how much is left. The bar turns **yellow** as you approach
 your limit and **red** if you go over — an easy visual gut-check. To change a limit, just
 click the number and type a new one.
+
+Budget amounts also display a **% of income** beside each dollar figure (e.g. `$400 (8%)`)
+so you can spot at a glance whether a category is taking a reasonable share of your pay.
+
+The budget table is split into two sections:
+
+- **Spending categories** — everyday expenses like groceries, dining, and subscriptions.
+  Each row shows your cap, your average monthly spend (from credit card history), and a
+  progress bar for the current period.
+- **Savings & goals** — a separate teal-shaded section for money you're *putting away*.
+  - **Savings / Investment categories** (e.g. Savings, Investments, Retirement) pull their
+    average from your *bank* transactions (transfers and ACH deposits) rather than credit
+    card history, since those contributions don't appear on a card statement.
+  - **Active goal rows** show how much you've committed to each goal per month. If you
+    haven't set a monthly savings amount on a goal, the app auto-fills an estimate from
+    your bank history and marks it *auto*.
+  - **General Savings Target** — a catch-all row for savings not tied to a specific goal.
+    It defaults to **15% of your income** (marked *auto*) — no setup needed. You can
+    override it by clicking the number and typing a specific dollar amount; clear the field
+    to go back to the rate-based default. The small label underneath explains what's driving
+    the current number.
 
 ### Build a budget with help — the Budget Builder 🪄
 
@@ -331,6 +354,26 @@ Need to update a balance later? Click the ✏️ pencil to edit it in place.
 **What it's for:** This is the motivating part — set a target (an emergency fund, a vacation,
 a house down payment) and watch yourself get closer.
 
+### Emergency Fund Calculator
+
+At the top of the Goals page you'll find a built-in **Emergency Fund Calculator** — a quick
+sanity check on whether you have enough set aside for a rainy day.
+
+- **Pick a coverage target** — choose 3, 6, 9, or 12 months of expenses. Most financial
+  guidance suggests 3–6 months; pick what feels right for your situation.
+- The calculator uses your **average monthly spending** (from your real transactions) to work
+  out a target dollar amount automatically.
+- If you already have an "Emergency Fund" goal, it shows a progress bar combining that
+  goal's balance *plus* your current cash balance, so you get credit for money you're
+  already holding.
+- **Gap** — the shortfall between where you are and where you want to be.
+- **Create Emergency Fund Goal** — if you don't have one yet, click this button and the
+  calculator will create a goal pre-filled with the right target amount and your current
+  cash balance as a head start.
+- **Sync target** — if your goal's target is out of date (maybe your spending changed), a
+  small "Sync target → $X,XXX" button appears so you can update it to match the current
+  calculation in one click.
+
 ### Create a goal
 
 1. Click **New Goal**.
@@ -393,6 +436,12 @@ tell them apart. You can change the assumed investment return percentage in Sett
   (bonds, cash-equivalent ETFs) you might lower it; if you're in aggressive growth funds
   you might raise it. Savings accounts always use their own APY regardless of this setting.
   Type a new percentage and click **Save**.
+- **Default Savings Rate** — the percentage of your monthly income used as the automatic
+  general savings target on the Budget page. Defaults to **15%**. For example, if your
+  income is $5,000 and this is 15%, the Budget page's General Savings Target row will
+  default to $750. You can override the dollar amount directly in the Budget table for a
+  specific month without touching this setting — this just controls the starting default.
+  Type a new percentage (0–100) and click **Save**.
 - **Saved CSV Sources** — a list of the bank and card accounts you've taught the app about.
   If an account's downloads change format and imports start looking off, delete it here and
   the app will re-learn it the next time you upload. You can remove them one at a time or
