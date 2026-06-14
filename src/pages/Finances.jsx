@@ -15,13 +15,18 @@ import AddTransactionModal from '../components/AddTransactionModal.jsx'
 
 const FINANCE_CAT_SET = new Set(FINANCE_CATEGORIES)
 
-function buildMonthlyData(transactions) {
-  const months = Array.from({ length: 6 }, (_, i) =>
-    dayjs().subtract(5 - i, 'month').format('YYYY-MM')
-  )
-  return months.map(month => {
-    const txs = transactions.filter(t => t.date?.startsWith(month))
-    // Use category tag; fall back to type for legacy transactions with non-finance categories
+const SUMMARY_PERIODS = [
+  { key: '7D',  label: '7D' },
+  { key: '1M',  label: '1M' },
+  { key: '3M',  label: '3M' },
+  { key: '6M',  label: '6M' },
+  { key: '1Y',  label: '1Y' },
+  { key: 'YTD', label: 'YTD' },
+  { key: 'All', label: 'All' },
+]
+
+function buildPeriodData(transactions, period) {
+  function sumBucket(txs) {
     const income = txs
       .filter(t => t.category === 'Income' || (t.type === 'income' && !FINANCE_CAT_SET.has(t.category)))
       .reduce((s, t) => s + Math.abs(t.amount), 0)
@@ -35,13 +40,53 @@ function buildMonthlyData(transactions) {
       .filter(t => t.category === 'Investments')
       .reduce((s, t) => s + Math.abs(t.amount), 0)
     return {
-      month: dayjs(month + '-01').format('MMM YY'),
       Income: Math.round(income * 100) / 100,
       Savings: Math.round(savings * 100) / 100,
       Expenses: Math.round(expenses * 100) / 100,
       Investments: Math.round(investments * 100) / 100,
     }
-  })
+  }
+
+  const today = dayjs()
+
+  if (period === '7D') {
+    return Array.from({ length: 7 }, (_, i) => {
+      const date = today.subtract(6 - i, 'day').format('YYYY-MM-DD')
+      return { period: dayjs(date).format('MMM D'), ...sumBucket(transactions.filter(t => t.date === date)) }
+    })
+  }
+
+  if (period === '1M') {
+    return Array.from({ length: 4 }, (_, i) => {
+      const weekEnd = today.subtract((3 - i) * 7, 'day')
+      const weekStart = weekEnd.subtract(6, 'day')
+      const txs = transactions.filter(t => {
+        const d = dayjs(t.date)
+        return d.isAfter(weekStart.subtract(1, 'day')) && d.isBefore(weekEnd.add(1, 'day'))
+      })
+      return { period: weekStart.format('MMM D'), ...sumBucket(txs) }
+    })
+  }
+
+  let months
+  if (period === '3M') {
+    months = Array.from({ length: 3 }, (_, i) => today.subtract(2 - i, 'month').format('YYYY-MM'))
+  } else if (period === '6M') {
+    months = Array.from({ length: 6 }, (_, i) => today.subtract(5 - i, 'month').format('YYYY-MM'))
+  } else if (period === '1Y') {
+    months = Array.from({ length: 12 }, (_, i) => today.subtract(11 - i, 'month').format('YYYY-MM'))
+  } else if (period === 'YTD') {
+    const startMonth = today.startOf('year')
+    const count = today.diff(startMonth, 'month') + 1
+    months = Array.from({ length: count }, (_, i) => startMonth.add(i, 'month').format('YYYY-MM'))
+  } else {
+    months = [...new Set(transactions.map(t => t.date?.slice(0, 7)).filter(Boolean))].sort()
+  }
+
+  return months.map(month => ({
+    period: dayjs(month + '-01').format('MMM YY'),
+    ...sumBucket(transactions.filter(t => t.date?.startsWith(month))),
+  }))
 }
 
 
@@ -55,6 +100,7 @@ export default function Finances() {
   const [visionData, setVisionData] = useState(null)
   const [autoDetectData, setAutoDetectData] = useState(null)
   const [showAddModal, setShowAddModal] = useState(false)
+  const [summaryPeriod, setSummaryPeriod] = useState('6M')
   const [filterMonth, setFilterMonth] = useState('all')
   const [filterType, setFilterType] = useState('all')
   const [importStatus, setImportStatus] = useState(null)
@@ -259,15 +305,15 @@ export default function Finances() {
     .filter(t => filterType === 'all' || t.type === filterType)
     .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
 
-  const monthlyData = buildMonthlyData(transactions)
-  const totalIncome = Math.round(monthlyData.reduce((s, m) => s + m.Income, 0) * 100) / 100
-  const totalSavings = Math.round(monthlyData.reduce((s, m) => s + m.Savings, 0) * 100) / 100
-  const totalExpenses = Math.round(monthlyData.reduce((s, m) => s + m.Expenses, 0) * 100) / 100
-  const totalInvestments = Math.round(monthlyData.reduce((s, m) => s + m.Investments, 0) * 100) / 100
-  const net = Math.round((totalIncome + totalSavings + totalInvestments - totalExpenses) * 100) / 100
+  const periodData = buildPeriodData(transactions, summaryPeriod)
+  const totalIncome = Math.round(periodData.reduce((s, m) => s + m.Income, 0) * 100) / 100
+  const totalSavings = Math.round(periodData.reduce((s, m) => s + m.Savings, 0) * 100) / 100
+  const totalExpenses = Math.round(periodData.reduce((s, m) => s + m.Expenses, 0) * 100) / 100
+  const totalInvestments = Math.round(periodData.reduce((s, m) => s + m.Investments, 0) * 100) / 100
   const netCash = Math.round((totalIncome - totalExpenses) * 100) / 100
   const barMax = Math.max(totalIncome, totalSavings, totalInvestments, totalExpenses, 1)
   const hasChartData = transactions.length > 0
+  const periodLabel = summaryPeriod === 'YTD' ? 'YTD' : summaryPeriod === 'All' ? 'All Time' : `Last ${summaryPeriod}`
 
   return (
     <div className="p-3 sm:p-6">
@@ -340,11 +386,11 @@ export default function Finances() {
       {hasChartData && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-6">
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-            <h2 className="text-sm font-medium text-gray-500 mb-4">Monthly Income vs Expenses</h2>
+            <h2 className="text-sm font-medium text-gray-500 mb-4">Income vs Expenses — {periodLabel}</h2>
             <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={monthlyData} barCategoryGap="35%">
+              <BarChart data={periodData} barCategoryGap="35%">
                 <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
-                <XAxis dataKey="month" tick={{ fontSize: 12, fill: '#6b7280' }} axisLine={false} tickLine={false} />
+                <XAxis dataKey="period" tick={{ fontSize: 12, fill: '#6b7280' }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fontSize: 12, fill: '#6b7280' }} tickFormatter={v => `$${v}`} axisLine={false} tickLine={false} />
                 <Tooltip
                   formatter={(v, name) => [`$${v.toLocaleString(undefined, { minimumFractionDigits: 2 })}`, name]}
@@ -360,9 +406,26 @@ export default function Finances() {
           </div>
 
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 flex flex-col justify-between">
-            <h2 className="text-sm font-medium text-gray-500 mb-5">Total Income, Savings &amp; Expenses — Last 6 Months</h2>
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-sm font-medium text-gray-500">Total Income, Savings &amp; Expenses</h2>
+              <div className="flex gap-1">
+                {SUMMARY_PERIODS.map(p => (
+                  <button
+                    key={p.key}
+                    onClick={() => setSummaryPeriod(p.key)}
+                    className={`px-2 py-1 text-xs font-medium rounded-md transition-colors ${
+                      summaryPeriod === p.key
+                        ? 'bg-blue-600 text-white'
+                        : 'text-gray-400 hover:text-gray-700 hover:bg-gray-100'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
               <div>
                 <p className="text-xl font-semibold text-green-600">
                   ${totalIncome.toLocaleString(undefined, { minimumFractionDigits: 2 })}
@@ -386,12 +449,6 @@ export default function Finances() {
                   ${totalExpenses.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                 </p>
                 <p className="text-xs text-gray-400 mt-1">Expenses</p>
-              </div>
-              <div>
-                <p className={`text-xl font-semibold ${net >= 0 ? 'text-green-600' : 'text-red-500'}`}>
-                  {net >= 0 ? '+' : '−'}${Math.abs(net).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                </p>
-                <p className="text-xs text-gray-400 mt-1">Net</p>
               </div>
             </div>
 
@@ -447,7 +504,10 @@ export default function Finances() {
 
               <div className="pt-3 border-t border-gray-100 space-y-1.5">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-500">Net Cash</span>
+                  <span className="text-xs text-gray-500">
+                    Net Cash{' '}
+                    <span className="text-gray-300">(Income − Expenses)</span>
+                  </span>
                   <span className={`text-sm font-semibold ${netCash >= 0 ? 'text-green-600' : 'text-red-500'}`}>
                     {netCash >= 0 ? '+' : '−'}${Math.abs(netCash).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                   </span>
