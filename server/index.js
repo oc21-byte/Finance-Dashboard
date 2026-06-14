@@ -22,6 +22,7 @@ const DEFAULT_DB = {
     cashBalance: 0,
     confirmedMonthlyIncome: null,
     assumedAnnualReturn: 0.06,
+    budgetSavingsTarget: 0,
   },
 }
 
@@ -36,6 +37,9 @@ function ensureDb() {
   let dirty = false
   for (const [key, val] of Object.entries(DEFAULT_DB)) {
     if (!(key in db)) { db[key] = val; dirty = true }
+  }
+  for (const [k, v] of Object.entries(DEFAULT_DB.settings)) {
+    if (!(k in db.settings)) { db.settings[k] = v; dirty = true }
   }
   if (dirty) fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2))
 }
@@ -404,6 +408,12 @@ app.get('/api/contribution-rate', (req, res) => {
     monthsCovered: fin.monthsCovered,
     windowLabel: fin.windowLabel,
   })
+})
+
+app.get('/api/monthly-financials', (req, res) => {
+  const db = readDb()
+  const fin = buildMonthlyFinancials(db)
+  res.json(fin)
 })
 
 // --- Settings ---
@@ -1220,22 +1230,23 @@ app.post('/api/llm/budget-builder', async (req, res) => {
   const { income, timelinePreference, excludeNote } = req.body
 
   const activeGoals = (db.goals || []).filter(g => Number(g.currentAmount) < Number(g.targetAmount))
-  if (activeGoals.length === 0) return res.json({ allGoalsComplete: true })
 
   const fin = buildMonthlyFinancials(db)
 
-  const goalLines = activeGoals.map(g => {
-    const m = monthsUntil(g.targetDate)
-    return `- ${g.name}: target $${g.targetAmount}, current $${g.currentAmount}` +
-      (g.monthlySavings ? `, saving $${g.monthlySavings}/mo` : '') +
-      (g.targetDate ? `, due ${g.targetDate}${m == null ? '' : ` (${m} months from today)`}` : '')
-  }).join('\n')
+  const goalLines = activeGoals.length > 0
+    ? activeGoals.map(g => {
+        const m = monthsUntil(g.targetDate)
+        return `- ${g.name}: target $${g.targetAmount}, current $${g.currentAmount}` +
+          (g.monthlySavings ? `, saving $${g.monthlySavings}/mo` : '') +
+          (g.targetDate ? `, due ${g.targetDate}${m == null ? '' : ` (${m} months from today)`}` : '')
+      }).join('\n')
+    : '(none)'
 
   const spendLines = fin.cardBreakdown
     .map(c => `- ${c.category}: $${c.monthly}`)
     .join('\n')
 
-  const userMsg = `You are a personal finance advisor. Generate a monthly budget that maximizes progress toward the user's financial goals.
+  const userMsg = `You are a personal finance advisor. Generate a monthly budget that balances spending discipline with savings goals.
 
 Monthly take-home income: $${income}
 Timeline preference: ${timelinePreference}
@@ -1243,7 +1254,7 @@ Timeline preference: ${timelinePreference}
   - balanced: reasonable cuts, maintain quality of life
   - comfortable: minimal cuts, small optimizations only
 
-Active goals (exclude funded ones):
+Active goals:
 ${goalLines}
 
 Average monthly spend by category (${fin.windowLabel}):
@@ -1256,10 +1267,11 @@ Return ONLY valid JSON — no markdown, no code fences, no explanation outside t
   "budgets": { "Category Name": number },
   "projectedMonthlySurplus": number,
   "monthsToGoal": { "Goal Name": number },
+  "suggestedSavingsTarget": number,
   "rationale": "2-3 sentence plain English explanation of key tradeoffs"
 }
 
-Only include categories that have spend data. Do not invent categories.`
+Only include categories that have spend data. Do not invent categories. If no active goals, set monthsToGoal to {}. Always set suggestedSavingsTarget to a round monthly dollar amount representing 10-20% of income based on the timeline preference.`
 
   try {
     const client = new Anthropic({ apiKey })
@@ -1404,6 +1416,73 @@ app.get('/api/net-worth-history', (req, res) => {
   const db = readDb()
   const history = (db.netWorthHistory ?? []).slice().sort((a, b) => a.date.localeCompare(b.date))
   res.json(history)
+})
+
+app.post('/api/net-worth-backfill', (req, res) => {
+  const db = readDb()
+  const bankTxns = db.transactions ?? []
+  const allTxns = [...bankTxns, ...(db.credit_card_transactions ?? [])]
+  if (!allTxns.length) return res.json({ added: 0 })
+
+  const today = new Date().toISOString().slice(0, 10)
+  const earliestDate = allTxns.map(t => t.date).sort()[0]
+
+  // Skip months that already have any snapshot
+  const existingMonths = new Set((db.netWorthHistory ?? []).map(e => e.date.slice(0, 7)))
+
+  const currentCash = db.settings?.cashBalance ?? 0
+  const currentSavings = (db.savings_accounts ?? []).reduce((s, a) => s + (a.balance ?? 0), 0)
+
+  const added = []
+  let year = parseInt(earliestDate.slice(0, 4))
+  let month = parseInt(earliestDate.slice(5, 7))
+  const [todayYear, todayMonth] = today.split('-').map(Number)
+
+  while (year < todayYear || (year === todayYear && month <= todayMonth)) {
+    const ym = `${year}-${String(month).padStart(2, '0')}`
+    if (!existingMonths.has(ym)) {
+      const daysInMonth = new Date(year, month, 0).getDate()
+      const lastDay = `${ym}-${String(daysInMonth).padStart(2, '0')}`
+      const targetDate = lastDay > today ? today : lastDay
+
+      // Cash: work backwards from current balance using bank transactions after this date
+      const cashAdjustment = bankTxns
+        .filter(t => t.date > targetDate)
+        .reduce((s, t) => s + (t.amount ?? 0), 0)
+      const cashAtDate = Math.round((currentCash - cashAdjustment) * 100) / 100
+
+      // Portfolio: holdings (and lots) with purchaseDate on or before this date
+      const portfolioAtDate = Math.round(
+        (db.holdings ?? []).reduce((sum, h) => {
+          if (h.purchases?.length) {
+            return sum + h.purchases
+              .filter(p => (p.purchaseDate ?? '') <= targetDate)
+              .reduce((s, p) => s + (p.shares ?? 0) * (p.purchasePrice ?? 0), 0)
+          }
+          return (h.purchaseDate ?? '') <= targetDate
+            ? sum + (h.shares ?? 0) * (h.purchasePrice ?? 0)
+            : sum
+        }, 0) * 100
+      ) / 100
+
+      const netWorth = Math.round((cashAtDate + currentSavings + portfolioAtDate) * 100) / 100
+      const entry = {
+        date: targetDate,
+        netWorth,
+        breakdown: { cash: cashAtDate, savings: currentSavings, portfolio: portfolioAtDate },
+      }
+      if (!db.netWorthHistory) db.netWorthHistory = []
+      db.netWorthHistory.push(entry)
+      existingMonths.add(ym)
+      added.push(targetDate)
+    }
+
+    month++
+    if (month > 12) { month = 1; year++ }
+  }
+
+  if (added.length > 0) writeDb(db)
+  res.json({ added: added.length, dates: added })
 })
 
 // --- Start ---

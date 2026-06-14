@@ -57,6 +57,33 @@ npm run dev
 
 ---
 
+## Setup & updates with GitHub Desktop (non-technical)
+
+If you're not comfortable with the terminal, GitHub Desktop is an easy way to get the app and stay up to date.
+
+### 1. Setup (do this once)
+
+1. **Download:** Go to [desktop.github.com](https://desktop.github.com/) and download/install the app.
+2. **Log in:** Open the app and sign in with your GitHub account.
+3. **Get the project:**
+   1. In the app, go to the top menu and click **File > Clone Repository**.
+   2. Click the **GitHub.com** tab at the top.
+   3. Select our project from the list.
+   4. Click **Clone**. (This creates a folder on your computer with all the project files.)
+
+### 2. Getting updates
+
+Whenever there's a new update, just do this:
+
+1. Open GitHub Desktop.
+2. Make sure our project is selected in the top-left corner.
+3. Click the **"Fetch origin"** button at the top.
+4. If that button changes to say **"Pull origin"**, click it.
+
+That's it! The app will download the latest code automatically. Your data files will stay exactly where they are, untouched.
+
+---
+
 ## Adding your Claude API key (optional)
 
 AI features (transaction categorization, spending insights, budget builder, PDF statement parsing) require a Claude API key from Anthropic.
