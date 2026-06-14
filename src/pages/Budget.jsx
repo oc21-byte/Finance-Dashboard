@@ -4,12 +4,15 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client.js'
 
 const EXCLUDE_CATS = new Set(['Income', 'Transfer'])
+const SAVINGS_CATS = new Set(['Savings', 'Investments', 'Retirement', 'Emergency Fund'])
 
-function SummaryCard({ label, value, color = 'text-gray-900' }) {
+function SummaryCard({ label, value, color = 'text-gray-900', description, subtext, subtextColor }) {
   return (
     <div className="bg-white rounded-xl border border-gray-200 px-4 py-4">
       <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold mb-1">{label}</p>
-      <p className={`text-xl font-bold ${color}`}>${Math.round(value).toLocaleString()}</p>
+      <p className={`text-xl font-bold ${color}`}>{value}</p>
+      {description && <p className="text-xs text-gray-400 mt-1 leading-snug">{description}</p>}
+      {subtext && <p className={`text-xs mt-0.5 font-medium ${subtextColor || 'text-gray-400'}`}>{subtext}</p>}
     </div>
   )
 }
@@ -26,6 +29,7 @@ export default function Budget({ onTabChange }) {
   const [editingSavingsTarget, setEditingSavingsTarget] = useState(false)
   const [savingsTargetValue, setSavingsTargetValue] = useState('')
   const [editingBudget, setEditingBudget] = useState(null)
+  const [editingGoal, setEditingGoal] = useState(null)
   const [pendingBudgets, setPendingBudgets] = useState(null)
   const [pendingSavingsTarget, setPendingSavingsTarget] = useState(null)
   const [timeline, setTimeline] = useState('balanced')
@@ -41,20 +45,30 @@ export default function Budget({ onTabChange }) {
   const budgetSavingsTarget = Number(settings?.budgetSavingsTarget) || 0
 
   const activeGoals = goals.filter(g => Number(g.currentAmount) < Number(g.targetAmount))
+  const goalNames = new Set(activeGoals.map(g => g.name))
   const totalGoalSavings = activeGoals.reduce((s, g) => s + (Number(g.monthlySavings) || 0), 0)
   const effectiveBudgets = pendingBudgets ?? categoryBudgets
-  const totalVariableBudgets = Object.values(effectiveBudgets).reduce((s, v) => s + v, 0)
+  const totalSpendingCaps = Object.entries(effectiveBudgets)
+    .filter(([cat]) => !SAVINGS_CATS.has(cat) && !goalNames.has(cat))
+    .reduce((s, [, v]) => s + v, 0)
+  const totalSavingsCaps = Object.entries(effectiveBudgets)
+    .filter(([cat]) => SAVINGS_CATS.has(cat))
+    .reduce((s, [, v]) => s + v, 0)
   const effectiveSavingsTarget = pendingSavingsTarget ?? budgetSavingsTarget
-  const unallocated = displayIncome - totalVariableBudgets - totalGoalSavings - effectiveSavingsTarget
-  const investContrib = fin?.investContrib ?? 0
-  const savingsRate = displayIncome > 0
-    ? Math.round((totalGoalSavings + effectiveSavingsTarget + investContrib) / displayIncome * 100)
-    : 0
+  const totalSavingsPlanned = totalGoalSavings + effectiveSavingsTarget + totalSavingsCaps
+  const unallocated = displayIncome - totalSpendingCaps - totalSavingsPlanned
 
   const cardBreakdownMap = {}
   for (const c of (fin?.cardBreakdown || [])) {
     if (!EXCLUDE_CATS.has(c.category)) cardBreakdownMap[c.category] = c.monthly
   }
+
+  const totalAvgSpend = Object.entries(cardBreakdownMap)
+    .filter(([cat]) => !SAVINGS_CATS.has(cat))
+    .reduce((s, [, v]) => s + v, 0)
+  const budgetedLeft = displayIncome - totalSpendingCaps - totalSavingsPlanned
+  const avgLeft = displayIncome - totalAvgSpend - totalSavingsPlanned
+  const spread = avgLeft - budgetedLeft
   const allCategories = [...new Set([
     ...Object.keys(cardBreakdownMap),
     ...Object.keys(categoryBudgets).filter(k => !EXCLUDE_CATS.has(k)),
@@ -64,6 +78,19 @@ export default function Budget({ onTabChange }) {
     mutationFn: (data) => api.settings.update(data),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['settings'] }),
   })
+
+  const goalsMutation = useMutation({
+    mutationFn: ({ id, data }) => api.goals.update(id, data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['goals'] }),
+  })
+
+  function saveGoalSavings(goalId, val) {
+    const num = Number(val)
+    if (!isNaN(num) && num >= 0 && val !== '') {
+      goalsMutation.mutate({ id: goalId, data: { monthlySavings: num } })
+    }
+    setEditingGoal(null)
+  }
 
   function saveIncome() {
     const val = Number(incomeValue)
@@ -130,8 +157,6 @@ export default function Budget({ onTabChange }) {
     setAiError(null)
   }
 
-  const savingsRateColor = savingsRate >= 15 ? 'text-green-500' : savingsRate >= 10 ? 'text-yellow-500' : 'text-red-500'
-
   return (
     <div className="p-3 sm:p-6">
       <div className="mb-6">
@@ -147,20 +172,100 @@ export default function Budget({ onTabChange }) {
       )}
 
       {/* Summary bar */}
-      <div className="mb-6 grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <SummaryCard label="Monthly Income" value={displayIncome} />
-        <SummaryCard label="Spending Budgeted" value={totalVariableBudgets} />
-        <SummaryCard label="Savings Targeted" value={totalGoalSavings + effectiveSavingsTarget} color="text-teal-600" />
+      <div className="mb-2 grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <SummaryCard
+          label="Monthly Income"
+          value={`$${Math.round(displayIncome).toLocaleString()}`}
+          description={hasConfirmedIncome ? 'Your confirmed take-home pay.' : `6-month bank average. Edit to set manually.`}
+        />
         <div className="bg-white rounded-xl border border-gray-200 px-4 py-4">
-          <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold mb-1">Unallocated</p>
-          <p className={`text-xl font-bold ${unallocated >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-            {unallocated >= 0 ? '+' : '−'}${Math.abs(Math.round(unallocated)).toLocaleString()}
-          </p>
-          <p className={`text-xs mt-0.5 ${savingsRateColor}`}>
-            Saving {savingsRate}% of income
+          <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold mb-2">Spending Caps</p>
+          <div className="flex items-end gap-3">
+            <div>
+              <p className="text-[10px] text-gray-400 mb-0.5">Budgeted</p>
+              <p className="text-xl font-bold text-gray-900">${Math.round(totalSpendingCaps).toLocaleString()}</p>
+            </div>
+            <span className="text-gray-300 pb-0.5">vs</span>
+            <div>
+              <p className="text-[10px] text-gray-400 mb-0.5">Avg actual</p>
+              <p className="text-xl font-bold text-gray-700">${Math.round(totalAvgSpend).toLocaleString()}</p>
+            </div>
+          </div>
+          <p className="text-xs text-gray-400 mt-1.5 leading-snug">
+            {totalSpendingCaps === 0 ? 'No caps set yet — add them in the table below.' : 'Caps set vs avg monthly card spend.'}
           </p>
         </div>
+        <SummaryCard
+          label="Savings Planned"
+          value={`$${Math.round(totalSavingsPlanned).toLocaleString()}`}
+          color="text-teal-600"
+          description={[
+            `Goal payments: $${Math.round(totalGoalSavings).toLocaleString()}`,
+            `General target: $${Math.round(effectiveSavingsTarget).toLocaleString()}`,
+            ...(totalSavingsCaps > 0 ? [`Savings caps: $${Math.round(totalSavingsCaps).toLocaleString()}`] : []),
+          ].join(' · ')}
+        />
+        <div className="bg-white rounded-xl border border-gray-200 px-4 py-4">
+          <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold mb-2">Left to Allocate</p>
+          <div className="flex items-end gap-3">
+            <div>
+              <p className="text-[10px] text-gray-400 mb-0.5">Budgeted</p>
+              <p className={`text-xl font-bold ${budgetedLeft >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                {budgetedLeft >= 0 ? '+' : '−'}${Math.abs(Math.round(budgetedLeft)).toLocaleString()}
+              </p>
+            </div>
+            <span className="text-gray-300 pb-0.5">vs</span>
+            <div>
+              <p className="text-[10px] text-gray-400 mb-0.5">Avg actual</p>
+              <p className={`text-xl font-bold ${avgLeft >= 0 ? 'text-gray-700' : 'text-red-600'}`}>
+                {avgLeft >= 0 ? '+' : '−'}${Math.abs(Math.round(avgLeft)).toLocaleString()}
+              </p>
+            </div>
+          </div>
+          <p className="text-xs text-gray-400 mt-1.5 leading-snug">Income − spending caps − savings planned.</p>
+          {totalSpendingCaps > 0 && totalAvgSpend > 0 && (
+            <p className={`text-xs mt-0.5 font-medium ${spread >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+              You are spending ${Math.abs(Math.round(spread)).toLocaleString()} {spread >= 0 ? 'under' : 'over'} budget on average
+            </p>
+          )}
+        </div>
       </div>
+
+      {/* Flow bar */}
+      {displayIncome > 0 && (
+        <div className="mb-6 bg-white rounded-xl border border-gray-200 px-4 py-3">
+          <div className="flex h-3 rounded-full overflow-hidden gap-0.5">
+            {(() => {
+              const spendPct = Math.min(100, Math.max(0, totalSpendingCaps / displayIncome * 100))
+              const savePct = Math.min(100 - spendPct, Math.max(0, totalSavingsPlanned / displayIncome * 100))
+              const freePct = Math.max(0, 100 - spendPct - savePct)
+              const overBudget = unallocated < 0
+              return (
+                <>
+                  {spendPct > 0 && <div className="h-full bg-blue-300 transition-all" style={{ width: `${spendPct}%` }} />}
+                  {savePct > 0 && <div className="h-full bg-teal-400 transition-all" style={{ width: `${savePct}%` }} />}
+                  {freePct > 0 && <div className={`h-full transition-all ${overBudget ? 'bg-red-400' : 'bg-green-300'}`} style={{ width: `${freePct}%` }} />}
+                  {overBudget && <div className="h-full bg-red-500 w-1 shrink-0" title="Over budget" />}
+                </>
+              )
+            })()}
+          </div>
+          <div className="flex items-center gap-4 mt-2 flex-wrap">
+            <span className="flex items-center gap-1.5 text-xs text-gray-500">
+              <span className="inline-block w-2.5 h-2.5 rounded-sm bg-blue-300" />
+              Spending caps ({Math.round(totalSpendingCaps / displayIncome * 100)}%)
+            </span>
+            <span className="flex items-center gap-1.5 text-xs text-gray-500">
+              <span className="inline-block w-2.5 h-2.5 rounded-sm bg-teal-400" />
+              Savings planned ({Math.round(totalSavingsPlanned / displayIncome * 100)}%)
+            </span>
+            <span className={`flex items-center gap-1.5 text-xs ${unallocated < 0 ? 'text-red-600 font-medium' : 'text-gray-500'}`}>
+              <span className={`inline-block w-2.5 h-2.5 rounded-sm ${unallocated < 0 ? 'bg-red-400' : 'bg-green-300'}`} />
+              {unallocated < 0 ? 'Over budget' : 'Unallocated'} ({Math.round(Math.abs(unallocated) / displayIncome * 100)}%)
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* AI pending banner */}
       {(pendingBudgets || pendingSavingsTarget != null) && (
@@ -282,7 +387,8 @@ export default function Budget({ onTabChange }) {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {allCategories.map(cat => {
+                  {/* Spending categories */}
+                  {allCategories.filter(cat => !SAVINGS_CATS.has(cat) && !goalNames.has(cat)).map(cat => {
                     const cap = effectiveBudgets[cat]
                     const avgMonthly = Math.round((cardBreakdownMap[cat] || 0) * 100) / 100
                     const pct = cap > 0 ? Math.round(avgMonthly / cap * 100) : 0
@@ -291,64 +397,163 @@ export default function Budget({ onTabChange }) {
                     const barColor = over ? 'bg-red-400' : near ? 'bg-yellow-400' : 'bg-green-400'
                     const isEditing = editingBudget?.cat === cat
                     const isPending = pendingBudgets && cat in pendingBudgets
-
                     return (
                       <tr key={cat} className={over ? 'bg-red-50' : 'bg-white'}>
                         <td className="px-5 py-3 font-medium text-gray-800">{cat}</td>
                         <td className="px-5 py-3 text-gray-700">
                           {isEditing ? (
-                            <input
-                              type="number"
-                              min="0"
-                              autoFocus
-                              value={editingBudget.value}
+                            <input type="number" min="0" autoFocus value={editingBudget.value}
                               onChange={e => setEditingBudget(prev => ({ ...prev, value: e.target.value }))}
                               onBlur={() => saveBudgetCap(cat, editingBudget.value)}
-                              onKeyDown={e => {
-                                if (e.key === 'Enter') e.target.blur()
-                                if (e.key === 'Escape') setEditingBudget(null)
-                              }}
+                              onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') setEditingBudget(null) }}
                               className="w-24 border border-indigo-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                             />
                           ) : cap != null ? (
-                            <button
-                              onClick={() => setEditingBudget({ cat, value: String(cap) })}
+                            <button onClick={() => setEditingBudget({ cat, value: String(cap) })}
                               className={`font-medium hover:text-indigo-600 hover:underline transition-colors ${isPending ? 'text-indigo-700' : ''}`}
-                              title="Click to edit"
-                            >
+                              title="Click to edit">
                               ${cap.toLocaleString()}
                               {isPending && <span className="ml-1 text-xs text-indigo-400">AI</span>}
                             </button>
                           ) : (
-                            <button
-                              onClick={() => setEditingBudget({ cat, value: '' })}
-                              className="text-gray-400 hover:text-indigo-600 text-xs transition-colors"
-                            >
+                            <button onClick={() => setEditingBudget({ cat, value: '' })}
+                              className="text-gray-400 hover:text-indigo-600 text-xs transition-colors">
                               Set cap
                             </button>
                           )}
                         </td>
-                        <td className="px-5 py-3 text-gray-500">
-                          {avgMonthly > 0 ? `$${avgMonthly.toLocaleString()}` : '—'}
-                        </td>
+                        <td className="px-5 py-3 text-gray-500">{avgMonthly > 0 ? `$${avgMonthly.toLocaleString()}` : '—'}</td>
                         <td className="px-5 py-3">
                           {cap > 0 ? (
                             <div className="flex items-center gap-2">
                               <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
-                                <div
-                                  className={`h-full rounded-full transition-all ${barColor}`}
-                                  style={{ width: `${Math.min(100, pct)}%` }}
-                                />
+                                <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${Math.min(100, pct)}%` }} />
                               </div>
                               <span className="text-xs text-gray-400 w-8 text-right">{pct}%</span>
                             </div>
-                          ) : (
-                            <span className="text-xs text-gray-300">—</span>
-                          )}
+                          ) : <span className="text-xs text-gray-300">—</span>}
                         </td>
                       </tr>
                     )
                   })}
+
+                  {/* Savings & Goals section divider */}
+                  <tr className="bg-gray-50">
+                    <td colSpan={4} className="px-5 py-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">
+                      Savings &amp; Goals — counted in Savings Planned
+                    </td>
+                  </tr>
+
+                  {/* Savings categories from card transactions / categoryBudgets */}
+                  {allCategories.filter(cat => SAVINGS_CATS.has(cat)).map(cat => {
+                    const cap = effectiveBudgets[cat]
+                    const avgMonthly = Math.round((cardBreakdownMap[cat] || 0) * 100) / 100
+                    const isEditing = editingBudget?.cat === cat
+                    const isPending = pendingBudgets && cat in pendingBudgets
+                    return (
+                      <tr key={cat} className="bg-teal-50">
+                        <td className="px-5 py-3 font-medium text-gray-800">
+                          <div className="flex items-center gap-2">
+                            {cat}
+                            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-700 uppercase tracking-wide">Savings</span>
+                          </div>
+                        </td>
+                        <td className="px-5 py-3">
+                          {isEditing ? (
+                            <input type="number" min="0" autoFocus value={editingBudget.value}
+                              onChange={e => setEditingBudget(prev => ({ ...prev, value: e.target.value }))}
+                              onBlur={() => saveBudgetCap(cat, editingBudget.value)}
+                              onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') setEditingBudget(null) }}
+                              className="w-24 border border-teal-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+                            />
+                          ) : cap != null ? (
+                            <button onClick={() => setEditingBudget({ cat, value: String(cap) })}
+                              className={`font-medium text-teal-600 hover:text-teal-800 hover:underline transition-colors ${isPending ? 'text-indigo-700' : ''}`}
+                              title="Click to edit">
+                              ${cap.toLocaleString()}
+                              {isPending && <span className="ml-1 text-xs text-indigo-400">AI</span>}
+                            </button>
+                          ) : (
+                            <button onClick={() => setEditingBudget({ cat, value: '' })}
+                              className="text-gray-400 hover:text-teal-600 text-xs transition-colors">
+                              Set amount
+                            </button>
+                          )}
+                        </td>
+                        <td className="px-5 py-3 text-gray-500">{avgMonthly > 0 ? `$${avgMonthly.toLocaleString()}` : '—'}</td>
+                        <td className="px-5 py-3"><span className="text-xs text-gray-300">—</span></td>
+                      </tr>
+                    )
+                  })}
+
+                  {/* Active goal rows */}
+                  {activeGoals.map(goal => {
+                    const monthlySavings = Number(goal.monthlySavings) || 0
+                    const isEditing = editingGoal?.goalId === goal.id
+                    return (
+                      <tr key={goal.id} className="bg-teal-50">
+                        <td className="px-5 py-3 font-medium text-gray-800">
+                          <div className="flex items-center gap-2">
+                            <button onClick={() => onTabChange?.('goals')} className="hover:text-indigo-600 transition-colors">{goal.name}</button>
+                            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-700 uppercase tracking-wide">Goal</span>
+                          </div>
+                        </td>
+                        <td className="px-5 py-3">
+                          {isEditing ? (
+                            <input type="number" min="0" autoFocus value={editingGoal.value}
+                              onChange={e => setEditingGoal(prev => ({ ...prev, value: e.target.value }))}
+                              onBlur={() => saveGoalSavings(goal.id, editingGoal.value)}
+                              onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') setEditingGoal(null) }}
+                              className="w-24 border border-teal-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+                            />
+                          ) : (
+                            <button onClick={() => setEditingGoal({ goalId: goal.id, value: String(monthlySavings) })}
+                              className="font-medium text-teal-600 hover:text-teal-800 hover:underline transition-colors"
+                              title="Click to edit">
+                              ${monthlySavings.toLocaleString()}
+                            </button>
+                          )}
+                        </td>
+                        <td className="px-5 py-3 text-gray-400 text-xs">goal payment</td>
+                        <td className="px-5 py-3"><span className="text-xs text-gray-300">—</span></td>
+                      </tr>
+                    )
+                  })}
+
+                  {/* General savings target row */}
+                  {(() => {
+                    const isEditing = editingSavingsTarget
+                    return (
+                      <tr className="bg-teal-50">
+                        <td className="px-5 py-3 font-medium text-gray-800">
+                          <div className="flex items-center gap-2">
+                            General Savings Target
+                            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-700 uppercase tracking-wide">Savings</span>
+                          </div>
+                        </td>
+                        <td className="px-5 py-3">
+                          {isEditing ? (
+                            <input type="number" min="0" autoFocus value={savingsTargetValue}
+                              onChange={e => setSavingsTargetValue(e.target.value)}
+                              onBlur={saveSavingsTarget}
+                              onKeyDown={e => { if (e.key === 'Enter') saveSavingsTarget(); if (e.key === 'Escape') setEditingSavingsTarget(false) }}
+                              className="w-24 border border-teal-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+                            />
+                          ) : (
+                            <button
+                              onClick={() => { setSavingsTargetValue(String(effectiveSavingsTarget)); setEditingSavingsTarget(true) }}
+                              className={`font-medium hover:underline transition-colors ${pendingSavingsTarget != null ? 'text-indigo-700' : 'text-teal-600 hover:text-teal-800'}`}
+                              title="Click to edit">
+                              ${effectiveSavingsTarget.toLocaleString()}
+                              {pendingSavingsTarget != null && <span className="ml-1 text-xs text-indigo-400">AI</span>}
+                            </button>
+                          )}
+                        </td>
+                        <td className="px-5 py-3 text-gray-400 text-xs">general savings</td>
+                        <td className="px-5 py-3"><span className="text-xs text-gray-300">—</span></td>
+                      </tr>
+                    )
+                  })()}
                 </tbody>
               </table>
             </div>
@@ -395,42 +600,14 @@ export default function Budget({ onTabChange }) {
             ))
           )}
 
-          {/* General savings target */}
+          {/* General savings target — display only, edited in table above */}
           <div className="px-5 py-3 flex items-center justify-between gap-3">
             <span className="text-sm text-gray-700">General savings target</span>
             <div className="flex items-center gap-2 shrink-0">
-              {editingSavingsTarget ? (
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-500 text-sm">$</span>
-                  <input
-                    type="number"
-                    min="0"
-                    autoFocus
-                    value={savingsTargetValue}
-                    onChange={e => setSavingsTargetValue(e.target.value)}
-                    onBlur={saveSavingsTarget}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter') saveSavingsTarget()
-                      if (e.key === 'Escape') setEditingSavingsTarget(false)
-                    }}
-                    className="w-24 border border-indigo-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  />
-                  <span className="text-gray-400 text-sm">/mo</span>
-                </div>
-              ) : (
-                <>
-                  <span className={`text-sm font-medium ${pendingSavingsTarget != null ? 'text-indigo-700' : 'text-teal-600'}`}>
-                    ${effectiveSavingsTarget.toLocaleString()}/mo
-                    {pendingSavingsTarget != null && <span className="ml-1 text-xs text-indigo-400">AI</span>}
-                  </span>
-                  <button
-                    onClick={() => { setSavingsTargetValue(String(effectiveSavingsTarget)); setEditingSavingsTarget(true) }}
-                    className="text-xs text-gray-400 hover:text-indigo-600 transition-colors"
-                  >
-                    Edit
-                  </button>
-                </>
-              )}
+              <span className={`text-sm font-medium ${pendingSavingsTarget != null ? 'text-indigo-700' : 'text-teal-600'}`}>
+                ${effectiveSavingsTarget.toLocaleString()}/mo
+                {pendingSavingsTarget != null && <span className="ml-1 text-xs text-indigo-400">AI</span>}
+              </span>
             </div>
           </div>
 
@@ -457,11 +634,11 @@ export default function Budget({ onTabChange }) {
         </div>
 
         <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-between flex-wrap gap-2">
-          <p className="text-xs text-gray-400">Goal monthly savings amounts are set on the Goals tab.</p>
+          <p className="text-xs text-gray-400">Edit amounts in the Spending Caps table above.</p>
           <span className="text-xs text-gray-500">
             Total saving:{' '}
             <span className="font-semibold text-teal-600">
-              ${(totalGoalSavings + effectiveSavingsTarget).toLocaleString()}/mo
+              ${Math.round(totalSavingsPlanned).toLocaleString()}/mo
             </span>
           </span>
         </div>

@@ -45,6 +45,7 @@ const PERIODS = [
   { key: '3M',  label: '3M',  days: 90 },
   { key: '6M',  label: '6M',  days: 180 },
   { key: '1Y',  label: '1Y',  days: 365 },
+  { key: 'YTD', label: 'YTD', days: null },
   { key: 'All', label: 'All', days: null },
 ]
 
@@ -223,12 +224,17 @@ export default function Dashboard() {
 
   const filteredHistoryData = (() => {
     const p = PERIODS.find(p => p.key === netWorthPeriod)
-    if (!p || p.days === null) return historyChartData
+    if (!p) return historyChartData
+    if (p.key === 'YTD') {
+      const startOfYear = dayjs().startOf('year')
+      return historyChartData.filter(d => !dayjs(d.date).isBefore(startOfYear))
+    }
+    if (p.days === null) return historyChartData
     const cutoff = dayjs().subtract(p.days, 'day')
     return historyChartData.filter(d => dayjs(d.date).isAfter(cutoff))
   })()
 
-  const useLongLabel = netWorthPeriod === 'All' || netWorthPeriod === '1Y'
+  const useLongLabel = netWorthPeriod === 'All' || netWorthPeriod === '1Y' || netWorthPeriod === 'YTD'
   const netWorthChartData = filteredHistoryData.map(d => ({
     ...d,
     label: useLongLabel ? dayjs(d.date).format("MMM 'YY") : dayjs(d.date).format('MMM D'),
