@@ -51,6 +51,15 @@ function buildNetCashFlowData(transactions, periodKey) {
   })
 }
 
+function aggregateToMonthly(data) {
+  const byMonth = {}
+  for (const d of data) {
+    const month = d.date.slice(0, 7)
+    byMonth[month] = d
+  }
+  return Object.values(byMonth).sort((a, b) => a.date.localeCompare(b.date))
+}
+
 function fmt(n) {
   return Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
@@ -259,10 +268,11 @@ export default function Dashboard() {
     return historyChartData.filter(d => dayjs(d.date).isAfter(cutoff))
   })()
 
-  const useLongLabel = netWorthPeriod === 'All' || netWorthPeriod === '1Y' || netWorthPeriod === 'YTD'
-  const netWorthChartData = filteredHistoryData.map(d => ({
+  const useMonthly = netWorthPeriod !== '7D' && netWorthPeriod !== '1M'
+  const netWorthSourceData = useMonthly ? aggregateToMonthly(filteredHistoryData) : filteredHistoryData
+  const netWorthChartData = netWorthSourceData.map(d => ({
     ...d,
-    label: useLongLabel ? dayjs(d.date).format("MMM 'YY") : dayjs(d.date).format('MMM D'),
+    label: useMonthly ? dayjs(d.date).format("MMM 'YY") : dayjs(d.date).format('MMM D'),
   }))
 
   const isLoading = txLoading || goalsLoading || holdingsLoading

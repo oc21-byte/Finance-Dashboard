@@ -65,7 +65,7 @@ const BOTTOM_NAV = [
   },
 ]
 
-export default function Layout({ activeTab, onTabChange, children }) {
+export default function Layout({ activeTab, onTabChange, children, demoMode }) {
   return (
     <div className="min-h-screen bg-gray-50">
       <nav className="bg-white border-b border-gray-200 shadow-sm">
@@ -111,6 +111,12 @@ export default function Layout({ activeTab, onTabChange, children }) {
           </div>
         </div>
       </nav>
+
+      {demoMode && (
+        <div className="bg-amber-400 text-amber-900 text-center text-sm font-semibold py-1.5 px-4 sticky top-0 z-40">
+          DEMO MODE — Sample data only. All changes are disabled.
+        </div>
+      )}
 
       <main className="max-w-7xl mx-auto pb-16 sm:pb-0">
         {children}

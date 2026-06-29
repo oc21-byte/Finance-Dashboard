@@ -5,9 +5,11 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { v4 as uuidv4 } from 'uuid'
 import Anthropic from '@anthropic-ai/sdk'
+import { DEMO_MODE } from './config.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DB_PATH = path.join(__dirname, '../data/db.json')
+const MOCK_PATH = path.join(__dirname, '../data/mock_data.json')
 
 const DEFAULT_DB = {
   transactions: [],
@@ -50,18 +52,41 @@ function ensureDb() {
   if (dirty) fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2))
 }
 
-ensureDb()
+if (!DEMO_MODE) ensureDb()
 
 const app = express()
 app.use(cors())
 app.use(express.json({ limit: '20mb' }))
 
 function readDb() {
-  return JSON.parse(fs.readFileSync(DB_PATH, 'utf8'))
+  return JSON.parse(fs.readFileSync(DEMO_MODE ? MOCK_PATH : DB_PATH, 'utf8'))
 }
 
 function writeDb(data) {
+  if (DEMO_MODE) return
   fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2))
+}
+
+// Demo Mode: block all mutations; carve out read-only responses for auto-called POST endpoints.
+app.get('/api/demo-mode', (_req, res) => {
+  res.json({ demoMode: DEMO_MODE })
+})
+
+if (DEMO_MODE) {
+  app.use((req, res, next) => {
+    if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
+      if (req.path === '/api/net-worth-snapshot') {
+        const db = readDb()
+        const latest = (db.netWorthHistory ?? []).slice(-1)[0]
+        return res.json(latest ?? { date: new Date().toISOString().slice(0, 10), netWorth: 0, breakdown: { cash: 0, savings: 0, portfolio: 0 } })
+      }
+      if (req.path === '/api/net-worth-backfill') {
+        return res.json({ added: 0, dates: [] })
+      }
+      return res.status(403).json({ error: 'This action is disabled in Demo Mode.' })
+    }
+    next()
+  })
 }
 
 // --- Transactions ---
@@ -1513,5 +1538,9 @@ app.post('/api/net-worth-backfill', (req, res) => {
 
 const PORT = 3001
 app.listen(PORT, () => {
-  console.log(`Express server running on http://localhost:${PORT}`)
+  if (DEMO_MODE) {
+    console.log(`[DEMO MODE] Express server on http://localhost:${PORT} — serving mock_data.json, all writes blocked`)
+  } else {
+    console.log(`Express server running on http://localhost:${PORT}`)
+  }
 })

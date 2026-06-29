@@ -66,6 +66,9 @@ export const api = {
     history:  () => request('GET',  '/net-worth-history'),
     backfill: () => request('POST', '/net-worth-backfill'),
   },
+  demoMode: {
+    get: () => request('GET', '/demo-mode'),
+  },
   llm: {
     insights: (payload) => request('POST', '/llm/insights', payload),
     goalAnalysis: (payload) => request('POST', '/llm/goal-analysis', payload),
