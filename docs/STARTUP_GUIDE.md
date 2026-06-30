@@ -56,10 +56,10 @@ restarting your computer and running it again.
 
 ## Part 2 — Get the app on your computer
 
-You need to download the app's files. There are two ways — pick the one that sounds less
+You need to download the app's files. There are three ways — pick the one that sounds least
 scary.
 
-### Option A: GitHub Desktop (easier — recommended)
+### Option A: GitHub Desktop (easier — recommended for staying up to date)
 
 GitHub Desktop is a simple app for downloading and updating code projects without touching
 the terminal.
@@ -87,6 +87,21 @@ If you're comfortable with a terminal, just run:
 git clone https://github.com/oc21-byte/finance-dashboard.git
 cd finance-dashboard
 ```
+
+### Option C: Download as a zip (simplest — no updates)
+
+If you just want to try the app and don't care about getting future updates, you can
+download it as a plain zip file:
+
+1. Go to the project page on GitHub (ask whoever shared this guide for the link).
+2. Click the green **Code** button near the top right.
+3. Click **Download ZIP**.
+4. Open your Downloads folder, find the zip file, and double-click it to unzip it.
+5. Move the resulting folder somewhere convenient (Desktop or Documents works fine).
+
+> **Note:** With this method, getting future updates means downloading a new zip and
+> replacing the folder manually. If you think you'll want updates, Option A is easier
+> in the long run.
 
 ---
 
@@ -119,7 +134,24 @@ Windows), it's done.
 
 ## Part 4 — Launch the app
 
-Every time you want to use the app, you'll do this:
+Every time you want to use the app, you'll do this. Pick whichever option is easier for you.
+
+### Option A: Double-click to launch (easiest)
+
+Inside the app folder there's a launcher file — double-click it and a terminal window will
+open, the app will start, and your browser will open automatically to `http://localhost:5173`.
+
+- **Mac:** double-click **"Launch Finance Dashboard.command"**
+- **Windows:** double-click **"Launch Finance Dashboard.bat"**
+
+> **Mac only — first time:** macOS may warn you that the file is from an unidentified
+> developer. If you see that message, right-click (or Control-click) the file and choose
+> **Open**, then click **Open** again in the dialog. You'll only need to do this once.
+
+> **Important:** Keep the terminal window that opens while you're using the app — it's what's
+> running everything.
+
+### Option B: Terminal / Command Prompt
 
 1. Open Terminal (Mac) or Command Prompt (Windows) inside the app folder (same way as Part 3).
 2. Type this and press Enter:
