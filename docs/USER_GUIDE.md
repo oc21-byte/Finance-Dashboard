@@ -13,9 +13,11 @@ Take it one section at a time — you don't have to read it all at once.
   file on your own machine. It's never uploaded to the cloud or shared with anyone.
 - **You can't really break anything.** If something looks wrong, you can almost always
   delete it and try again. Don't be afraid to click around.
-- **The smart "AI" features are optional.** A few features (the helpful written insights,
-  the chat, and the automatic reading of statements) need a one-time setup. Everything
-  else works without it. We'll cover that setup below.
+- **The AI features are optional, but highly recommended.** Written insights, the chat
+  assistant, automatic statement reading, and smart categorization all need a one-time
+  API key setup — and they make the dashboard significantly more useful. Without them,
+  you're manually entering and categorizing everything yourself. We'll cover the setup
+  below; it only takes a minute.
 
 ---
 
