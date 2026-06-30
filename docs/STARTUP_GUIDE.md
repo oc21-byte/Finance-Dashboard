@@ -59,10 +59,24 @@ restarting your computer and running it again.
 You need to download the app's files. There are three ways — pick the one that sounds least
 scary.
 
+### A quick note: GitHub and Git
+
+**GitHub** is a website where code projects are stored and shared — think of it like Google
+Drive, but for code. The app lives there.
+
+**Git** is the underlying tool that actually downloads ("clones") code from GitHub onto your
+computer. It's a small program, similar to Node.js, that runs quietly in the background.
+
+- **Option A (GitHub Desktop)** installs Git for you automatically — you don't need to do
+  anything extra.
+- **Option B (Terminal)** requires Git to already be on your computer. If you haven't
+  installed GitHub Desktop, you'll need to install Git separately first (instructions below).
+- **Option C (zip download)** doesn't need Git at all.
+
 ### Option A: GitHub Desktop (easier — recommended for staying up to date)
 
 GitHub Desktop is a simple app for downloading and updating code projects without touching
-the terminal.
+the terminal. It includes Git automatically — no separate install needed.
 
 1. Go to [desktop.github.com](https://desktop.github.com/) and click **Download for Mac**
    (or Windows). Install it like any normal app.
@@ -72,21 +86,64 @@ the terminal.
 4. Click the **URL** tab.
 5. Paste in the address of the project (whoever shared this guide with you can give you the
    URL — it looks like `https://github.com/oc21-byte/finance-dashboard`).
-6. Under **Local Path**, choose where on your computer you want to save the files — your
-   Desktop or Documents folder works great.
+6. Under **Local Path**, click **Choose…** and select your **Desktop**. This way the app
+   folder will be easy to find.
 7. Click **Clone**.
 
-The app will download. You'll see a folder appear at the location you chose. That folder is
-your app.
+The app will download. You'll see a `finance-dashboard` folder appear on your Desktop.
+That folder is your app.
+
+> **Want to move it later?** If the folder ends up somewhere you don't like, you can move it
+> the same way you'd move any folder — drag and drop it wherever you want in Finder (Mac) or
+> File Explorer (Windows). Just remember the new location for future steps.
 
 ### Option B: Terminal / command line
 
-If you're comfortable with a terminal, just run:
+This option uses the `git` command directly in your terminal. Before you can run it, **Git
+must be installed on your computer**.
+
+**Install Git first (if you haven't already)**
+
+*On a Mac:*
+
+1. Open **Terminal** (press ⌘ Space, type "Terminal", press Enter).
+2. Type `git --version` and press Enter.
+3. If Git is already installed, you'll see a version number — skip to the clone step below.
+   If not, macOS will automatically pop up a window and ask if you'd like to install
+   **Xcode Command Line Tools** — click **Install** and wait a few minutes. Git is included.
+
+*On Windows:*
+
+1. Go to [git-scm.com/download/win](https://git-scm.com/download/win) — the download will
+   start automatically.
+2. Open the installer and click through the wizard. **Leave all the options at their
+   defaults** and click **Next → Next → Install**. The defaults are fine.
+3. Once installed, open a new Command Prompt and type `git --version` to confirm it worked.
+
+**Clone the project onto your Desktop**
+
+Once Git is installed, open Terminal (Mac) or Command Prompt (Windows) and run these
+commands one at a time, pressing Enter after each:
+
+*On a Mac:*
 
 ```bash
+cd ~/Desktop
 git clone https://github.com/oc21-byte/finance-dashboard.git
 cd finance-dashboard
 ```
+
+*On Windows:*
+
+```bash
+cd %USERPROFILE%\Desktop
+git clone https://github.com/oc21-byte/finance-dashboard.git
+cd finance-dashboard
+```
+
+The first command navigates to your Desktop. The second downloads the project there, creating
+a `finance-dashboard` folder. The third steps into that folder so you're ready for the next
+part.
 
 ### Option C: Download as a zip (simplest — no updates)
 
@@ -141,8 +198,8 @@ Every time you want to use the app, you'll do this. Pick whichever option is eas
 Inside the app folder there's a launcher file — double-click it and a terminal window will
 open, the app will start, and your browser will open automatically to `http://localhost:5173`.
 
-- **Mac:** double-click **"Launch Finance Dashboard.command"**
-- **Windows:** double-click **"Launch Finance Dashboard.bat"**
+- **Mac:** double-click **"(Mac) Launch Finance Dashboard.command"**
+- **Windows:** double-click **"(Windows) Launch Finance Dashboard.bat"**
 
 > **Mac only — first time:** macOS may warn you that the file is from an unidentified
 > developer. If you see that message, right-click (or Control-click) the file and choose
