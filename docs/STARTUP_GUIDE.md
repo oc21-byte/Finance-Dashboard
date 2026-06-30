@@ -3,8 +3,7 @@
 *For people who've never done this before — no tech experience needed.*
 
 Welcome! This guide walks you through getting the Finance Dashboard running on your computer
-for the very first time. Follow the steps in order and you'll be up and running in about 15
-minutes.
+for the very first time. Follow the steps in order and you'll be up and running in about 15 minutes.
 
 ---
 
@@ -72,7 +71,7 @@ the terminal.
 3. In the top menu, click **File → Clone Repository**.
 4. Click the **URL** tab.
 5. Paste in the address of the project (whoever shared this guide with you can give you the
-   URL — it looks like `https://github.com/someone/finance-dashboard`).
+   URL — it looks like `https://github.com/oc21-byte/finance-dashboard`).
 6. Under **Local Path**, choose where on your computer you want to save the files — your
    Desktop or Documents folder works great.
 7. Click **Clone**.
@@ -143,12 +142,23 @@ http://localhost:5173
 
 That's it — the dashboard opens in your browser, just like any website.
 
-> **Important:** Keep the Terminal / Command Prompt window open while you're using the app.
-> The window is what's running everything. Close it and the app stops. When you're done for
-> the day, you can close the window (or press **Ctrl + C** inside it first to stop cleanly).
+> **Important:** Keep the Terminal / Command Prompt window open while you're using the app —
+> the window is what's running everything.
+
+### Stopping the app
+
+The cleanest way is to use the **Close App button** built into the dashboard itself:
+
+1. In the top-right corner of the app (next to the Settings gear), click the **red stop icon** (⏹).
+2. A small confirmation pop-up appears — click **Close App**.
+3. The server shuts down, and the pop-up changes to show a **Close Tab** button. Click it to close your browser tab.
+
+Alternatively, switch back to your Terminal / Command Prompt window and press **Ctrl + C**.
+Both methods work; the in-app button is just more convenient.
 
 > **VS Code users:** You can open an integrated terminal inside VS Code with `` Ctrl+` ``
 > (backtick) and run `npm run dev` from there. The app stays running in that terminal panel.
+> Use the Close App button as usual to stop it.
 
 ---
 

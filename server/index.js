@@ -261,6 +261,7 @@ app.get('/api/prices', async (req, res) => {
 
 // Full current value of a single source (before applying the link percentage).
 function sourceValue(db, link, priceMap) {
+  if (link.sourceType === 'cash') return db.settings.cashBalance ?? 0
   if (link.sourceType === 'savings') {
     const acct = (db.savings_accounts ?? []).find(a => a.id === link.sourceId)
     return acct ? acct.balance : 0
@@ -278,6 +279,7 @@ function sourceValue(db, link, priceMap) {
 
 // Human-readable name for a link's source, e.g. "Capital One HYSA" or "TFSA holdings".
 function sourceName(db, link) {
+  if (link.sourceType === 'cash') return 'Cash Balance'
   if (link.sourceType === 'savings') {
     const acct = (db.savings_accounts ?? []).find(a => a.id === link.sourceId)
     return acct ? acct.name : 'Unknown account'
@@ -336,8 +338,9 @@ function validateGoalLinks(db, links, excludeGoalId = null) {
   if (!Array.isArray(links)) return 'links must be an array'
   for (const link of links) {
     const { sourceType, sourceId, percent } = link
-    if (sourceType !== 'savings' && sourceType !== 'holdingsAccountType') return `Invalid sourceType: ${sourceType}`
+    if (sourceType !== 'savings' && sourceType !== 'holdingsAccountType' && sourceType !== 'cash') return `Invalid sourceType: ${sourceType}`
     if (typeof percent !== 'number' || percent <= 0 || percent > 100) return 'percent must be between 0 and 100'
+    if (sourceType === 'cash' && sourceId !== 'cash') return 'Invalid cash sourceId'
     if (sourceType === 'savings' && !(db.savings_accounts ?? []).some(a => a.id === sourceId)) {
       return `Savings account not found: ${sourceId}`
     }
@@ -360,7 +363,7 @@ app.get('/api/goals', async (req, res) => {
     const { currentAmount, breakdown, isLinked } = computeGoalProgress(db, g, priceMap)
     const withAmount = { ...g, currentAmount }
     const investContribPerMonth = investContribForGoal(db, g, fin)
-    const tl = goalTimeline(withAmount, goalGrowthRate(db, withAmount, priceMap), investContribPerMonth)
+    const tl = goalTimeline(withAmount, goalGrowthRate(db, withAmount, priceMap))
     return {
       ...g,
       currentAmount,
@@ -428,7 +431,9 @@ app.get('/api/goal-sources', async (req, res) => {
     }
   }
 
+  const cashBalance = db.settings.cashBalance ?? 0
   const sources = [
+    ...(cashBalance > 0 ? [build({ sourceType: 'cash', sourceId: 'cash' })] : []),
     ...(db.savings_accounts ?? []).map(a => build({ sourceType: 'savings', sourceId: a.id })),
     ...buckets.map(b => build({ sourceType: 'holdingsAccountType', sourceId: b })),
   ]
@@ -902,10 +907,9 @@ function projectWithGrowth({ balance, monthly, target, annualRate }) {
 // Pre-computed, plain-English timeline verdict for a goal so the prompt never asks the
 // model to do date arithmetic. Returns the linear (baseline) verdict plus, when a meaningful
 // `growth` rate is supplied, an additive, clearly-labeled optimistic "with growth" projection.
-function goalTimeline(goal, growth = null, investContribPerMonth = 0) {
+function goalTimeline(goal, growth = null) {
   const remaining = Math.max(0, goal.targetAmount - goal.currentAmount)
-  const effectiveMonthly = (goal.monthlySavings || 0) + investContribPerMonth
-  const monthsAtCurrent = effectiveMonthly > 0 ? Math.ceil(remaining / effectiveMonthly) : null
+  const monthsAtCurrent = goal.monthlySavings > 0 ? Math.ceil(remaining / goal.monthlySavings) : null
   const monthsToTarget = monthsUntil(goal.targetDate)
   const projectedDate = monthsAtCurrent == null ? null : dateAfterMonths(monthsAtCurrent)
   const requiredMonthly = (monthsToTarget != null && monthsToTarget > 0) ? Math.ceil(remaining / monthsToTarget) : null
@@ -918,7 +922,7 @@ function goalTimeline(goal, growth = null, investContribPerMonth = 0) {
   } else if (monthsAtCurrent <= monthsToTarget) {
     verdict = `ON TRACK: at the current rate the goal is reached in ${monthsAtCurrent} months (${projectedDate}), about ${monthsToTarget - monthsAtCurrent} month(s) BEFORE the ${monthYearLabel(goal.targetDate)} target.`
   } else {
-    verdict = `BEHIND: at the current rate the goal is reached in ${monthsAtCurrent} months (${projectedDate}), which is ${monthsAtCurrent - monthsToTarget} month(s) AFTER the ${monthYearLabel(goal.targetDate)} target. To hit the target date the user must save about $${requiredMonthly}/month (currently $${effectiveMonthly}/month effective).`
+    verdict = `BEHIND: at the current rate the goal is reached in ${monthsAtCurrent} months (${projectedDate}), which is ${monthsAtCurrent - monthsToTarget} month(s) AFTER the ${monthYearLabel(goal.targetDate)} target. To hit the target date the user must save about $${requiredMonthly}/month (currently $${goal.monthlySavings || 0}/month).`
   }
 
   let growthMonths = null, growthDate = null, growthVerdict = null, blendedAnnualRate = null, assumedReturnUsed = null, hasInvestments = false
@@ -928,7 +932,7 @@ function goalTimeline(goal, growth = null, investContribPerMonth = 0) {
     hasInvestments = growth.hasInvestments
     const proj = projectWithGrowth({
       balance: goal.currentAmount,
-      monthly: effectiveMonthly,
+      monthly: goal.monthlySavings || 0,
       target: goal.targetAmount,
       annualRate: growth.blendedAnnualRate,
     })
@@ -952,7 +956,7 @@ function goalTimeline(goal, growth = null, investContribPerMonth = 0) {
     }
   }
 
-  return { remaining, monthsAtCurrent, monthsToTarget, projectedDate, requiredMonthly, verdict, growthMonths, growthDate, growthVerdict, blendedAnnualRate, assumedReturnUsed, hasInvestments, effectiveMonthly }
+  return { remaining, monthsAtCurrent, monthsToTarget, projectedDate, requiredMonthly, verdict, growthMonths, growthDate, growthVerdict, blendedAnnualRate, assumedReturnUsed, hasInvestments }
 }
 
 // Plain-English line describing which accounts back a goal, e.g.
@@ -1122,8 +1126,6 @@ app.post('/api/llm/goal-analysis', async (req, res) => {
   const priceMap = await fetchPrices((db.holdings ?? []).map(h => h.ticker).filter(Boolean))
   const goal = goalWithProgress(db, rawGoal, priceMap)
   const fundingLine = goalFundingLine(goal.breakdown)
-  const investContribPerMonth = investContribForGoal(db, rawGoal, fin)
-  const effectiveMonthly = (rawGoal.monthlySavings || 0) + investContribPerMonth
 
   const allGoalsSummary = db.goals
     .map(g => {
@@ -1140,19 +1142,15 @@ app.post('/api/llm/goal-analysis', async (req, res) => {
   const netWorth = cashBalance + savingsTotal + portfolioValue
   const netWorthSummary = `Cash: $${cashBalance.toFixed(2)}, Savings accounts: $${savingsTotal.toFixed(2)}, Portfolio (cost basis): $${portfolioValue.toFixed(2)}, Total: $${netWorth.toFixed(2)}`
 
-  const tl = goalTimeline(goal, goalGrowthRate(db, goal, priceMap), investContribPerMonth)
+  const tl = goalTimeline(goal, goalGrowthRate(db, goal, priceMap))
   const volatilityNote = goal.breakdown.some(b => b.sourceType === 'holdingsAccountType')
     ? '\nNote: part of this goal is backed by investments, so its value moves with the market — mention this volatility if relevant.'
     : ''
 
-  const monthlyRateLine = investContribPerMonth > 0
-    ? `Monthly savings rate: ${goal.monthlySavings ? '$' + goal.monthlySavings : 'not set'}\nAvg monthly investment contributions (linked account): $${investContribPerMonth}\nEffective combined monthly rate: $${effectiveMonthly}`
-    : `Monthly savings rate: ${goal.monthlySavings ? '$' + goal.monthlySavings : 'not set'}`
-
   const userMsg = `Goal being analyzed: ${goal.name}
 Target: $${goal.targetAmount} | Saved: $${goal.currentAmount} (${goal.targetAmount > 0 ? Math.round(goal.currentAmount / goal.targetAmount * 100) : 0}%)
 Remaining: $${tl.remaining}
-${monthlyRateLine}
+Monthly savings rate: ${goal.monthlySavings ? '$' + goal.monthlySavings : 'not set'}
 Target date: ${goal.targetDate || 'not set'}${tl.monthsToTarget == null ? '' : ` (${monthYearLabel(goal.targetDate)}, ${tl.monthsToTarget} months from today)`}
 ${fundingLine ? fundingLine + '\n' : ''}
 Timeline (already computed — use these figures, do NOT recompute dates yourself):
@@ -1166,13 +1164,13 @@ ${netWorthSummary}
 
 ${formatMonthlyFinancials(fin)}${volatilityNote}
 
-Write 3–4 sentences: (1) state plainly whether they are on track or behind for the target date using the Timeline above — if behind, say so directly and give the monthly savings rate needed to hit the date; (2) name one specific credit-card spending category (from the breakdown) to reduce and roughly how much sooner it would get them there; (3) briefly state the data basis you used — how many full months and that expenses come from bank transactions — so the user understands where the numbers come from. Be specific, practical, and honest. Do not add the card breakdown to total expenses. Plain text only, no markdown.`
+Write 3–4 sentences: (1) state whether they are on track or behind using the linear Timeline — if a growth projection is also provided, present both as a range (e.g. "conservatively X months, or as few as Y months if returns hold") and make clear the optimistic figure assumes investment returns; if behind on the linear timeline, give the monthly savings rate needed to hit the target date; (2) name one specific credit-card spending category (from the breakdown) to reduce and roughly how much sooner it would get them there; (3) briefly state the data basis — how many full months and that expenses come from bank transactions. Be specific, practical, and honest. Do not add the card breakdown to total expenses. Plain text only, no markdown.`
 
   try {
     const text = await callLLM({
       system: `You are a practical personal finance advisor. ${todayLine()} Be concise and specific.`,
       userMessages: [{ role: 'user', content: userMsg }],
-      maxTokens: 256,
+      maxTokens: 512,
     })
     res.json({ analysis: text.trim() })
   } catch (err) {
@@ -1306,8 +1304,6 @@ app.post('/api/llm/goal-chat', async (req, res) => {
   const priceMap = await fetchPrices((db.holdings ?? []).map(h => h.ticker).filter(Boolean))
   const goal = goalWithProgress(db, rawGoal, priceMap)
   const fundingLine = goalFundingLine(goal.breakdown)
-  const investContribPerMonth = investContribForGoal(db, rawGoal, fin)
-  const effectiveMonthly = (rawGoal.monthlySavings || 0) + investContribPerMonth
 
   const allGoalLines = db.goals.map(g => {
     const { currentAmount } = computeGoalProgress(db, g, priceMap)
@@ -1320,18 +1316,14 @@ app.post('/api/llm/goal-chat', async (req, res) => {
   const portfolioValue = (db.holdings ?? []).reduce((s, h) => s + h.purchasePrice * h.shares, 0)
 
   const pct = goal.targetAmount > 0 ? Math.round(goal.currentAmount / goal.targetAmount * 100) : 0
-  const tl = goalTimeline(goal, goalGrowthRate(db, goal, priceMap), investContribPerMonth)
-
-  const chatMonthlyRateLine = investContribPerMonth > 0
-    ? `Monthly savings rate: ${goal.monthlySavings ? '$' + goal.monthlySavings : 'not set'}\nAvg monthly investment contributions (linked account): $${investContribPerMonth}\nEffective combined monthly rate: $${effectiveMonthly}`
-    : `Monthly savings rate: ${goal.monthlySavings ? '$' + goal.monthlySavings : 'not set'}`
+  const tl = goalTimeline(goal, goalGrowthRate(db, goal, priceMap))
 
   const systemMsg = `You are a personal finance advisor helping with a savings goal. ${todayLine()}
 
 Goal: ${goal.name}
 Target: $${goal.targetAmount} | Saved: $${goal.currentAmount} (${pct}%)
 Remaining: $${tl.remaining}
-${chatMonthlyRateLine}
+Monthly savings rate: ${goal.monthlySavings ? '$' + goal.monthlySavings : 'not set'}
 Target date: ${goal.targetDate || 'not set'}${tl.monthsToTarget == null ? '' : ` (${monthYearLabel(goal.targetDate)}, ${tl.monthsToTarget} months from today)`}
 ${fundingLine ? fundingLine + '\n' : ''}
 Timeline (already computed — use these figures, do NOT recompute dates yourself):
@@ -1344,7 +1336,7 @@ Net worth: Cash $${cashBalance.toFixed(2)}, Savings $${savingsTotal.toFixed(2)},
 
 ${formatMonthlyFinancials(fin)}
 
-Be concise, specific, and honest about whether they are on track. Answer in 2–4 sentences.`
+Be concise, specific, and honest. When a growth projection is available, acknowledge both the conservative and optimistic estimates. Answer in 2–4 sentences.`
 
   try {
     const text = await callLLM({ system: systemMsg, userMessages: messages, maxTokens: 512 })

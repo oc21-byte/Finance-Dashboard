@@ -417,6 +417,12 @@ sanity check on whether you have enough set aside for a rainy day.
 Each goal shows up as a card with a progress bar, the percentage you've reached, and — if
 you entered a monthly amount — a friendly estimate like *"~12 months to go."*
 
+If your goal has **linked investment accounts**, the app also factors in your average monthly
+investment contributions (calculated from your bank history). The card will show something
+like *"Saving $600/mo ($200 manual + $400 avg investment contrib)"* and use the combined rate
+for the timeline estimate. This means you don't have to manually account for regular brokerage
+or retirement contributions when projecting how long a goal will take.
+
 ### Keeping a goal updated
 
 - **Linked goal?** Nothing to do — the progress bar updates automatically as your account
@@ -485,6 +491,9 @@ tell them apart. You can change the assumed investment return percentage in Sett
   it to change it. Don't stress about getting them perfect on import — clean them up whenever.
 - **The AI is powered by your own key.** Anything the AI features do uses the key you added,
   and your information stays on your machine. No surprises.
+- **To stop the app**, click the **red stop icon** in the top-right corner of the nav bar
+  (next to the Settings gear). A confirmation modal appears — click **Close App**, then
+  **Close Tab** when it's done. No need to touch the terminal.
 - **Want to show the app to someone without exposing your real data?** Ask whoever set it
   up to enable Demo Mode — it loads sample data and blocks any edits, so you can click
   through everything safely.
