@@ -65,7 +65,49 @@ const BOTTOM_NAV = [
   },
 ]
 
+import { useState, useEffect } from 'react'
+import { api } from '../api/client.js'
+
 export default function Layout({ activeTab, onTabChange, children, demoMode }) {
+  const [showExitModal, setShowExitModal] = useState(false)
+  const [shuttingDown, setShuttingDown] = useState(false)
+  const [shutdownError, setShutdownError] = useState(false)
+  const [shutdownDone, setShutdownDone] = useState(false)
+
+  useEffect(() => {
+    const handler = (e) => { e.preventDefault(); e.returnValue = '' }
+    const onHide = (e) => { if (!e.persisted) navigator.sendBeacon('/api/shutdown') }
+    window.addEventListener('beforeunload', handler)
+    window.addEventListener('pagehide', onHide)
+    return () => {
+      window.removeEventListener('beforeunload', handler)
+      window.removeEventListener('pagehide', onHide)
+    }
+  }, [])
+
+  async function handleShutdown() {
+    setShuttingDown(true)
+    setShutdownError(false)
+    try {
+      await api.shutdown()
+      setShutdownDone(true)
+    } catch (err) {
+      // ERR_CONNECTION_REFUSED / network drop = server exited cleanly (success)
+      if (err instanceof TypeError) {
+        setShutdownDone(true)
+        return
+      }
+      setShuttingDown(false)
+      setShutdownError(true)
+    }
+  }
+
+  function handleModalClose() {
+    setShowExitModal(false)
+    setShuttingDown(false)
+    setShutdownError(false)
+  }
+
   return (
     <div className="min-h-screen bg-gray-50">
       <nav className="bg-white border-b border-gray-200 shadow-sm">
@@ -91,23 +133,34 @@ export default function Layout({ activeTab, onTabChange, children, demoMode }) {
                 ))}
               </div>
             </div>
-            <button
-              onClick={() => onTabChange('settings')}
-              className={`p-2 rounded-md transition-colors ${
-                activeTab === 'settings'
-                  ? 'bg-gray-100 text-gray-900'
-                  : 'text-gray-400 hover:text-gray-600 hover:bg-gray-50'
-              }`}
-              title="Settings"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                <path
-                  fillRule="evenodd"
-                  d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z"
-                  clipRule="evenodd"
-                />
-              </svg>
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => onTabChange('settings')}
+                className={`p-2 rounded-md transition-colors ${
+                  activeTab === 'settings'
+                    ? 'bg-gray-100 text-gray-900'
+                    : 'text-gray-400 hover:text-gray-600 hover:bg-gray-50'
+                }`}
+                title="Settings"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                  <path
+                    fillRule="evenodd"
+                    d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+              </button>
+              <button
+                onClick={() => setShowExitModal(true)}
+                className="p-2 rounded-md transition-colors text-gray-400 hover:text-red-500 hover:bg-red-50"
+                title="Close App"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a1 1 0 00-1 1v4a1 1 0 001 1h4a1 1 0 001-1V8a1 1 0 00-1-1H8z" clipRule="evenodd" />
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
       </nav>
@@ -141,6 +194,55 @@ export default function Layout({ activeTab, onTabChange, children, demoMode }) {
           ))}
         </div>
       </nav>
+
+      {showExitModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-sm">
+            <div className="p-6">
+              <h2 className="text-lg font-semibold text-gray-900 mb-2">
+                {shutdownDone ? 'App stopped' : 'Close Finance Dashboard?'}
+              </h2>
+              <p className="text-sm text-gray-600">
+                {shutdownDone
+                  ? 'The server has been shut down. You can now close this tab.'
+                  : 'This will stop the server and close the app. You can relaunch it any time by double-clicking the launch file.'}
+              </p>
+              {shutdownError && (
+                <p className="mt-3 text-sm text-red-600 font-medium">
+                  Could not reach the server — it may already be stopped. You can close this tab.
+                </p>
+              )}
+            </div>
+            {shutdownDone ? (
+              <div className="px-6 pb-6">
+                <button
+                  onClick={() => window.close()}
+                  className="w-full px-4 py-2 rounded-lg bg-gray-800 text-sm font-medium text-white hover:bg-gray-900 transition-colors"
+                >
+                  Close Tab
+                </button>
+              </div>
+            ) : (
+              <div className="flex gap-3 px-6 pb-6">
+                <button
+                  onClick={handleModalClose}
+                  disabled={shuttingDown}
+                  className="flex-1 px-4 py-2 rounded-lg border border-gray-200 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleShutdown}
+                  disabled={shuttingDown}
+                  className="flex-1 px-4 py-2 rounded-lg bg-red-600 text-sm font-medium text-white hover:bg-red-700 transition-colors disabled:opacity-50"
+                >
+                  {shuttingDown ? 'Shutting down…' : shutdownError ? 'Retry' : 'Close App'}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

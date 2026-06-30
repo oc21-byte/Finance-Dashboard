@@ -2,7 +2,20 @@
 
 A personal finance dashboard that runs entirely on your local machine. Track bank transactions, credit card spending, investments, savings goals, and net worth — all stored locally in a single JSON file with no cloud sync or third-party accounts required.
 
-Built with React + Vite (frontend) and Express (backend), with Claude AI powering PDF statement parsing (Vision), transaction categorization, spending insights, and budget generation.
+Built with React + Vite (frontend) and Express (backend), with AI features (Claude or ChatGPT) powering PDF statement parsing, transaction categorization, spending insights, and budget generation.
+
+---
+
+## Features
+
+| Tab | What it does |
+|---|---|
+| **Dashboard** | Net worth over time, cash flow chart, goal progress, AI insights |
+| **Finances** | Import bank statements (CSV or PDF), manage transactions, track income vs expenses |
+| **Spend Analyzer** | Credit card spending by category and merchant, AI recategorization |
+| **Budget** | Per-category spending caps, savings targets, AI-powered Budget Builder |
+| **Investments** | Holdings tracker with live prices (Yahoo Finance), purchase lots, savings accounts |
+| **Goals** | Savings goals with emergency fund calculator, linked accounts, growth projections |
 
 ---
 
@@ -10,7 +23,7 @@ Built with React + Vite (frontend) and Express (backend), with Claude AI powerin
 
 - [Node.js](https://nodejs.org/) v18 or later
 - npm (comes with Node.js)
-- A [Claude API key](https://console.anthropic.com/) from Anthropic (**required** — used for PDF statement parsing, transaction categorization, and AI insights)
+- A Claude (Anthropic) or OpenAI API key — needed for AI features (PDF parsing, categorization, insights, budget generation). Basic tracking works without one.
 
 ---
 
@@ -84,15 +97,20 @@ That's it! The app will download the latest code automatically. Your data files 
 
 ---
 
-## Adding your Claude API key (required)
+## Adding your AI key
 
-A Claude API key is required. It powers PDF statement parsing via Claude Vision, automatic transaction categorization, spending insights, and budget generation.
+AI features (PDF parsing, auto-categorization, insights, Budget Builder) need an API key. You can use either Claude or ChatGPT — pick whichever you prefer.
 
-1. Get a key at [console.anthropic.com](https://console.anthropic.com/)
-2. Go to the **Settings** tab inside the dashboard
-3. Paste your key and save
+1. Get a key:
+   - **Claude:** [console.anthropic.com](https://console.anthropic.com/) — go to **API Keys**, create a key, add a few dollars of credits under **Billing**
+   - **ChatGPT:** [platform.openai.com](https://platform.openai.com/) — go to **API Keys**, create a key, add credits under **Billing → Add to credit balance**
+2. Open the dashboard and go to the **Settings** tab
+3. Under **AI Provider**, select Claude or ChatGPT
+4. Paste your key and click **Save Key**
 
-The key is stored only in your local `data/db.json` and is never sent anywhere except directly to Anthropic's API from your machine.
+The key is stored only in your local `data/db.json` and is never sent anywhere except directly to the AI provider from your machine.
+
+> **First time doing this?** See [docs/STARTUP_GUIDE.md](docs/STARTUP_GUIDE.md) for a step-by-step walkthrough with screenshots-style instructions.
 
 ---
 
@@ -100,8 +118,15 @@ The key is stored only in your local `data/db.json` and is never sent anywhere e
 
 All financial data lives in `data/db.json` on your computer. Nothing is synced to a server or cloud. The only outbound network requests are:
 
-- **Anthropic API** — when you use AI features (requires your Claude API key)
+- **Anthropic API** — when you use AI features with a Claude key
+- **OpenAI API** — when you use AI features with an OpenAI key
 - **Yahoo Finance** — to fetch live stock prices for your investment holdings
+
+---
+
+## Demo mode
+
+A demo mode ships with mock data so you can explore the app without entering real financial information. To enable it, set `DEMO_MODE = true` in `server/config.js`. An amber banner will appear at the top of the app and all data edits will be blocked.
 
 ---
 
@@ -110,11 +135,15 @@ All financial data lives in `data/db.json` on your computer. Nothing is synced t
 ```
 finance-dashboard/
 ├── src/              # React frontend
-│   ├── pages/        # Dashboard, Finances, Investments, Goals, etc.
+│   ├── pages/        # Dashboard, Finances, SpendAnalyzer, Budget, Investments, Goals, Settings
 │   ├── components/   # Shared UI components
 │   └── api/          # API client (all backend calls go through here)
 ├── server/
-│   └── index.js      # Express backend + all API routes
+│   ├── index.js      # Express backend + all API routes
+│   └── config.js     # Server config (DEMO_MODE flag)
+├── docs/
+│   ├── USER_GUIDE.md     # End-user feature guide
+│   └── STARTUP_GUIDE.md  # First-time setup for non-technical users
 ├── data/
 │   └── db.json       # Your local data (git-ignored)
 └── package.json

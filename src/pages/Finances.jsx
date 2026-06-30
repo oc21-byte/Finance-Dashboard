@@ -93,6 +93,7 @@ function buildPeriodData(transactions, period) {
 export default function Finances({ demoMode }) {
   const fileInputRef = useRef()
   const pendingFileRef = useRef(null)
+  const pendingUploadMetaRef = useRef(null)
   const queryClient = useQueryClient()
 
   const [csvModalData, setCsvModalData] = useState(null)
@@ -125,6 +126,11 @@ export default function Finances({ demoMode }) {
   const allCategories = FINANCE_CATEGORIES
   const allCategoryColors = FINANCE_CATEGORY_COLORS
 
+  const historyMutation = useMutation({
+    mutationFn: api.uploadHistory.create,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['upload-history'] }),
+  })
+
   const batchMutation = useMutation({
     mutationFn: api.transactions.batch,
     onSuccess: (imported) => {
@@ -134,8 +140,20 @@ export default function Finances({ demoMode }) {
       setAutoDetectData(null)
       setImportStatus({ type: 'success', message: `Imported ${imported.length} transactions.` })
       setTimeout(() => setImportStatus(null), 4000)
+      const meta = pendingUploadMetaRef.current
+      if (meta) {
+        historyMutation.mutate({
+          filename: meta.filename,
+          sourceName: meta.sourceName ?? '',
+          transactionCount: imported.length,
+        })
+        pendingUploadMetaRef.current = null
+      }
     },
-    onError: () => setImportStatus({ type: 'error', message: 'Import failed. Please try again.' }),
+    onError: () => {
+      pendingUploadMetaRef.current = null
+      setImportStatus({ type: 'error', message: 'Import failed. Please try again.' })
+    },
   })
 
   const addMutation = useMutation({
@@ -180,6 +198,7 @@ export default function Finances({ demoMode }) {
   const PAYMENT_RE = /\b(payment\s*(-\s*)?(thank\s*you|received|applied|posted)|autopay|auto\s*pay|directpay|online\s*payment|electronic\s*payment|ach\s*payment|mobile\s*payment)\b/i
 
   async function triggerVision(file) {
+    pendingUploadMetaRef.current = { filename: file.name }
     setCsvModalData(null)
     setImportStatus({ type: 'loading', message: 'Scanned PDF detected — analyzing with AI…' })
     try {
@@ -684,9 +703,15 @@ export default function Finances({ demoMode }) {
           initialSourceName={localStorage.getItem('visionSource_finances') || 'Bank Statement'}
           onConfirm={(sourceName, txs) => {
             localStorage.setItem('visionSource_finances', sourceName)
+            if (pendingUploadMetaRef.current) {
+              pendingUploadMetaRef.current.sourceName = sourceName
+            }
             batchMutation.mutate(txs)
           }}
-          onCancel={() => setVisionData(null)}
+          onCancel={() => {
+            pendingUploadMetaRef.current = null
+            setVisionData(null)
+          }}
         />
       )}
       {autoDetectData && (

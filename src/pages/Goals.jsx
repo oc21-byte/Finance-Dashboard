@@ -24,10 +24,11 @@ function progressColor(pct) {
 
 function timelineText(goal) {
   const remaining = goal.targetAmount - goal.currentAmount
-  if (remaining <= 0 || !goal.monthlySavings) return null
-  const months = Math.ceil(remaining / goal.monthlySavings)
+  const effectiveMonthly = (goal.monthlySavings || 0) + (goal.investContribPerMonth || 0)
+  if (remaining <= 0 || !effectiveMonthly) return null
+  const months = Math.ceil(remaining / effectiveMonthly)
   const reachDate = dayjs().add(months, 'month').format('MMM YYYY')
-  return `At $${fmt(goal.monthlySavings)}/mo — ~${months} month${months === 1 ? '' : 's'} to go (est. ${reachDate})`
+  return `At $${fmt(effectiveMonthly)}/mo — ~${months} month${months === 1 ? '' : 's'} to go (est. ${reachDate})`
 }
 
 // One-click suggestion to fill the monthly-savings field from the user's real average contribution.
@@ -662,8 +663,17 @@ export default function Goals() {
                   )}
 
                   {/* Monthly savings */}
-                  {goal.monthlySavings > 0 && (
-                    <p className="text-xs text-gray-500">Saving ${fmt(goal.monthlySavings)} / mo</p>
+                  {((goal.monthlySavings > 0) || (goal.investContribPerMonth > 0)) && (
+                    <div className="text-xs text-gray-500">
+                      {goal.investContribPerMonth > 0 ? (
+                        <span>
+                          Saving ${fmt((goal.monthlySavings || 0) + goal.investContribPerMonth)} / mo
+                          <span className="text-gray-400"> (${fmt(goal.monthlySavings || 0)} manual + ${fmt(goal.investContribPerMonth)} avg investment contrib)</span>
+                        </span>
+                      ) : (
+                        <span>Saving ${fmt(goal.monthlySavings)} / mo</span>
+                      )}
+                    </div>
                   )}
 
                   {/* Timeline estimate */}

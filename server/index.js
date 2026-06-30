@@ -5,6 +5,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { v4 as uuidv4 } from 'uuid'
 import Anthropic from '@anthropic-ai/sdk'
+import OpenAI from 'openai'
 import { DEMO_MODE } from './config.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -18,8 +19,11 @@ const DEFAULT_DB = {
   goals: [],
   savings_accounts: [],
   netWorthHistory: [],
+  uploadHistory: [],
   settings: {
     claudeApiKey: '',
+    openaiApiKey: '',
+    aiProvider: 'claude',
     customCategories: [],
     cashBalance: 0,
     confirmedMonthlyIncome: null,
@@ -351,15 +355,18 @@ function validateGoalLinks(db, links, excludeGoalId = null) {
 app.get('/api/goals', async (req, res) => {
   const db = readDb()
   const priceMap = await fetchPrices(tickersForGoalLinks(db))
+  const fin = buildMonthlyFinancials(db)
   const goals = (db.goals ?? []).map(g => {
     const { currentAmount, breakdown, isLinked } = computeGoalProgress(db, g, priceMap)
     const withAmount = { ...g, currentAmount }
-    const tl = goalTimeline(withAmount, goalGrowthRate(db, withAmount, priceMap))
+    const investContribPerMonth = investContribForGoal(db, g, fin)
+    const tl = goalTimeline(withAmount, goalGrowthRate(db, withAmount, priceMap), investContribPerMonth)
     return {
       ...g,
       currentAmount,
       linkedBreakdown: breakdown,
       isLinked,
+      investContribPerMonth,
       growthMonths: tl.growthMonths,
       growthDate: tl.growthDate,
       growthVerdict: tl.growthVerdict,
@@ -451,16 +458,16 @@ app.get('/api/monthly-financials', (req, res) => {
 
 app.get('/api/settings', (req, res) => {
   const db = readDb()
-  const { claudeApiKey, ...rest } = db.settings
-  res.json({ ...rest, assumedAnnualReturn: rest.assumedAnnualReturn ?? 0.06, hasClaudeApiKey: !!(claudeApiKey) })
+  const { claudeApiKey, openaiApiKey, ...rest } = db.settings
+  res.json({ ...rest, assumedAnnualReturn: rest.assumedAnnualReturn ?? 0.06, hasClaudeApiKey: !!(claudeApiKey), hasOpenaiApiKey: !!(openaiApiKey) })
 })
 
 app.put('/api/settings', (req, res) => {
   const db = readDb()
   db.settings = { ...db.settings, ...req.body }
   writeDb(db)
-  const { claudeApiKey, ...rest } = db.settings
-  res.json({ ...rest, hasClaudeApiKey: !!(claudeApiKey) })
+  const { claudeApiKey, openaiApiKey, ...rest } = db.settings
+  res.json({ ...rest, hasClaudeApiKey: !!(claudeApiKey), hasOpenaiApiKey: !!(openaiApiKey) })
 })
 
 // --- Batch transactions ---
@@ -472,6 +479,39 @@ app.post('/api/transactions/batch', (req, res) => {
   db.transactions.push(...newTxs)
   writeDb(db)
   res.status(201).json(newTxs)
+})
+
+// --- Upload History ---
+
+app.get('/api/upload-history', (req, res) => {
+  const db = readDb()
+  res.json((db.uploadHistory ?? []).slice().reverse())
+})
+
+app.post('/api/upload-history', (req, res) => {
+  const db = readDb()
+  if (!db.uploadHistory) db.uploadHistory = []
+  const { filename, sourceName, transactionCount } = req.body
+  const entry = {
+    id: uuidv4(),
+    filename: filename || 'unknown.pdf',
+    sourceName: sourceName || '',
+    transactionCount: Number(transactionCount) || 0,
+    importedAt: new Date().toISOString(),
+  }
+  db.uploadHistory.push(entry)
+  writeDb(db)
+  res.status(201).json(entry)
+})
+
+app.delete('/api/upload-history/:id', (req, res) => {
+  const db = readDb()
+  if (!db.uploadHistory) db.uploadHistory = []
+  const idx = db.uploadHistory.findIndex(e => e.id === req.params.id)
+  if (idx === -1) return res.status(404).json({ error: 'Not found' })
+  const [removed] = db.uploadHistory.splice(idx, 1)
+  writeDb(db)
+  res.json(removed)
 })
 
 // --- Credit Card Transactions ---
@@ -862,9 +902,10 @@ function projectWithGrowth({ balance, monthly, target, annualRate }) {
 // Pre-computed, plain-English timeline verdict for a goal so the prompt never asks the
 // model to do date arithmetic. Returns the linear (baseline) verdict plus, when a meaningful
 // `growth` rate is supplied, an additive, clearly-labeled optimistic "with growth" projection.
-function goalTimeline(goal, growth = null) {
+function goalTimeline(goal, growth = null, investContribPerMonth = 0) {
   const remaining = Math.max(0, goal.targetAmount - goal.currentAmount)
-  const monthsAtCurrent = goal.monthlySavings > 0 ? Math.ceil(remaining / goal.monthlySavings) : null
+  const effectiveMonthly = (goal.monthlySavings || 0) + investContribPerMonth
+  const monthsAtCurrent = effectiveMonthly > 0 ? Math.ceil(remaining / effectiveMonthly) : null
   const monthsToTarget = monthsUntil(goal.targetDate)
   const projectedDate = monthsAtCurrent == null ? null : dateAfterMonths(monthsAtCurrent)
   const requiredMonthly = (monthsToTarget != null && monthsToTarget > 0) ? Math.ceil(remaining / monthsToTarget) : null
@@ -877,7 +918,7 @@ function goalTimeline(goal, growth = null) {
   } else if (monthsAtCurrent <= monthsToTarget) {
     verdict = `ON TRACK: at the current rate the goal is reached in ${monthsAtCurrent} months (${projectedDate}), about ${monthsToTarget - monthsAtCurrent} month(s) BEFORE the ${monthYearLabel(goal.targetDate)} target.`
   } else {
-    verdict = `BEHIND: at the current rate the goal is reached in ${monthsAtCurrent} months (${projectedDate}), which is ${monthsAtCurrent - monthsToTarget} month(s) AFTER the ${monthYearLabel(goal.targetDate)} target. To hit the target date the user must save about $${requiredMonthly}/month (currently $${goal.monthlySavings || 0}/month).`
+    verdict = `BEHIND: at the current rate the goal is reached in ${monthsAtCurrent} months (${projectedDate}), which is ${monthsAtCurrent - monthsToTarget} month(s) AFTER the ${monthYearLabel(goal.targetDate)} target. To hit the target date the user must save about $${requiredMonthly}/month (currently $${effectiveMonthly}/month effective).`
   }
 
   let growthMonths = null, growthDate = null, growthVerdict = null, blendedAnnualRate = null, assumedReturnUsed = null, hasInvestments = false
@@ -887,7 +928,7 @@ function goalTimeline(goal, growth = null) {
     hasInvestments = growth.hasInvestments
     const proj = projectWithGrowth({
       balance: goal.currentAmount,
-      monthly: goal.monthlySavings || 0,
+      monthly: effectiveMonthly,
       target: goal.targetAmount,
       annualRate: growth.blendedAnnualRate,
     })
@@ -911,7 +952,7 @@ function goalTimeline(goal, growth = null) {
     }
   }
 
-  return { remaining, monthsAtCurrent, monthsToTarget, projectedDate, requiredMonthly, verdict, growthMonths, growthDate, growthVerdict, blendedAnnualRate, assumedReturnUsed, hasInvestments }
+  return { remaining, monthsAtCurrent, monthsToTarget, projectedDate, requiredMonthly, verdict, growthMonths, growthDate, growthVerdict, blendedAnnualRate, assumedReturnUsed, hasInvestments, effectiveMonthly }
 }
 
 // Plain-English line describing which accounts back a goal, e.g.
@@ -931,10 +972,63 @@ function goalWithProgress(db, goal, priceMap) {
   return { ...goal, currentAmount, breakdown }
 }
 
+// Avg monthly investment contributions attributable to this goal, weighted by the percent of
+// holdings sources linked. E.g. if the goal links 50% of a holdings bucket and the user
+// contributes $400/mo to investments overall, this returns $200/mo.
+function investContribForGoal(db, goal, fin) {
+  if (!fin.investContrib) return 0
+  const holdingsPct = (goal.links ?? [])
+    .filter(l => l.sourceType === 'holdingsAccountType')
+    .reduce((sum, l) => sum + l.percent, 0)
+  if (!holdingsPct) return 0
+  return Math.round((fin.investContrib * holdingsPct / 100) * 100) / 100
+}
+
+async function callLLM({ system, userMessages, maxTokens, vision = false, smart = false }) {
+  const db = readDb()
+  const { aiProvider = 'claude', claudeApiKey, openaiApiKey } = db.settings
+
+  if (aiProvider === 'openai') {
+    if (!openaiApiKey) throw new Error('No OpenAI API key configured. Add one in Settings.')
+    const client = new OpenAI({ apiKey: openaiApiKey })
+    const messages = []
+    if (system) messages.push({ role: 'system', content: system })
+    for (const msg of userMessages) {
+      if (Array.isArray(msg.content)) {
+        const content = msg.content.map(block =>
+          block.type === 'image'
+            ? { type: 'image_url', image_url: { url: `data:${block.source.media_type};base64,${block.source.data}` } }
+            : block
+        )
+        messages.push({ ...msg, content })
+      } else {
+        messages.push(msg)
+      }
+    }
+    const result = await client.chat.completions.create({
+      model: vision || smart ? 'gpt-4o' : 'gpt-4o-mini',
+      max_tokens: maxTokens,
+      messages,
+    })
+    return result.choices[0].message.content
+  } else {
+    if (!claudeApiKey) throw new Error('No Claude API key configured. Add one in Settings.')
+    const client = new Anthropic({ apiKey: claudeApiKey })
+    const result = await client.messages.create({
+      model: vision || smart ? 'claude-sonnet-4-6' : 'claude-haiku-4-5-20251001',
+      max_tokens: maxTokens,
+      ...(system ? { system } : {}),
+      messages: userMessages,
+    })
+    return result.content[0].text
+  }
+}
+
 app.post('/api/llm/insights', async (req, res) => {
   const db = readDb()
-  const apiKey = db.settings.claudeApiKey
-  if (!apiKey) return res.status(400).json({ error: 'No API key configured' })
+  const { aiProvider = 'claude', claudeApiKey, openaiApiKey } = db.settings
+  const hasKey = aiProvider === 'openai' ? !!openaiApiKey : !!claudeApiKey
+  if (!hasKey) return res.status(400).json({ error: 'No AI API key configured. Add one in Settings.' })
 
   const fin = buildMonthlyFinancials(db)
   const priceMap = await fetchPrices(tickersForGoalLinks(db))
@@ -954,14 +1048,12 @@ ${goalSummaries || 'No goals set'}
 Return ONLY a valid JSON array of exactly 3 strings. Each string is one concise, actionable insight (1–2 sentences). No markdown, no wrapping object — just the array.`
 
   try {
-    const client = new Anthropic({ apiKey })
-    const message = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 512,
+    const text = await callLLM({
       system: `You are a personal finance assistant. ${todayLine()} You always respond with valid JSON only.`,
-      messages: [{ role: 'user', content: userMsg }],
+      userMessages: [{ role: 'user', content: userMsg }],
+      maxTokens: 512,
     })
-    const raw = message.content[0].text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
+    const raw = text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
     const insights = JSON.parse(raw)
     res.json({ insights })
   } catch (err) {
@@ -972,8 +1064,9 @@ Return ONLY a valid JSON array of exactly 3 strings. Each string is one concise,
 
 app.post('/api/llm/categorize', async (req, res) => {
   const db = readDb()
-  const apiKey = db.settings.claudeApiKey
-  if (!apiKey) return res.json({ categories: [] })
+  const { aiProvider = 'claude', claudeApiKey, openaiApiKey } = db.settings
+  const hasKey = aiProvider === 'openai' ? !!openaiApiKey : !!claudeApiKey
+  if (!hasKey) return res.json({ categories: [] })
 
   const { transactions } = req.body
   if (!Array.isArray(transactions) || transactions.length === 0) {
@@ -997,14 +1090,12 @@ Respond with this exact JSON format, no other text:
 {"categories":[{"id":"<id>","category":"<category>"}]}`
 
   try {
-    const client = new Anthropic({ apiKey })
-    const message = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1024,
+    const text = await callLLM({
       system: 'You are a personal finance transaction categorizer. Respond with valid JSON only.',
-      messages: [{ role: 'user', content: userMsg }],
+      userMessages: [{ role: 'user', content: userMsg }],
+      maxTokens: 1024,
     })
-    const raw = message.content[0].text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
+    const raw = text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
     const result = JSON.parse(raw)
     const validated = (result.categories || []).map(({ id, category }) => ({
       id,
@@ -1019,8 +1110,9 @@ Respond with this exact JSON format, no other text:
 
 app.post('/api/llm/goal-analysis', async (req, res) => {
   const db = readDb()
-  const apiKey = db.settings.claudeApiKey
-  if (!apiKey) return res.status(400).json({ error: 'No API key configured' })
+  const { aiProvider = 'claude', claudeApiKey, openaiApiKey } = db.settings
+  const hasKey = aiProvider === 'openai' ? !!openaiApiKey : !!claudeApiKey
+  if (!hasKey) return res.status(400).json({ error: 'No AI API key configured. Add one in Settings.' })
 
   const { goalId } = req.body
   const rawGoal = db.goals.find(g => g.id === goalId)
@@ -1030,6 +1122,8 @@ app.post('/api/llm/goal-analysis', async (req, res) => {
   const priceMap = await fetchPrices((db.holdings ?? []).map(h => h.ticker).filter(Boolean))
   const goal = goalWithProgress(db, rawGoal, priceMap)
   const fundingLine = goalFundingLine(goal.breakdown)
+  const investContribPerMonth = investContribForGoal(db, rawGoal, fin)
+  const effectiveMonthly = (rawGoal.monthlySavings || 0) + investContribPerMonth
 
   const allGoalsSummary = db.goals
     .map(g => {
@@ -1046,15 +1140,19 @@ app.post('/api/llm/goal-analysis', async (req, res) => {
   const netWorth = cashBalance + savingsTotal + portfolioValue
   const netWorthSummary = `Cash: $${cashBalance.toFixed(2)}, Savings accounts: $${savingsTotal.toFixed(2)}, Portfolio (cost basis): $${portfolioValue.toFixed(2)}, Total: $${netWorth.toFixed(2)}`
 
-  const tl = goalTimeline(goal, goalGrowthRate(db, goal, priceMap))
+  const tl = goalTimeline(goal, goalGrowthRate(db, goal, priceMap), investContribPerMonth)
   const volatilityNote = goal.breakdown.some(b => b.sourceType === 'holdingsAccountType')
     ? '\nNote: part of this goal is backed by investments, so its value moves with the market — mention this volatility if relevant.'
     : ''
 
+  const monthlyRateLine = investContribPerMonth > 0
+    ? `Monthly savings rate: ${goal.monthlySavings ? '$' + goal.monthlySavings : 'not set'}\nAvg monthly investment contributions (linked account): $${investContribPerMonth}\nEffective combined monthly rate: $${effectiveMonthly}`
+    : `Monthly savings rate: ${goal.monthlySavings ? '$' + goal.monthlySavings : 'not set'}`
+
   const userMsg = `Goal being analyzed: ${goal.name}
 Target: $${goal.targetAmount} | Saved: $${goal.currentAmount} (${goal.targetAmount > 0 ? Math.round(goal.currentAmount / goal.targetAmount * 100) : 0}%)
 Remaining: $${tl.remaining}
-Monthly savings rate: ${goal.monthlySavings ? '$' + goal.monthlySavings : 'not set'}
+${monthlyRateLine}
 Target date: ${goal.targetDate || 'not set'}${tl.monthsToTarget == null ? '' : ` (${monthYearLabel(goal.targetDate)}, ${tl.monthsToTarget} months from today)`}
 ${fundingLine ? fundingLine + '\n' : ''}
 Timeline (already computed — use these figures, do NOT recompute dates yourself):
@@ -1071,14 +1169,12 @@ ${formatMonthlyFinancials(fin)}${volatilityNote}
 Write 3–4 sentences: (1) state plainly whether they are on track or behind for the target date using the Timeline above — if behind, say so directly and give the monthly savings rate needed to hit the date; (2) name one specific credit-card spending category (from the breakdown) to reduce and roughly how much sooner it would get them there; (3) briefly state the data basis you used — how many full months and that expenses come from bank transactions — so the user understands where the numbers come from. Be specific, practical, and honest. Do not add the card breakdown to total expenses. Plain text only, no markdown.`
 
   try {
-    const client = new Anthropic({ apiKey })
-    const message = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 256,
+    const text = await callLLM({
       system: `You are a practical personal finance advisor. ${todayLine()} Be concise and specific.`,
-      messages: [{ role: 'user', content: userMsg }],
+      userMessages: [{ role: 'user', content: userMsg }],
+      maxTokens: 256,
     })
-    res.json({ analysis: message.content[0].text.trim() })
+    res.json({ analysis: text.trim() })
   } catch (err) {
     console.error('LLM goal-analysis error:', err.message)
     res.status(500).json({ error: err.message })
@@ -1087,8 +1183,9 @@ Write 3–4 sentences: (1) state plainly whether they are on track or behind for
 
 app.post('/api/llm/spend-insights', async (req, res) => {
   const db = readDb()
-  const apiKey = db.settings.claudeApiKey
-  if (!apiKey) return res.status(400).json({ error: 'No API key configured' })
+  const { aiProvider = 'claude', claudeApiKey, openaiApiKey } = db.settings
+  const hasKey = aiProvider === 'openai' ? !!openaiApiKey : !!claudeApiKey
+  if (!hasKey) return res.status(400).json({ error: 'No AI API key configured. Add one in Settings.' })
 
   const { period = 'all' } = req.body
   const context = buildSpendContextFromTransactions(db.credit_card_transactions || [], period)
@@ -1111,14 +1208,12 @@ Cover exactly these three areas:
 Be specific with dollar amounts. No markdown. Valid JSON only.`
 
   try {
-    const client = new Anthropic({ apiKey })
-    const message = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 768,
+    const text = await callLLM({
       system: 'You are a personal finance assistant analyzing credit card spending. Respond with valid JSON only.',
-      messages: [{ role: 'user', content: userMsg }],
+      userMessages: [{ role: 'user', content: userMsg }],
+      maxTokens: 768,
     })
-    const raw = message.content[0].text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
+    const raw = text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
     const result = JSON.parse(raw)
     res.json({ insights: result.insights })
   } catch (err) {
@@ -1129,8 +1224,9 @@ Be specific with dollar amounts. No markdown. Valid JSON only.`
 
 app.post('/api/llm/spend-chat', async (req, res) => {
   const db = readDb()
-  const apiKey = db.settings.claudeApiKey
-  if (!apiKey) return res.status(400).json({ error: 'No API key configured' })
+  const { aiProvider = 'claude', claudeApiKey, openaiApiKey } = db.settings
+  const hasKey = aiProvider === 'openai' ? !!openaiApiKey : !!claudeApiKey
+  if (!hasKey) return res.status(400).json({ error: 'No AI API key configured. Add one in Settings.' })
 
   const { period = 'all', messages = [] } = req.body
   if (!messages.length) return res.status(400).json({ error: 'No messages provided' })
@@ -1145,14 +1241,8 @@ ${summaryText}
 Be concise and specific. Answer in 2–4 sentences.`
 
   try {
-    const client = new Anthropic({ apiKey })
-    const message = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 512,
-      system: systemMsg,
-      messages,
-    })
-    res.json({ reply: message.content[0].text.trim() })
+    const text = await callLLM({ system: systemMsg, userMessages: messages, maxTokens: 512 })
+    res.json({ reply: text.trim() })
   } catch (err) {
     console.error('LLM spend-chat error:', err.message)
     res.status(500).json({ error: err.message })
@@ -1161,8 +1251,9 @@ Be concise and specific. Answer in 2–4 sentences.`
 
 app.post('/api/llm/dashboard-chat', async (req, res) => {
   const db = readDb()
-  const apiKey = db.settings.claudeApiKey
-  if (!apiKey) return res.status(400).json({ error: 'No API key configured' })
+  const { aiProvider = 'claude', claudeApiKey, openaiApiKey } = db.settings
+  const hasKey = aiProvider === 'openai' ? !!openaiApiKey : !!claudeApiKey
+  if (!hasKey) return res.status(400).json({ error: 'No AI API key configured. Add one in Settings.' })
 
   const { messages = [] } = req.body
   if (!messages.length) return res.status(400).json({ error: 'No messages provided' })
@@ -1191,14 +1282,8 @@ ${goalLines || '  No goals set'}
 Be concise and specific. Answer in 2–4 sentences.`
 
   try {
-    const client = new Anthropic({ apiKey })
-    const message = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 512,
-      system: systemMsg,
-      messages,
-    })
-    res.json({ reply: message.content[0].text.trim() })
+    const text = await callLLM({ system: systemMsg, userMessages: messages, maxTokens: 512 })
+    res.json({ reply: text.trim() })
   } catch (err) {
     console.error('LLM dashboard-chat error:', err.message)
     res.status(500).json({ error: err.message })
@@ -1207,8 +1292,9 @@ Be concise and specific. Answer in 2–4 sentences.`
 
 app.post('/api/llm/goal-chat', async (req, res) => {
   const db = readDb()
-  const apiKey = db.settings.claudeApiKey
-  if (!apiKey) return res.status(400).json({ error: 'No API key configured' })
+  const { aiProvider = 'claude', claudeApiKey, openaiApiKey } = db.settings
+  const hasKey = aiProvider === 'openai' ? !!openaiApiKey : !!claudeApiKey
+  if (!hasKey) return res.status(400).json({ error: 'No AI API key configured. Add one in Settings.' })
 
   const { goalId, messages = [] } = req.body
   if (!messages.length) return res.status(400).json({ error: 'No messages provided' })
@@ -1220,6 +1306,8 @@ app.post('/api/llm/goal-chat', async (req, res) => {
   const priceMap = await fetchPrices((db.holdings ?? []).map(h => h.ticker).filter(Boolean))
   const goal = goalWithProgress(db, rawGoal, priceMap)
   const fundingLine = goalFundingLine(goal.breakdown)
+  const investContribPerMonth = investContribForGoal(db, rawGoal, fin)
+  const effectiveMonthly = (rawGoal.monthlySavings || 0) + investContribPerMonth
 
   const allGoalLines = db.goals.map(g => {
     const { currentAmount } = computeGoalProgress(db, g, priceMap)
@@ -1232,14 +1320,18 @@ app.post('/api/llm/goal-chat', async (req, res) => {
   const portfolioValue = (db.holdings ?? []).reduce((s, h) => s + h.purchasePrice * h.shares, 0)
 
   const pct = goal.targetAmount > 0 ? Math.round(goal.currentAmount / goal.targetAmount * 100) : 0
-  const tl = goalTimeline(goal, goalGrowthRate(db, goal, priceMap))
+  const tl = goalTimeline(goal, goalGrowthRate(db, goal, priceMap), investContribPerMonth)
+
+  const chatMonthlyRateLine = investContribPerMonth > 0
+    ? `Monthly savings rate: ${goal.monthlySavings ? '$' + goal.monthlySavings : 'not set'}\nAvg monthly investment contributions (linked account): $${investContribPerMonth}\nEffective combined monthly rate: $${effectiveMonthly}`
+    : `Monthly savings rate: ${goal.monthlySavings ? '$' + goal.monthlySavings : 'not set'}`
 
   const systemMsg = `You are a personal finance advisor helping with a savings goal. ${todayLine()}
 
 Goal: ${goal.name}
 Target: $${goal.targetAmount} | Saved: $${goal.currentAmount} (${pct}%)
 Remaining: $${tl.remaining}
-Monthly savings rate: ${goal.monthlySavings ? '$' + goal.monthlySavings : 'not set'}
+${chatMonthlyRateLine}
 Target date: ${goal.targetDate || 'not set'}${tl.monthsToTarget == null ? '' : ` (${monthYearLabel(goal.targetDate)}, ${tl.monthsToTarget} months from today)`}
 ${fundingLine ? fundingLine + '\n' : ''}
 Timeline (already computed — use these figures, do NOT recompute dates yourself):
@@ -1255,14 +1347,8 @@ ${formatMonthlyFinancials(fin)}
 Be concise, specific, and honest about whether they are on track. Answer in 2–4 sentences.`
 
   try {
-    const client = new Anthropic({ apiKey })
-    const message = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 512,
-      system: systemMsg,
-      messages,
-    })
-    res.json({ reply: message.content[0].text.trim() })
+    const text = await callLLM({ system: systemMsg, userMessages: messages, maxTokens: 512 })
+    res.json({ reply: text.trim() })
   } catch (err) {
     console.error('LLM goal-chat error:', err.message)
     res.status(500).json({ error: err.message })
@@ -1271,8 +1357,9 @@ Be concise, specific, and honest about whether they are on track. Answer in 2–
 
 app.post('/api/llm/budget-builder', async (req, res) => {
   const db = readDb()
-  const apiKey = db.settings.claudeApiKey
-  if (!apiKey) return res.status(400).json({ error: 'No API key configured' })
+  const { aiProvider = 'claude', claudeApiKey, openaiApiKey } = db.settings
+  const hasKey = aiProvider === 'openai' ? !!openaiApiKey : !!claudeApiKey
+  if (!hasKey) return res.status(400).json({ error: 'No AI API key configured. Add one in Settings.' })
 
   const { income, timelinePreference, excludeNote } = req.body
 
@@ -1323,15 +1410,12 @@ Return ONLY valid JSON — no markdown, no code fences, no explanation outside t
 Only include categories that have spend data. Do not invent categories. Do NOT include goal names in budgets — goal funding is tracked via monthlySavings fields, not spending caps. If no active goals, set monthsToGoal to {}. Always set suggestedSavingsTarget to a round monthly dollar amount representing 10-20% of income based on the timeline preference.`
 
   try {
-    const client = new Anthropic({ apiKey })
-    const message = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1024,
+    const text = await callLLM({
       system: `You are a personal finance advisor. ${todayLine()} You always respond with valid JSON only.`,
-      messages: [{ role: 'user', content: userMsg }],
+      userMessages: [{ role: 'user', content: userMsg }],
+      maxTokens: 1024,
     })
-    const raw = message.content[0].text.trim()
-      .replace(/^```json?\n?/, '').replace(/\n?```$/, '').trim()
+    const raw = text.trim().replace(/^```json?\n?/, '').replace(/\n?```$/, '').trim()
     const result = JSON.parse(raw)
     res.json(result)
   } catch (err) {
@@ -1347,18 +1431,16 @@ Only include categories that have spend data. Do not invent categories. Do NOT i
 
 app.post('/api/llm/detect-columns', async (req, res) => {
   const db = readDb()
-  const apiKey = db.settings.claudeApiKey
-  if (!apiKey) return res.status(400).json({ error: 'No Claude API key configured.' })
+  const { aiProvider = 'claude', claudeApiKey, openaiApiKey } = db.settings
+  const hasKey = aiProvider === 'openai' ? !!openaiApiKey : !!claudeApiKey
+  if (!hasKey) return res.status(400).json({ error: 'No AI API key configured.' })
   const { headers, samples } = req.body
   if (!Array.isArray(headers) || headers.length === 0) {
     return res.status(400).json({ error: 'headers required' })
   }
   try {
-    const client = new Anthropic({ apiKey })
-    const message = await client.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 512,
-      messages: [{
+    const text = await callLLM({
+      userMessages: [{
         role: 'user',
         content: `You are analyzing a bank/credit card statement CSV. Given these column headers and sample rows, identify which column is the transaction date, which is the description, and which is the amount.
 
@@ -1378,9 +1460,10 @@ Return ONLY a JSON object with these exact keys:
 
 For invertAmounts: look at the sample rows. If typical purchase/spending amounts appear as POSITIVE numbers (e.g. 50.00 for a store charge), set true so they get negated to expenses. If purchases appear as NEGATIVE numbers (e.g. -50.00), set false. Do not guess by bank name — read the actual values in the samples.`,
       }],
+      maxTokens: 512,
+      smart: true,
     })
-    const raw = message.content[0].text.trim()
-      .replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
+    const raw = text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
     const mapping = JSON.parse(raw)
     res.json({ mapping })
   } catch (err) {
@@ -1391,8 +1474,9 @@ For invertAmounts: look at the sample rows. If typical purchase/spending amounts
 
 app.post('/api/parse-pdf-vision', async (req, res) => {
   const db = readDb()
-  const apiKey = db.settings.claudeApiKey
-  if (!apiKey) return res.status(400).json({ error: 'No Claude API key configured. Add one in Settings.' })
+  const { aiProvider = 'claude', claudeApiKey, openaiApiKey } = db.settings
+  const hasKey = aiProvider === 'openai' ? !!openaiApiKey : !!claudeApiKey
+  if (!hasKey) return res.status(400).json({ error: 'No AI API key configured. Add one in Settings.' })
 
   const { pages } = req.body
   if (!Array.isArray(pages) || pages.length === 0) {
@@ -1400,11 +1484,8 @@ app.post('/api/parse-pdf-vision', async (req, res) => {
   }
 
   try {
-    const client = new Anthropic({ apiKey })
-    const message = await client.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 4096,
-      messages: [{
+    const text = await callLLM({
+      userMessages: [{
         role: 'user',
         content: [
           {
@@ -1422,10 +1503,11 @@ Exclude balance summaries, running totals, fee summaries, and any non-transactio
           })),
         ],
       }],
+      maxTokens: 4096,
+      vision: true,
     })
 
-    const raw = message.content[0].text.trim()
-      .replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
+    const raw = text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
     const transactions = JSON.parse(raw)
     res.json({ transactions })
   } catch (err) {
@@ -1532,6 +1614,13 @@ app.post('/api/net-worth-backfill', (req, res) => {
 
   if (added.length > 0) writeDb(db)
   res.json({ added: added.length, dates: added })
+})
+
+// --- Shutdown ---
+
+app.post('/api/shutdown', (req, res) => {
+  res.json({ ok: true })
+  setTimeout(() => process.kill(0, 'SIGINT'), 150)
 })
 
 // --- Start ---
