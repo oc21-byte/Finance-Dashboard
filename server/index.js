@@ -1,5 +1,6 @@
 import express from 'express'
 import cors from 'cors'
+import rateLimit from 'express-rate-limit'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
@@ -59,8 +60,20 @@ function ensureDb() {
 if (!DEMO_MODE) ensureDb()
 
 const app = express()
-app.use(cors())
-app.use(express.json({ limit: '20mb' }))
+app.use(cors({ origin: /^http:\/\/localhost(:\d+)?$/ }))
+// PDF vision route needs large bodies (base64 JPEG pages); all other routes get a tighter cap
+app.use('/api/parse-pdf-vision', express.json({ limit: '20mb' }))
+app.use(express.json({ limit: '2mb' }))
+
+const llmRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many AI requests — please wait a moment and try again.' },
+})
+app.use('/api/llm', llmRateLimit)
+app.use('/api/parse-pdf-vision', llmRateLimit)
 
 function readDb() {
   return JSON.parse(fs.readFileSync(DEMO_MODE ? MOCK_PATH : DB_PATH, 'utf8'))

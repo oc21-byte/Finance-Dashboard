@@ -20,6 +20,7 @@
     "cors": "^2.8.5",
     "dayjs": "^1.11.20",
     "express": "^4.19.2",
+    "express-rate-limit": "^8.5.2",
     "lucide-react": "^1.14.0",
     "openai": "^6.45.0",
     "papaparse": "^5.5.3",
