@@ -90,9 +90,10 @@ function buildPeriodData(transactions, period) {
 }
 
 
-export default function Finances() {
+export default function Finances({ demoMode }) {
   const fileInputRef = useRef()
   const pendingFileRef = useRef(null)
+  const pendingUploadMetaRef = useRef(null)
   const queryClient = useQueryClient()
 
   const [csvModalData, setCsvModalData] = useState(null)
@@ -125,6 +126,11 @@ export default function Finances() {
   const allCategories = FINANCE_CATEGORIES
   const allCategoryColors = FINANCE_CATEGORY_COLORS
 
+  const historyMutation = useMutation({
+    mutationFn: api.uploadHistory.create,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['upload-history'] }),
+  })
+
   const batchMutation = useMutation({
     mutationFn: api.transactions.batch,
     onSuccess: (imported) => {
@@ -134,8 +140,20 @@ export default function Finances() {
       setAutoDetectData(null)
       setImportStatus({ type: 'success', message: `Imported ${imported.length} transactions.` })
       setTimeout(() => setImportStatus(null), 4000)
+      const meta = pendingUploadMetaRef.current
+      if (meta) {
+        historyMutation.mutate({
+          filename: meta.filename,
+          sourceName: meta.sourceName ?? '',
+          transactionCount: imported.length,
+        })
+        pendingUploadMetaRef.current = null
+      }
     },
-    onError: () => setImportStatus({ type: 'error', message: 'Import failed. Please try again.' }),
+    onError: () => {
+      pendingUploadMetaRef.current = null
+      setImportStatus({ type: 'error', message: 'Import failed. Please try again.' })
+    },
   })
 
   const addMutation = useMutation({
@@ -180,6 +198,7 @@ export default function Finances() {
   const PAYMENT_RE = /\b(payment\s*(-\s*)?(thank\s*you|received|applied|posted)|autopay|auto\s*pay|directpay|online\s*payment|electronic\s*payment|ach\s*payment|mobile\s*payment)\b/i
 
   async function triggerVision(file) {
+    pendingUploadMetaRef.current = { filename: file.name }
     setCsvModalData(null)
     setImportStatus({ type: 'loading', message: 'Scanned PDF detected — analyzing with AI…' })
     try {
@@ -206,6 +225,7 @@ export default function Finances() {
   }
 
   async function handleFileChange(e) {
+    if (demoMode) return
     const file = e.target.files[0]
     if (!file) return
     e.target.value = ''
@@ -328,8 +348,10 @@ export default function Finances() {
         <h1 className="text-2xl font-semibold text-gray-900">Finances</h1>
         <div className="flex items-center gap-3 flex-wrap">
           <button
-            onClick={() => setShowAddModal(true)}
-            className="px-4 py-2 text-sm border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+            onClick={() => !demoMode && setShowAddModal(true)}
+            disabled={demoMode}
+            title={demoMode ? 'Unavailable in Demo Mode' : undefined}
+            className="px-4 py-2 text-sm border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             + Add Transaction
           </button>
@@ -340,9 +362,10 @@ export default function Finances() {
             CSV Template
           </button>
           <button
-            onClick={() => fileInputRef.current.click()}
-            disabled={batchMutation.isPending || importStatus?.type === 'loading'}
-            className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors"
+            onClick={() => !demoMode && fileInputRef.current.click()}
+            disabled={batchMutation.isPending || importStatus?.type === 'loading' || demoMode}
+            title={demoMode ? 'Unavailable in Demo Mode' : undefined}
+            className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
           >
             {batchMutation.isPending || importStatus?.type === 'loading' ? 'Importing…' : 'Upload Bank Statement'}
           </button>
@@ -607,8 +630,8 @@ export default function Finances() {
                         </select>
                       ) : (
                         <span
-                          onClick={() => setEditingCategoryId(tx.id)}
-                          title="Click to edit category"
+                          onClick={() => !demoMode && setEditingCategoryId(tx.id)}
+                          title={demoMode ? undefined : 'Click to edit category'}
                           className="inline-block px-2.5 py-0.5 rounded-full text-xs font-medium cursor-pointer hover:opacity-75 transition-opacity"
                           style={{
                             backgroundColor: (allCategoryColors[tx.category] || '#94a3b8') + '1a',
@@ -638,7 +661,7 @@ export default function Finances() {
                             </select>
                           ) : (
                             <span
-                              onClick={() => setLinkingTxId(tx.id)}
+                              onClick={() => !demoMode && setLinkingTxId(tx.id)}
                               className="text-xs text-teal-600 cursor-pointer hover:underline"
                               title="Click to link savings account"
                             >
@@ -658,10 +681,10 @@ export default function Finances() {
                     </td>
                     <td className="px-4 py-3">
                       <button
-                        onClick={() => deleteMutation.mutate(tx.id)}
-                        disabled={deleteMutation.isPending}
-                        className="text-gray-300 hover:text-red-400 transition-colors text-lg leading-none"
-                        title="Delete"
+                        onClick={() => !demoMode && deleteMutation.mutate(tx.id)}
+                        disabled={deleteMutation.isPending || demoMode}
+                        className="text-gray-300 hover:text-red-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors text-lg leading-none"
+                        title={demoMode ? 'Unavailable in Demo Mode' : 'Delete'}
                       >
                         ×
                       </button>
@@ -680,9 +703,15 @@ export default function Finances() {
           initialSourceName={localStorage.getItem('visionSource_finances') || 'Bank Statement'}
           onConfirm={(sourceName, txs) => {
             localStorage.setItem('visionSource_finances', sourceName)
+            if (pendingUploadMetaRef.current) {
+              pendingUploadMetaRef.current.sourceName = sourceName
+            }
             batchMutation.mutate(txs)
           }}
-          onCancel={() => setVisionData(null)}
+          onCancel={() => {
+            pendingUploadMetaRef.current = null
+            setVisionData(null)
+          }}
         />
       )}
       {autoDetectData && (

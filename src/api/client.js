@@ -66,6 +66,15 @@ export const api = {
     history:  () => request('GET',  '/net-worth-history'),
     backfill: () => request('POST', '/net-worth-backfill'),
   },
+  demoMode: {
+    get: () => request('GET', '/demo-mode'),
+  },
+  uploadHistory: {
+    list:   ()     => request('GET',    '/upload-history'),
+    create: (data) => request('POST',   '/upload-history', data),
+    remove: (id)   => request('DELETE', `/upload-history/${id}`),
+  },
+  shutdown: () => request('POST', '/shutdown'),
   llm: {
     insights: (payload) => request('POST', '/llm/insights', payload),
     goalAnalysis: (payload) => request('POST', '/llm/goal-analysis', payload),

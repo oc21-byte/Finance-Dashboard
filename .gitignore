@@ -21,4 +21,7 @@ npm-debug.log*
 .idea/
 
 # Local data (may contain sensitive financial info)
-data/db.json
+data/
+
+# Internal design docs
+project-plan.md

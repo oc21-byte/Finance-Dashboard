@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { api } from './api/client.js'
 import Layout from './components/Layout.jsx'
 import Dashboard from './pages/Dashboard.jsx'
 import Finances from './pages/Finances.jsx'
@@ -22,9 +24,16 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard')
   const Page = PAGES[activeTab]
 
+  const { data: demoStatus } = useQuery({
+    queryKey: ['demo-mode'],
+    queryFn: api.demoMode.get,
+    staleTime: Infinity,
+  })
+  const demoMode = demoStatus?.demoMode ?? false
+
   return (
-    <Layout activeTab={activeTab} onTabChange={setActiveTab}>
-      <Page onTabChange={setActiveTab} />
+    <Layout activeTab={activeTab} onTabChange={setActiveTab} demoMode={demoMode}>
+      <Page onTabChange={setActiveTab} demoMode={demoMode} />
     </Layout>
   )
 }

@@ -30,19 +30,33 @@ function timelineText(goal) {
   return `At $${fmt(goal.monthlySavings)}/mo — ~${months} month${months === 1 ? '' : 's'} to go (est. ${reachDate})`
 }
 
-// One-click suggestion to fill the monthly-savings field from the user's real average contribution.
-// Pure convenience — it does not attribute contributions to this specific goal.
-function SuggestSavings({ suggested, monthsCovered, windowLabel, onUse }) {
-  if (!suggested) return null
+// One-click suggestions to fill the monthly-savings field from real transaction averages.
+// Shows savings contrib (blue) and, when the goal has investment links, invest contrib (purple).
+function SuggestSavings({ suggested, investSuggested, monthsCovered, windowLabel, onUse }) {
+  if (!suggested && !investSuggested) return null
   return (
-    <button
-      type="button"
-      onClick={() => onUse(suggested)}
-      className="block text-xs text-blue-600 hover:text-blue-700 mt-1 text-left"
-      title="Fill from your average monthly savings contributions"
-    >
-      Your avg savings: ${fmt(suggested)}/mo over {monthsCovered} mo ({windowLabel}) — Use this
-    </button>
+    <div>
+      {!!suggested && (
+        <button
+          type="button"
+          onClick={() => onUse(suggested)}
+          className="block text-xs text-blue-600 hover:text-blue-700 mt-1 text-left"
+          title="Fill from your average monthly savings contributions"
+        >
+          Your avg savings: ${fmt(suggested)}/mo over {monthsCovered} mo ({windowLabel})
+        </button>
+      )}
+      {!!investSuggested && (
+        <button
+          type="button"
+          onClick={() => onUse(investSuggested)}
+          className="block text-xs text-purple-600 hover:text-purple-700 mt-1 text-left"
+          title="Fill from your average monthly investment contributions"
+        >
+          Your avg investing: ${fmt(investSuggested)}/mo over {monthsCovered} mo ({windowLabel})
+        </button>
+      )}
+    </div>
   )
 }
 
@@ -377,6 +391,7 @@ export default function Goals() {
               />
               <SuggestSavings
                 suggested={suggestedSavings}
+                investSuggested={contribRate?.investContrib || 0}
                 monthsCovered={contribRate?.monthsCovered}
                 windowLabel={contribRate?.windowLabel}
                 onUse={(v) => setForm((f) => ({ ...f, monthlySavings: String(v) }))}
@@ -578,6 +593,7 @@ export default function Goals() {
                       />
                       <SuggestSavings
                         suggested={suggestedSavings}
+                        investSuggested={contribRate?.investContrib || 0}
                         monthsCovered={contribRate?.monthsCovered}
                         windowLabel={contribRate?.windowLabel}
                         onUse={(v) => setEditForm((f) => ({ ...f, monthlySavings: String(v) }))}

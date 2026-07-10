@@ -13,20 +13,23 @@ Take it one section at a time — you don't have to read it all at once.
   file on your own machine. It's never uploaded to the cloud or shared with anyone.
 - **You can't really break anything.** If something looks wrong, you can almost always
   delete it and try again. Don't be afraid to click around.
-- **The smart "AI" features are optional.** A few features (the helpful written insights,
-  the chat, and the automatic reading of statements) need a one-time setup. Everything
-  else works without it. We'll cover that setup below.
+- **The AI features are optional, but highly recommended.** Written insights, the chat
+  assistant, automatic statement reading, and smart categorization all need a one-time
+  API key setup — and they make the dashboard significantly more useful. Without them,
+  you're manually entering and categorizing everything yourself. We'll cover the setup
+  below; it only takes a minute.
 
 ---
 
 ## Looking for something? Jump to…
 
-- [Step 1: Get set up (do this once)](#step-1-get-set-up-do-this-once)
+- [Step 1: Set up your AI key (do this once)](#step-1-set-up-your-ai-key-do-this-once)
 - [What do the AI features cost?](#what-do-the-ai-features-cost)
 - [Step 2: Get your money data in](#step-2-get-your-money-data-in)
 - [The Dashboard — your big-picture view](#the-dashboard--your-big-picture-view)
 - [Finances — your bank account](#finances--your-bank-account)
 - [Spend Analyzer — your credit card spending](#spend-analyzer--your-credit-card-spending)
+- [Budget — your spending limits & savings plan](#budget--your-spending-limits--savings-plan)
 - [Investments — your stocks and savings](#investments--your-stocks-and-savings)
 - [Goals — what you're saving toward](#goals--what-youre-saving-toward) *(emergency fund calculator, linking accounts, growth projection)*
 - [Settings — your preferences](#settings--your-preferences)
@@ -34,41 +37,49 @@ Take it one section at a time — you don't have to read it all at once.
 
 ---
 
-## Step 1: Get set up (do this once)
+## Step 1: Set up your AI key (do this once)
 
 **Why bother?** The dashboard works fine on its own, but a few of the nicest features —
 plain-English insights about your spending, a chat you can ask money questions, and the
 ability to *automatically read* your bank and credit card statements — need one quick
 setup step.
 
-**What you'll need:** A "Claude API key." Don't let the name scare you — it's just a
-password-like code that lets the app use Anthropic's AI on your behalf. You get one from
-your Anthropic account, and you paste it in once.
+**What you'll need:** An AI API key. Don't let the name scare you — it's just a
+password-like code that lets the app use an AI service on your behalf. You get one from
+either Anthropic (Claude) or OpenAI (ChatGPT), and you paste it in once. Pick whichever
+you prefer; both work the same way inside the app.
 
-### Add your key
+### Option A: Claude (Anthropic)
 
-1. Click **Settings** (the little gear ⚙ icon, usually top-right).
-2. Find the box labeled **Claude API Key**.
-3. Paste your key into the field (it'll look something like `sk-ant-…`).
-4. Click **Save Key**.
-5. You'll see a green **Configured ✓** badge appear. That's it — you're done. 🎉
+1. Go to [console.anthropic.com](https://console.anthropic.com/) and create an account (or log in).
+2. Go to **Settings → API Keys** → click **Create Key** → copy the key (it starts with `sk-ant-…`).
+3. Add a few dollars of credits under **Settings → Billing → Add credits** — $5 lasts months for personal use.
+4. In the dashboard: click **Settings** (top-right ⚙), set **AI Provider** to **Claude**, paste your key, and click **Save Key**.
+
+### Option B: ChatGPT (OpenAI)
+
+1. Go to [platform.openai.com](https://platform.openai.com/) and create an account (or log in).
+2. Click your avatar → **API Keys** → **Create new secret key** → copy the key (it starts with `sk-…`).
+3. Add credits under **Billing → Add to credit balance** — $5 is plenty.
+4. In the dashboard: click **Settings**, set **AI Provider** to **ChatGPT**, paste your key, and click **Save Key**.
+
+You'll see a green **Configured ✓** badge once your key is saved. That's it — you're done. 🎉
 
 > **Is this safe?** Yes. Your key is stored only on your own computer and is never shown
-> back on screen or shared with anyone else.
+> back on screen or shared with anyone else. You can switch providers at any time in Settings.
 
 ### Optional: tell it your monthly income
 
 While you're in Settings, you can set your **Monthly Income Baseline** — basically your
-usual take-home pay each month. This helps the Budget Builder (more on that later) make
-better suggestions. Type the amount and click **Save**. You can skip this for now and add
-it later.
+usual take-home pay each month. This helps the Budget Builder make better suggestions.
+Type the amount and click **Save**. You can skip this for now and add it later.
 
 ---
 
 ## What do the AI features cost?
 
-Short version: **almost nothing.** The AI features bill straight to your Anthropic
-account, and for personal use you'll likely spend just a few cents a month — often less.
+Short version: **almost nothing.** The AI features bill straight to your Anthropic or
+OpenAI account, and for personal use you'll likely spend just a few cents a month — often less.
 
 Here's how it works in plain terms. The AI charges by the amount of text it reads and
 writes, measured in "tokens" (a token is roughly ¾ of a word). The app uses two different
@@ -89,9 +100,9 @@ real cost depends on how much data you have — but they're in the right ballpar
 | **Auto-detecting a new CSV's columns** | about 1–2 cents | Happens once per new account, then it's free |
 | **Reading a PDF statement** (Vision) | about 5–15 cents | The priciest one — it "looks at" each page like an image; longer statements cost a bit more |
 
-> **Want to put a hard limit on it?** Anthropic lets you set a monthly spending cap and see
-> your usage on their billing dashboard, so there are no surprises. If you mostly upload CSV
-> files instead of PDFs, your costs stay especially tiny.
+> **Want to put a hard limit on it?** Both Anthropic and OpenAI let you set a monthly
+> spending cap and see your usage on their billing dashboard, so there are no surprises.
+> If you mostly upload CSV files instead of PDFs, your costs stay especially tiny.
 
 ---
 
@@ -152,7 +163,7 @@ one-click experience. ✨
 ### Uploading a PDF statement (let the AI read it)
 
 No spreadsheet available? No problem. If your bank only gives you a PDF, the app can read
-it for you. (This is one of the features that needs the Claude key from Step 1.)
+it for you. (This is one of the features that needs an AI key from Step 1.)
 
 1. Click the same **Upload Bank Statement** / **Upload Credit Card Statement** button.
 2. Choose your PDF file.
@@ -188,8 +199,9 @@ Here's what you'll find:
   current cash, and save to keep it accurate.
 - **Portfolio Value** — what your investments are worth right now, using live stock prices.
   (It may say *"Fetching…"* for a moment while it looks up prices.)
-- **Net Worth Over Time** — a chart showing whether your wealth is trending up or down. It
-  fills in as you use the app, so it may look empty at first — that's normal.
+- **Net Worth Over Time** — a chart showing whether your wealth is trending up or down. Use
+  the period buttons to zoom in: **3M / 6M / 1Y / YTD / All**. It fills in as you use the
+  app, so it may look empty at first — that's normal.
 - **Net Worth Breakdown** — a colorful donut showing how your money is split between cash,
   savings, and different investment types.
 - **Monthly Net Cash Flow** — a bar chart showing months where you earned more than you
@@ -199,7 +211,7 @@ Here's what you'll find:
 
 ### Get AI insights (and ask questions)
 
-If you set up your Claude key, scroll to the **AI Insights** card and click **Generate
+If you set up your AI key, scroll to the **AI Insights** card and click **Generate
 Insights**. In a few seconds you'll get a few plain-English observations about your money
 (like "You spent 35% of your budget on groceries this month").
 
@@ -219,8 +231,10 @@ of your life.
 
 What you can do here:
 
-- **See the big picture** — charts compare your income against your expenses over the last
-  six months, with running totals on the side.
+- **See the big picture** — charts compare your income against your expenses, with running
+  totals on the side.
+- **Change the time window** — use the period buttons (**7D / 1M / 3M / 6M / 1Y / YTD / All**)
+  at the top to zoom in on a recent week or stretch out to your full history.
 - **Add a transaction** — click **+ Add Transaction** for anything you want to enter by
   hand.
 - **Upload a statement** — the **Upload Bank Statement** button (see [Step 2](#step-2-get-your-money-data-in)
@@ -239,8 +253,7 @@ What you can do here:
 ## Spend Analyzer — your credit card spending
 
 **What it's for:** This is your **credit card** detective. It helps you see exactly where
-your money goes — which stores, which categories — and lets you set spending limits so you
-can rein things in.
+your money goes — which stores, which categories — and lets you dig into spending patterns.
 
 ### The basics
 
@@ -258,35 +271,48 @@ Good categories make everything else more useful. In the transaction table:
 - Got transactions with no category? Click the **Uncategorized only** button to see just
   those, then fix them.
 - In a hurry? Click **Re-categorize uncategorized** and the AI will sort them for you (needs
-  your Claude key).
+  your AI key).
 
-### Set spending limits (budgets)
+### Insights and chat
 
-Once you set budget caps, a tracking table shows each category, your limit, what you've
-spent in the last 30 days, and how much is left. The bar turns **yellow** as you approach
-your limit and **red** if you go over — an easy visual gut-check. To change a limit, just
-click the number and type a new one.
+Just like the Dashboard, there's a **Generate Insights** button and a chat box here too —
+ask things like *"What should I cut to save more this month?"*
 
-Budget amounts also display a **% of income** beside each dollar figure (e.g. `$400 (8%)`)
-so you can spot at a glance whether a category is taking a reasonable share of your pay.
+---
 
-The budget table is split into two sections:
+## Budget — your spending limits & savings plan
 
-- **Spending categories** — everyday expenses like groceries, dining, and subscriptions.
-  Each row shows your cap, your average monthly spend (from credit card history), and a
-  progress bar for the current period.
-- **Savings & goals** — a separate teal-shaded section for money you're *putting away*.
-  - **Savings / Investment categories** (e.g. Savings, Investments, Retirement) pull their
-    average from your *bank* transactions (transfers and ACH deposits) rather than credit
-    card history, since those contributions don't appear on a card statement.
-  - **Active goal rows** show how much you've committed to each goal per month. If you
-    haven't set a monthly savings amount on a goal, the app auto-fills an estimate from
-    your bank history and marks it *auto*.
-  - **General Savings Target** — a catch-all row for savings not tied to a specific goal.
-    It defaults to **15% of your income** (marked *auto*) — no setup needed. You can
-    override it by clicking the number and typing a specific dollar amount; clear the field
-    to go back to the rate-based default. The small label underneath explains what's driving
-    the current number.
+**What it's for:** This tab is your financial plan in one place. Set caps on what you spend
+by category, see how you're tracking against those limits in real time, and set savings
+targets alongside your spending — all on one screen.
+
+### Spending caps
+
+The budget table shows each spending category with:
+
+- **Your limit** — click any amount to edit it directly.
+- **Your average** — what you've actually been spending per month (from your credit card history).
+- **Progress bar** — fills up as you spend. Turns **yellow** as you approach your limit and
+  **red** if you go over.
+- **% of income** — a label like `$400 (8%)` next to each figure so you can gut-check
+  whether a category is taking a reasonable share of your pay.
+
+### Savings & goals section
+
+Below the spending table you'll find a separate teal-shaded section for money you're
+*putting away*:
+
+- **Savings / Investment categories** (e.g. Savings, Investments, Retirement) pull their
+  average from your *bank* transactions rather than credit card history, since those
+  contributions don't appear on a card statement.
+- **Active goal rows** show how much you've committed to each goal per month. If you
+  haven't set a monthly savings amount on a goal, the app auto-fills an estimate from
+  your bank history and marks it *auto*.
+- **General Savings Target** — a catch-all row for savings not tied to a specific goal.
+  It defaults to **15% of your income** (marked *auto*) — no setup needed. You can
+  override it by clicking the number and typing a specific dollar amount; clear the field
+  to go back to the rate-based default. The small label underneath explains what's driving
+  the current number.
 
 ### Build a budget with help — the Budget Builder 🪄
 
@@ -309,11 +335,6 @@ actual spending and your goals, then suggests a sensible budget for you.
    short explanation of the reasoning. Tweak any number you don't like.
 7. Happy with it? Click **Accept & Save Budget**. Your new limits now show up in the budget
    tracker above. Don't like it? Click **Start Over**.
-
-### Insights and chat
-
-Just like the Dashboard, there's a **Generate Insights** button and a chat box here too —
-ask things like *"What should I cut to save more this month?"*
 
 ---
 
@@ -398,6 +419,12 @@ sanity check on whether you have enough set aside for a rainy day.
 Each goal shows up as a card with a progress bar, the percentage you've reached, and — if
 you entered a monthly amount — a friendly estimate like *"~12 months to go."*
 
+If your goal has **linked investment accounts**, the app also factors in your average monthly
+investment contributions (calculated from your bank history). The card will show something
+like *"Saving $600/mo ($200 manual + $400 avg investment contrib)"* and use the combined rate
+for the timeline estimate. This means you don't have to manually account for regular brokerage
+or retirement contributions when projecting how long a goal will take.
+
 ### Keeping a goal updated
 
 - **Linked goal?** Nothing to do — the progress bar updates automatically as your account
@@ -408,7 +435,7 @@ you entered a monthly amount — a friendly estimate like *"~12 months to go."*
 - **Need to change something?** Click **Edit** to adjust the target, date, monthly savings,
   or linked accounts, then **Save**.
 - **Want advice?** Click **Get AI Analysis** for thoughts on your goal, and use the chat box
-  to ask things like *"How can I reach this faster?"* (needs your Claude key).
+  to ask things like *"How can I reach this faster?"* (needs your AI key).
 - **Done with a goal?** Click **Delete** to remove it.
 
 ### Growth projection
@@ -427,8 +454,12 @@ tell them apart. You can change the assumed investment return percentage in Sett
 
 **What it's for:** A small control panel for the handful of things you set once and forget.
 
-- **Claude API Key** — add or replace your AI key (see [Step 1](#step-1-get-set-up-do-this-once)).
-  A green **Configured ✓** badge means you're good to go.
+- **AI Provider** — choose between **Claude** (Anthropic) and **ChatGPT** (OpenAI). Switching
+  here changes which AI service the app uses for all features — insights, categorization, PDF
+  parsing, and the Budget Builder.
+- **Claude API Key / OpenAI API Key** — add or replace your key for the selected provider
+  (see [Step 1](#step-1-set-up-your-ai-key-do-this-once)). A green **Configured ✓** badge
+  means you're good to go.
 - **Monthly Income Baseline** — your usual take-home pay. The Budget Builder uses this to
   make smarter suggestions. Type it in and click **Save**.
 - **Assumed Annual Investment Return** — the return rate used for the optimistic growth
@@ -442,6 +473,8 @@ tell them apart. You can change the assumed investment return percentage in Sett
   default to $750. You can override the dollar amount directly in the Budget table for a
   specific month without touching this setting — this just controls the starting default.
   Type a new percentage (0–100) and click **Save**.
+- **PDF Upload History** — a log of every PDF statement you've imported. If you want to
+  re-import a statement or just keep things tidy, you can delete individual entries here.
 - **Saved CSV Sources** — a list of the bank and card accounts you've taught the app about.
   If an account's downloads change format and imports start looking off, delete it here and
   the app will re-learn it the next time you upload. You can remove them one at a time or
@@ -460,6 +493,12 @@ tell them apart. You can change the assumed investment return percentage in Sett
   it to change it. Don't stress about getting them perfect on import — clean them up whenever.
 - **The AI is powered by your own key.** Anything the AI features do uses the key you added,
   and your information stays on your machine. No surprises.
+- **To stop the app**, click the **red stop icon** in the top-right corner of the nav bar
+  (next to the Settings gear). A confirmation modal appears — click **Close App**, then
+  **Close Tab** when it's done. No need to touch the terminal.
+- **Want to show the app to someone without exposing your real data?** Ask whoever set it
+  up to enable Demo Mode — it loads sample data and blocks any edits, so you can click
+  through everything safely.
 - **When in doubt, just try it.** Almost everything can be deleted and re-done. Click around
   and get comfortable — it's your dashboard. 😊
 

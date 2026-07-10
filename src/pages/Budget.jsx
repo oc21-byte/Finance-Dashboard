@@ -17,7 +17,7 @@ function SummaryCard({ label, value, color = 'text-gray-900', description, subte
   )
 }
 
-export default function Budget({ onTabChange }) {
+export default function Budget({ onTabChange, demoMode }) {
   const queryClient = useQueryClient()
 
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.settings.get })
@@ -379,13 +379,14 @@ export default function Budget({ onTabChange }) {
               <p className="text-xs text-gray-400 mt-0.5">Avg monthly from {fin.windowLabel}</p>
             )}
           </div>
-          {settings?.hasClaudeApiKey && (
+          {(settings?.hasClaudeApiKey || demoMode) && (
             <div className="flex items-center gap-2 flex-wrap">
               <div className="flex rounded-lg border border-gray-200 overflow-hidden text-xs">
                 {['aggressive', 'balanced', 'comfortable'].map(t => (
                   <button
                     key={t}
-                    onClick={() => setTimeline(t)}
+                    onClick={() => !demoMode && setTimeline(t)}
+                    disabled={demoMode}
                     className={`px-3 py-1.5 capitalize transition-colors ${
                       timeline === t ? 'bg-indigo-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
                     }`}
@@ -396,7 +397,8 @@ export default function Budget({ onTabChange }) {
               </div>
               <button
                 onClick={generateAIBudget}
-                disabled={aiLoading}
+                disabled={aiLoading || demoMode}
+                title={demoMode ? 'Unavailable in Demo Mode' : undefined}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-60 transition-colors"
               >
                 <Sparkles size={12} />
