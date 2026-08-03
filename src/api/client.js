@@ -86,6 +86,7 @@ export const api = {
     get: () => request('GET', '/settings'),
     update: (data) => request('PUT', '/settings', data),
   },
+  factoryReset: () => request('POST', '/factory-reset'),
   categories: {
     list: () => request('GET', '/categories'),
     create: (data) => request('POST', '/categories', data),

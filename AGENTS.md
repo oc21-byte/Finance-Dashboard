@@ -23,9 +23,11 @@ backfills any missing top-level keys.
   appear as an expense, so importing them on the card side would double-count. `PAYMENT_RE` in
   `csvHelpers.js` drops them on every import path, and the extraction prompts are told to skip them.
 - Claude key lives in `db.json` and is **never** returned. `GET/PUT /api/settings` strips it and returns `hasClaudeApiKey: boolean`.
-- **Never** call `/api/shutdown` from `pagehide` / unload. Hard reload would kill Express (and often
+- Never call `/api/shutdown` from `pagehide` / unload. Hard reload would kill Express (and often
   Vite). Shutdown is only via the explicit Close App button in `Layout.jsx`, which exits the
   Express process with `process.exit(0)` — not `process.kill(0)`.
+- `POST /api/factory-reset` replaces `db.json` with a deep copy of `DEFAULT_DB` (wipes API keys
+  too). Settings UI confirms first, then clears QueryClient + source-name localStorage and reloads.
 - Finances bank imports write `uploadHistory` entries with `transactionIds` from the batch
   response. Spend Analyzer card imports do the same with `ledger: 'credit_card'`.
   `DELETE /api/upload-history/:id` removes those txs from the matching ledger and the history

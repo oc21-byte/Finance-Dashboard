@@ -506,6 +506,12 @@ app.put('/api/settings', (req, res) => {
   res.json({ ...rest, hasClaudeApiKey: !!(claudeApiKey), hasOpenaiApiKey: !!(openaiApiKey) })
 })
 
+// Wipe every top-level collection and restore default settings (including API keys).
+app.post('/api/factory-reset', (req, res) => {
+  writeDb(JSON.parse(JSON.stringify(DEFAULT_DB)))
+  res.json({ ok: true })
+})
+
 // --- Batch transactions ---
 
 app.post('/api/transactions/batch', (req, res) => {

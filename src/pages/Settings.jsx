@@ -20,6 +20,7 @@ export default function Settings() {
   const [visionModelInput, setVisionModelInput] = useState('')
   const [visionModelSaved, setVisionModelSaved] = useState(false)
   const [pendingDelete, setPendingDelete] = useState(null)
+  const [showFactoryReset, setShowFactoryReset] = useState(false)
 
   const { data: settings } = useQuery({
     queryKey: ['settings'],
@@ -41,6 +42,17 @@ export default function Settings() {
       queryClient.invalidateQueries({ queryKey: ['upload-history'] })
       queryClient.invalidateQueries({ queryKey: ['transactions'] })
       queryClient.invalidateQueries({ queryKey: ['credit_card_transactions'] })
+    },
+  })
+
+  const factoryResetMutation = useMutation({
+    mutationFn: api.factoryReset,
+    onSuccess: () => {
+      // Remembered source names live outside db.json.
+      localStorage.removeItem('visionSource_finances')
+      localStorage.removeItem('visionSource_spendAnalyzer')
+      queryClient.clear()
+      window.location.reload()
     },
   })
 
@@ -415,6 +427,22 @@ export default function Settings() {
         />
       </div>
 
+      <div className="mt-4 bg-white border border-red-200 rounded-xl p-5 shadow-sm">
+        <h2 className="text-sm font-semibold text-red-700 mb-1">Factory Reset</h2>
+        <p className="text-xs text-gray-400 mb-4">
+          Permanently delete all transactions, holdings, goals, savings accounts, upload history,
+          insights, and settings (including API keys). This cannot be undone.
+        </p>
+        <button
+          type="button"
+          onClick={() => setShowFactoryReset(true)}
+          disabled={factoryResetMutation.isPending}
+          className="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 disabled:opacity-50 transition-colors"
+        >
+          Reset all data…
+        </button>
+      </div>
+
       {pendingDelete && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
@@ -460,6 +488,43 @@ export default function Settings() {
                 className="px-4 py-2 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50"
               >
                 {deleteHistoryEntry.isPending ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showFactoryReset && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
+            <h3 className="text-lg font-semibold text-gray-900">Reset all data?</h3>
+            <p className="text-sm text-gray-600 mt-2 leading-relaxed">
+              This permanently deletes every transaction, holding, goal, savings account, net-worth
+              history, upload history, AI insights, custom categories, and saved settings —
+              including your API keys. The app will reload as a blank slate. This cannot be undone.
+            </p>
+            {factoryResetMutation.isError && (
+              <p className="text-sm text-red-500 mt-3">
+                {factoryResetMutation.error?.message || 'Reset failed. Please try again.'}
+              </p>
+            )}
+            <div className="flex justify-end gap-3 mt-6">
+              <button
+                onClick={() => {
+                  setShowFactoryReset(false)
+                  factoryResetMutation.reset()
+                }}
+                disabled={factoryResetMutation.isPending}
+                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => factoryResetMutation.mutate()}
+                disabled={factoryResetMutation.isPending}
+                className="px-4 py-2 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50"
+              >
+                {factoryResetMutation.isPending ? 'Resetting…' : 'Yes, delete everything'}
               </button>
             </div>
           </div>
