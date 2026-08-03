@@ -23,6 +23,12 @@ backfills any missing top-level keys.
   appear as an expense, so importing them on the card side would double-count. `PAYMENT_RE` in
   `csvHelpers.js` drops them on every import path, and the extraction prompts are told to skip them.
 - Claude key lives in `db.json` and is **never** returned. `GET/PUT /api/settings` strips it and returns `hasClaudeApiKey: boolean`.
+- **Never** call `/api/shutdown` from `pagehide` / unload. Hard reload would kill Express (and often
+  Vite). Shutdown is only via the explicit Close App button in `Layout.jsx`, which exits the
+  Express process with `process.exit(0)` — not `process.kill(0)`.
+- Finances bank imports write `uploadHistory` entries with `transactionIds` from the batch
+  response. `DELETE /api/upload-history/:id` removes those bank txs and the history row.
+  Legacy entries without IDs only clear the log. Credit-card imports do not write history.
 
 ## Models (easy to get wrong)
 
@@ -131,6 +137,9 @@ savings_accounts[]          { id, name, accountType, balance, apy }
 goals[]                     { id, name, targetAmount, currentAmount, targetDate, monthlySavings }
 netWorthHistory[]           { date, netWorth, breakdown:{cash,savings,portfolio} }
 spendInsights               { period, insights[], messages[], generatedAt } — or null when cleared
+uploadHistory[]             { id, filename, sourceName, transactionCount, transactionIds[],
+                              ledger:'bank', importedAt } — Finances imports only; delete cascades
+                              on transactionIds (empty/missing = history-only delete)
 settings                    { claudeApiKey, customCategories[], cashBalance, confirmedMonthlyIncome,
                               csvSources, visionModel, countCardCreditsAsIncome }
 ```

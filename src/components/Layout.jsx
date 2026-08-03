@@ -74,15 +74,12 @@ export default function Layout({ activeTab, onTabChange, children, demoMode }) {
   const [shutdownError, setShutdownError] = useState(false)
   const [shutdownDone, setShutdownDone] = useState(false)
 
+  // Warn on tab close / refresh only. Do NOT call /api/shutdown on pagehide — a hard reload
+  // would kill Express (and often Vite), which looks like all data vanishing until restart.
   useEffect(() => {
     const handler = (e) => { e.preventDefault(); e.returnValue = '' }
-    const onHide = (e) => { if (!e.persisted) navigator.sendBeacon('/api/shutdown') }
     window.addEventListener('beforeunload', handler)
-    window.addEventListener('pagehide', onHide)
-    return () => {
-      window.removeEventListener('beforeunload', handler)
-      window.removeEventListener('pagehide', onHide)
-    }
+    return () => window.removeEventListener('beforeunload', handler)
   }, [])
 
   async function handleShutdown() {

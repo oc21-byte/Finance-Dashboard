@@ -171,12 +171,20 @@ export default function Finances({ demoMode }) {
       setReviewData(null)
       setImportStatus({ type: 'success', message: `Imported ${imported.length} transactions.` })
       setTimeout(() => setImportStatus(null), 4000)
-      // One history entry per uploaded file, not per batch.
-      for (const meta of pendingUploadMetaRef.current ?? []) {
+      // Batch returns txs in the same order as the flat list we sent, so we can slice by
+      // each file's count and attach those IDs to the history row for cascade-delete later.
+      const metas = pendingUploadMetaRef.current ?? []
+      let offset = 0
+      for (const meta of metas) {
+        const count = meta.transactionCount ?? 0
+        const slice = imported.slice(offset, offset + count)
+        offset += count
         historyMutation.mutate({
           filename: meta.filename,
           sourceName: meta.sourceName ?? '',
-          transactionCount: meta.transactionCount ?? 0,
+          transactionCount: slice.length,
+          transactionIds: slice.map(t => t.id),
+          ledger: 'bank',
         })
       }
       pendingUploadMetaRef.current = null

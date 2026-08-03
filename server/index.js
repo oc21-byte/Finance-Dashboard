@@ -527,12 +527,17 @@ app.get('/api/upload-history', (req, res) => {
 app.post('/api/upload-history', (req, res) => {
   const db = readDb()
   if (!db.uploadHistory) db.uploadHistory = []
-  const { filename, sourceName, transactionCount } = req.body
+  const { filename, sourceName, transactionCount, transactionIds, ledger } = req.body
+  const ids = Array.isArray(transactionIds)
+    ? transactionIds.filter(id => typeof id === 'string' && id)
+    : []
   const entry = {
     id: uuidv4(),
     filename: filename || 'unknown.pdf',
     sourceName: sourceName || '',
-    transactionCount: Number(transactionCount) || 0,
+    transactionCount: Number(transactionCount) || ids.length || 0,
+    transactionIds: ids,
+    ledger: ledger === 'credit_card' ? 'credit_card' : 'bank',
     importedAt: new Date().toISOString(),
   }
   db.uploadHistory.push(entry)
@@ -546,8 +551,21 @@ app.delete('/api/upload-history/:id', (req, res) => {
   const idx = db.uploadHistory.findIndex(e => e.id === req.params.id)
   if (idx === -1) return res.status(404).json({ error: 'Not found' })
   const [removed] = db.uploadHistory.splice(idx, 1)
+
+  // Cascade only when this entry recorded IDs at import time (post-cascade feature).
+  // Legacy rows have no transactionIds — deleting them only clears the history log.
+  const ids = new Set(
+    Array.isArray(removed.transactionIds) ? removed.transactionIds.filter(Boolean) : [],
+  )
+  let deletedTransactionCount = 0
+  if (ids.size) {
+    const before = db.transactions.length
+    db.transactions = db.transactions.filter(t => !ids.has(t.id))
+    deletedTransactionCount = before - db.transactions.length
+  }
+
   writeDb(db)
-  res.json(removed)
+  res.json({ removed, deletedTransactionCount })
 })
 
 // --- Credit Card Transactions ---
@@ -1875,7 +1893,8 @@ app.post('/api/net-worth-backfill', (req, res) => {
 
 app.post('/api/shutdown', (req, res) => {
   res.json({ ok: true })
-  setTimeout(() => process.kill(0, 'SIGINT'), 150)
+  // Exit this process only — process.kill(0) would SIGINT the whole group and take Vite with it.
+  setTimeout(() => process.exit(0), 150)
 })
 
 // --- Start ---

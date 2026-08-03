@@ -20,6 +20,7 @@ export default function Settings() {
   const [savingsRateSaved, setSavingsRateSaved] = useState(false)
   const [visionModelInput, setVisionModelInput] = useState('')
   const [visionModelSaved, setVisionModelSaved] = useState(false)
+  const [pendingDelete, setPendingDelete] = useState(null)
 
   const { data: settings } = useQuery({
     queryKey: ['settings'],
@@ -33,8 +34,16 @@ export default function Settings() {
 
   const deleteHistoryEntry = useMutation({
     mutationFn: api.uploadHistory.remove,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['upload-history'] }),
+    onSuccess: () => {
+      setPendingDelete(null)
+      queryClient.invalidateQueries({ queryKey: ['upload-history'] })
+      queryClient.invalidateQueries({ queryKey: ['transactions'] })
+    },
   })
+
+  function linkedTxCount(entry) {
+    return Array.isArray(entry.transactionIds) ? entry.transactionIds.length : 0
+  }
 
   useEffect(() => {
     if (settings?.confirmedMonthlyIncome != null) {
@@ -398,40 +407,47 @@ export default function Settings() {
         </form>
       </div>
 
-      {/* Row 3: PDF Upload History | CSV Sources */}
+      {/* Row 3: Bank Upload History | CSV Sources */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
-        {/* PDF Upload History */}
+        {/* Bank Upload History */}
         <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
-          <h2 className="text-sm font-semibold text-gray-700 mb-1">PDF Upload History</h2>
+          <h2 className="text-sm font-semibold text-gray-700 mb-1">Bank Upload History</h2>
           <p className="text-xs text-gray-400 mb-4">
-            A record of each PDF bank statement imported via AI Vision. Only confirmed imports appear here.
+            Finances imports (CSV, XLSX, or PDF). Deleting a recent upload also removes its linked
+            transactions. Older entries (before this feature) only clear the history log.
           </p>
           {uploadHistory.length === 0 ? (
-            <p className="text-sm text-gray-400">No PDF imports yet.</p>
+            <p className="text-sm text-gray-400">No bank imports yet.</p>
           ) : (
             <ul className="divide-y divide-gray-100">
-              {uploadHistory.map(entry => (
-                <li key={entry.id} className="flex items-center justify-between py-2 gap-3">
-                  <div className="min-w-0">
-                    <p className="text-sm text-gray-800 truncate">{entry.filename}</p>
-                    <p className="text-xs text-gray-400 mt-0.5">
-                      {entry.sourceName && <span className="text-gray-500 mr-2">{entry.sourceName}</span>}
-                      {entry.transactionCount} transaction{entry.transactionCount !== 1 ? 's' : ''}
-                      {' · '}
-                      {new Date(entry.importedAt).toLocaleDateString(undefined, {
-                        year: 'numeric', month: 'short', day: 'numeric',
-                      })}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => deleteHistoryEntry.mutate(entry.id)}
-                    disabled={deleteHistoryEntry.isPending}
-                    className="text-xs text-red-400 hover:text-red-600 transition-colors shrink-0 disabled:opacity-40"
-                  >
-                    Delete
-                  </button>
-                </li>
-              ))}
+              {uploadHistory.map(entry => {
+                const linked = linkedTxCount(entry)
+                return (
+                  <li key={entry.id} className="flex items-center justify-between py-2 gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm text-gray-800 truncate">{entry.filename}</p>
+                      <p className="text-xs text-gray-400 mt-0.5">
+                        {entry.sourceName && <span className="text-gray-500 mr-2">{entry.sourceName}</span>}
+                        {entry.transactionCount} transaction{entry.transactionCount !== 1 ? 's' : ''}
+                        {linked > 0
+                          ? ` · ${linked} linked`
+                          : ' · history only'}
+                        {' · '}
+                        {new Date(entry.importedAt).toLocaleDateString(undefined, {
+                          year: 'numeric', month: 'short', day: 'numeric',
+                        })}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => setPendingDelete(entry)}
+                      disabled={deleteHistoryEntry.isPending}
+                      className="text-xs text-red-400 hover:text-red-600 transition-colors shrink-0 disabled:opacity-40"
+                    >
+                      Delete
+                    </button>
+                  </li>
+                )
+              })}
             </ul>
           )}
         </div>
@@ -472,6 +488,57 @@ export default function Settings() {
           )}
         </div>
       </div>
+
+      {pendingDelete && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
+            <h3 className="text-lg font-semibold text-gray-900">Delete this upload?</h3>
+            <p className="text-sm text-gray-600 mt-2 leading-relaxed">
+              {linkedTxCount(pendingDelete) > 0 ? (
+                <>
+                  This will permanently remove <span className="font-medium">{pendingDelete.filename}</span>
+                  {' '}and{' '}
+                  <span className="font-medium">
+                    {linkedTxCount(pendingDelete)} linked Finances transaction
+                    {linkedTxCount(pendingDelete) !== 1 ? 's' : ''}
+                  </span>
+                  . This cannot be undone.
+                </>
+              ) : (
+                <>
+                  This will remove the history entry for{' '}
+                  <span className="font-medium">{pendingDelete.filename}</span>. Linked transactions
+                  cannot be found for older uploads and will not be removed.
+                </>
+              )}
+            </p>
+            {deleteHistoryEntry.isError && (
+              <p className="text-sm text-red-500 mt-3">
+                {deleteHistoryEntry.error?.message || 'Delete failed. Please try again.'}
+              </p>
+            )}
+            <div className="flex justify-end gap-3 mt-6">
+              <button
+                onClick={() => {
+                  setPendingDelete(null)
+                  deleteHistoryEntry.reset()
+                }}
+                disabled={deleteHistoryEntry.isPending}
+                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => deleteHistoryEntry.mutate(pendingDelete.id)}
+                disabled={deleteHistoryEntry.isPending}
+                className="px-4 py-2 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50"
+              >
+                {deleteHistoryEntry.isPending ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
