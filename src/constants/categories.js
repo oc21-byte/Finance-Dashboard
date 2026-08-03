@@ -23,6 +23,18 @@ export const CATEGORIES = [
   'Other',
 ]
 
+// Positive credit-card rows: money coming back to you rather than spending. Payments to the card
+// are never stored at all (they settle from the bank account, where they already appear), so these
+// four kinds cover everything a card statement credits you.
+export const CREDIT_KINDS = ['cashback', 'refund', 'rebate', 'credit']
+
+export const CREDIT_KIND_LABELS = {
+  cashback: 'Cashback & Rewards',
+  refund:   'Refunds & Returns',
+  rebate:   'Rebates & Adjustments',
+  credit:   'Other Credits',
+}
+
 export const CATEGORY_COLORS = {
   'Food & Dining': '#f97316',
   'Grocery':       '#84cc16',

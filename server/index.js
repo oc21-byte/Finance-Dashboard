@@ -21,6 +21,9 @@ const DEFAULT_DB = {
   savings_accounts: [],
   netWorthHistory: [],
   uploadHistory: [],
+  // Last generated Spend Analyzer insights and their follow-up chat. Stored server-side because
+  // switching tabs unmounts the page, and a reload would lose them either way.
+  spendInsights: null,
   settings: {
     claudeApiKey: '',
     openaiApiKey: '',
@@ -31,6 +34,10 @@ const DEFAULT_DB = {
     assumedAnnualReturn: 0.06,
     budgetSavingsTarget: null,
     budgetSavingsRate: 15,
+    visionModel: 'claude-sonnet-4-6',
+    // Off by default: a card credit already shows up as a smaller card bill on the bank side,
+    // so counting it as income too would double-count it. See Finances for the full note.
+    countCardCreditsAsIncome: false,
   },
 }
 
@@ -65,9 +72,11 @@ app.use(cors({ origin: /^http:\/\/localhost(:\d+)?$/ }))
 app.use('/api/parse-pdf-vision', express.json({ limit: '20mb' }))
 app.use(express.json({ limit: '2mb' }))
 
+// A bulk upload of a dozen statements issues one vision call per page-batch plus a categorize
+// call per file, which comfortably exceeded the old cap of 20/min.
 const llmRateLimit = rateLimit({
   windowMs: 60 * 1000,
-  max: 20,
+  max: 120,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many AI requests — please wait a moment and try again.' },
@@ -82,6 +91,15 @@ function readDb() {
 function writeDb(data) {
   if (DEMO_MODE) return
   fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2))
+}
+
+// Short id echoed to both the JSON error response and the server log, so a failure report
+// copied out of the UI can be matched to the full stack trace here.
+function failure(res, label, err, { status = 500, detail } = {}) {
+  const errorId = Math.random().toString(36).slice(2, 8)
+  console.error(`[${errorId}] ${label}:`, err.stack || err.message)
+  if (detail) console.error(`[${errorId}] detail:`, detail)
+  return res.status(status).json({ error: err.message, errorId })
 }
 
 // Demo Mode: block all mutations; carve out read-only responses for auto-called POST endpoints.
@@ -646,10 +664,16 @@ function buildSpendContextFromTransactions(ccTransactions, period) {
     ? ccTransactions
     : ccTransactions.filter(t => t.date?.startsWith(period))
 
-  const totalSpend = filtered.reduce((s, t) => s + Math.abs(t.amount), 0)
+  // Positive card rows are cashback, refunds and rebates — money coming back. Folding them into
+  // spend aggregates would understate nothing and overstate everything, so they are summarized
+  // separately and the model is told not to mix the two.
+  const spend = filtered.filter(t => Number(t.amount) < 0)
+  const credits = filtered.filter(t => Number(t.amount) > 0)
+
+  const totalSpend = spend.reduce((s, t) => s + Math.abs(t.amount), 0)
 
   const catMap = {}
-  for (const t of filtered) {
+  for (const t of spend) {
     const cat = t.category || 'Other'
     catMap[cat] = (catMap[cat] || 0) + Math.abs(t.amount)
   }
@@ -659,7 +683,7 @@ function buildSpendContextFromTransactions(ccTransactions, period) {
 
   const merchantMap = {}
   const merchantCount = {}
-  for (const t of filtered) {
+  for (const t of spend) {
     const key = t.description || 'Unknown'
     merchantMap[key] = (merchantMap[key] || 0) + Math.abs(t.amount)
     merchantCount[key] = (merchantCount[key] || 0) + 1
@@ -669,12 +693,30 @@ function buildSpendContextFromTransactions(ccTransactions, period) {
     .sort((a, b) => b.amount - a.amount)
     .slice(0, 10)
 
-  const largestTxs = [...filtered]
+  const largestTxs = [...spend]
     .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
     .slice(0, 10)
     .map(t => ({ description: t.description, amount: Math.round(Math.abs(t.amount) * 100) / 100, date: t.date, category: t.category || 'Other' }))
 
-  return { filtered, totalSpend: Math.round(totalSpend * 100) / 100, txCount: filtered.length, categories, topMerchants, largestTxs }
+  const creditByKind = {}
+  for (const t of credits) {
+    const kind = t.creditKind || 'credit'
+    creditByKind[kind] = (creditByKind[kind] || 0) + Number(t.amount)
+  }
+
+  return {
+    filtered,
+    totalSpend: Math.round(totalSpend * 100) / 100,
+    txCount: spend.length,
+    categories,
+    topMerchants,
+    largestTxs,
+    totalCredits: Math.round(credits.reduce((s, t) => s + Number(t.amount), 0) * 100) / 100,
+    creditCount: credits.length,
+    creditsByKind: Object.entries(creditByKind)
+      .map(([kind, amount]) => ({ kind, amount: Math.round(amount * 100) / 100 }))
+      .sort((a, b) => b.amount - a.amount),
+  }
 }
 
 function formatPeriodLabel(period) {
@@ -684,7 +726,17 @@ function formatPeriodLabel(period) {
   return `${names[parseInt(month, 10) - 1]} ${year}`
 }
 
-function buildSpendSummaryText(period, { totalSpend, txCount, categories, topMerchants, largestTxs }) {
+const CREDIT_KIND_TEXT = {
+  cashback: 'cashback/rewards',
+  refund: 'merchant refunds',
+  rebate: 'rebates/adjustments',
+  credit: 'other credits',
+}
+
+function buildSpendSummaryText(period, {
+  totalSpend, txCount, categories, topMerchants, largestTxs,
+  totalCredits = 0, creditCount = 0, creditsByKind = [],
+}) {
   const periodLabel = formatPeriodLabel(period)
   const catLines = categories.map(c => {
     const pct = totalSpend > 0 ? Math.round(c.amount / totalSpend * 100) : 0
@@ -697,6 +749,15 @@ function buildSpendSummaryText(period, { totalSpend, txCount, categories, topMer
     `- $${t.amount.toFixed(2)} at ${t.description} on ${t.date} [${t.category}]`
   ).join('\n')
 
+  const creditSection = creditCount > 0
+    ? `
+
+Credits received (money back — NOT spending, and already excluded from every figure above; do not subtract them from the total):
+Total: $${totalCredits.toFixed(2)} across ${creditCount} credit${creditCount !== 1 ? 's' : ''}
+${creditsByKind.map(c => `- ${CREDIT_KIND_TEXT[c.kind] ?? c.kind}: $${c.amount.toFixed(2)}`).join('\n')}
+Payments made to the card are deliberately not recorded here; they are tracked on the bank side.`
+    : ''
+
   return `Credit card spending for ${periodLabel}:
 Total: $${totalSpend.toFixed(2)} across ${txCount} transaction${txCount !== 1 ? 's' : ''}
 
@@ -707,7 +768,7 @@ Top merchants:
 ${merchantLines || '  (none)'}
 
 Largest transactions:
-${largeTxLines || '  (none)'}`
+${largeTxLines || '  (none)'}${creditSection}`
 }
 
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -752,7 +813,7 @@ function buildMonthlyFinancials(db, maxMonths = 6) {
   const empty = {
     monthsCovered: 0, windowLabel: 'no data', excluded: [],
     income: 0, expenses: 0, savingsContrib: 0, investContrib: 0,
-    cardSpendMonthly: 0, cardBreakdown: [],
+    cardSpendMonthly: 0, cardCreditsMonthly: 0, cardBreakdown: [],
   }
   const allFull = fullMonthsWithData(bank)
   if (!allFull.length) return empty
@@ -773,12 +834,17 @@ function buildMonthlyFinancials(db, maxMonths = 6) {
     else if (cat === 'Expense' || (t.type === 'expense' && !FINANCE_CAT_SET.has(cat))) expenses += amt
   }
 
-  // Credit-card category breakdown over the same full-month window (advice only).
+  // Credit-card category breakdown over the same full-month window (advice only). Positive card
+  // rows are credits, not spending, so they are tallied on their own rather than inflating a
+  // category total.
   const cardByCat = {}
   let cardTotal = 0
+  let cardCredits = 0
   for (const t of cc) {
     if (!inWindow(t.date)) continue
-    const amt = Math.abs(Number(t.amount))
+    const raw = Number(t.amount)
+    if (raw > 0) { cardCredits += raw; continue }
+    const amt = Math.abs(raw)
     cardTotal += amt
     const cat = t.category || 'Other'
     cardByCat[cat] = (cardByCat[cat] || 0) + amt
@@ -822,6 +888,7 @@ function buildMonthlyFinancials(db, maxMonths = 6) {
     savingsContrib: perMonth(savingsContrib),
     investContrib: perMonth(investContrib),
     cardSpendMonthly: Math.round(cardTotal / divisor),
+    cardCreditsMonthly: Math.round(cardCredits / divisor),
     cardBreakdown,
     bankBreakdown,
   }
@@ -844,6 +911,10 @@ function formatMonthlyFinancials(fin) {
     lines.push(``)
     lines.push(`Where credit-card spending went ($${fin.cardSpendMonthly}/mo of card purchases — this is a SUBSET of the expenses above, for category-level advice only; do NOT add it to total expenses):`)
     for (const c of fin.cardBreakdown) lines.push(`  ${c.category}: $${c.monthly}/mo (${c.pct}% of card spend)`)
+  }
+  if (fin.cardCreditsMonthly > 0) {
+    lines.push(``)
+    lines.push(`Credit-card credits received: $${fin.cardCreditsMonthly}/mo (cashback, refunds, rebates). Already excluded from the card spending above. These make the card bill smaller, so the expense total already reflects them — do NOT also add them to income.`)
   }
   return lines.join('\n')
 }
@@ -1001,7 +1072,9 @@ function investContribForGoal(db, goal, fin) {
   return Math.round((fin.investContrib * holdingsPct / 100) * 100) / 100
 }
 
-async function callLLM({ system, userMessages, maxTokens, vision = false, smart = false }) {
+// `model` overrides the tier choice outright; otherwise vision uses the configurable
+// settings.visionModel, `smart` gets Sonnet, and everything else gets Haiku.
+async function callLLM({ system, userMessages, maxTokens, vision = false, smart = false, model }) {
   const db = readDb()
   const { aiProvider = 'claude', claudeApiKey, openaiApiKey } = db.settings
 
@@ -1023,7 +1096,7 @@ async function callLLM({ system, userMessages, maxTokens, vision = false, smart 
       }
     }
     const result = await client.chat.completions.create({
-      model: vision || smart ? 'gpt-4o' : 'gpt-4o-mini',
+      model: model || (vision || smart ? 'gpt-4o' : 'gpt-4o-mini'),
       max_tokens: maxTokens,
       messages,
     })
@@ -1032,7 +1105,9 @@ async function callLLM({ system, userMessages, maxTokens, vision = false, smart 
     if (!claudeApiKey) throw new Error('No Claude API key configured. Add one in Settings.')
     const client = new Anthropic({ apiKey: claudeApiKey })
     const result = await client.messages.create({
-      model: vision || smart ? 'claude-sonnet-4-6' : 'claude-haiku-4-5-20251001',
+      model: model || (vision
+        ? (db.settings.visionModel || 'claude-sonnet-4-6')
+        : smart ? 'claude-sonnet-4-6' : 'claude-haiku-4-5-20251001'),
       max_tokens: maxTokens,
       ...(system ? { system } : {}),
       messages: userMessages,
@@ -1064,18 +1139,18 @@ ${goalSummaries || 'No goals set'}
 
 Return ONLY a valid JSON array of exactly 3 strings. Each string is one concise, actionable insight (1–2 sentences). No markdown, no wrapping object — just the array.`
 
+  let raw = null
   try {
     const text = await callLLM({
       system: `You are a personal finance assistant. ${todayLine()} You always respond with valid JSON only.`,
       userMessages: [{ role: 'user', content: userMsg }],
       maxTokens: 512,
     })
-    const raw = text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
+    raw = text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
     const insights = JSON.parse(raw)
     res.json({ insights })
   } catch (err) {
-    console.error('LLM insights error:', err.message)
-    res.status(500).json({ error: err.message })
+    failure(res, 'LLM insights error', err, { detail: raw })
   }
 })
 
@@ -1106,13 +1181,14 @@ ${JSON.stringify(transactions)}
 Respond with this exact JSON format, no other text:
 {"categories":[{"id":"<id>","category":"<category>"}]}`
 
+  let raw = null
   try {
     const text = await callLLM({
       system: 'You are a personal finance transaction categorizer. Respond with valid JSON only.',
       userMessages: [{ role: 'user', content: userMsg }],
       maxTokens: 1024,
     })
-    const raw = text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
+    raw = text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
     const result = JSON.parse(raw)
     const validated = (result.categories || []).map(({ id, category }) => ({
       id,
@@ -1120,8 +1196,12 @@ Respond with this exact JSON format, no other text:
     }))
     res.json({ categories: validated })
   } catch (err) {
-    console.error('LLM categorize error:', err.message)
-    res.json({ categories: [] })
+    // Categorization is best-effort: still return 200 so imports proceed uncategorized, but
+    // surface a warning so the UI can say why rather than silently degrading.
+    const errorId = Math.random().toString(36).slice(2, 8)
+    console.error(`[${errorId}] LLM categorize error:`, err.stack || err.message)
+    if (raw) console.error(`[${errorId}] detail:`, raw)
+    res.json({ categories: [], warning: err.message, errorId })
   }
 })
 
@@ -1187,9 +1267,36 @@ Write 3–4 sentences: (1) state whether they are on track or behind using the l
     })
     res.json({ analysis: text.trim() })
   } catch (err) {
-    console.error('LLM goal-analysis error:', err.message)
-    res.status(500).json({ error: err.message })
+    failure(res, 'LLM goal-analysis error', err)
   }
+})
+
+// Replaces the stored record wholesale: there is only ever one set of current insights, and a
+// fresh generation invalidates any chat that was following the old one. Re-reads the db rather
+// than reusing the copy from the start of the route, since the LLM call takes seconds and an
+// import may have written in the meantime.
+function saveSpendInsights(period, insights, messages = []) {
+  const db = readDb()
+  db.spendInsights = {
+    period,
+    insights,
+    messages,
+    generatedAt: new Date().toISOString(),
+  }
+  writeDb(db)
+  return db.spendInsights
+}
+
+app.get('/api/spend-insights', (req, res) => {
+  const db = readDb()
+  res.json(db.spendInsights ?? null)
+})
+
+app.delete('/api/spend-insights', (req, res) => {
+  const db = readDb()
+  db.spendInsights = null
+  writeDb(db)
+  res.json(null)
 })
 
 app.post('/api/llm/spend-insights', async (req, res) => {
@@ -1202,7 +1309,11 @@ app.post('/api/llm/spend-insights', async (req, res) => {
   const context = buildSpendContextFromTransactions(db.credit_card_transactions || [], period)
 
   if (context.txCount === 0) {
-    return res.json({ insights: [{ title: 'No Data', body: 'No credit card transactions found for the selected period.' }] })
+    // Stored like any other result, so the page shows the same thing after a reload instead of
+    // silently falling back to the "click Generate" empty state.
+    const insights = [{ title: 'No Data', body: 'No credit card transactions found for the selected period.' }]
+    saveSpendInsights(period, insights)
+    return res.json({ insights })
   }
 
   const summaryText = buildSpendSummaryText(period, context)
@@ -1218,18 +1329,19 @@ Cover exactly these three areas:
 
 Be specific with dollar amounts. No markdown. Valid JSON only.`
 
+  let raw = null
   try {
     const text = await callLLM({
       system: 'You are a personal finance assistant analyzing credit card spending. Respond with valid JSON only.',
       userMessages: [{ role: 'user', content: userMsg }],
       maxTokens: 768,
     })
-    const raw = text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
+    raw = text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
     const result = JSON.parse(raw)
+    saveSpendInsights(period, result.insights)
     res.json({ insights: result.insights })
   } catch (err) {
-    console.error('LLM spend-insights error:', err.message)
-    res.status(500).json({ error: err.message })
+    failure(res, 'LLM spend-insights error', err, { detail: raw })
   }
 })
 
@@ -1249,14 +1361,28 @@ app.post('/api/llm/spend-chat', async (req, res) => {
 
 ${summaryText}
 
-Be concise and specific. Answer in 2–4 sentences.`
+Be concise and specific. Answer in 2–4 sentences. Plain text only, no markdown — the reply is rendered as-is.`
 
   try {
     const text = await callLLM({ system: systemMsg, userMessages: messages, maxTokens: 512 })
-    res.json({ reply: text.trim() })
+    const reply = text.trim()
+
+    // Appended only when the stored insights still describe the period being discussed —
+    // otherwise this exchange belongs to a set of insights that has since been replaced.
+    const fresh = readDb()
+    if (fresh.spendInsights?.period === period) {
+      const lastUser = [...messages].reverse().find(m => m.role === 'user')
+      fresh.spendInsights.messages = [
+        ...(fresh.spendInsights.messages ?? []),
+        ...(lastUser ? [{ role: 'user', content: lastUser.content }] : []),
+        { role: 'assistant', content: reply },
+      ]
+      writeDb(fresh)
+    }
+
+    res.json({ reply })
   } catch (err) {
-    console.error('LLM spend-chat error:', err.message)
-    res.status(500).json({ error: err.message })
+    failure(res, 'LLM spend-chat error', err)
   }
 })
 
@@ -1296,8 +1422,7 @@ Be concise and specific. Answer in 2–4 sentences.`
     const text = await callLLM({ system: systemMsg, userMessages: messages, maxTokens: 512 })
     res.json({ reply: text.trim() })
   } catch (err) {
-    console.error('LLM dashboard-chat error:', err.message)
-    res.status(500).json({ error: err.message })
+    failure(res, 'LLM dashboard-chat error', err)
   }
 })
 
@@ -1355,8 +1480,7 @@ Be concise, specific, and honest. When a growth projection is available, acknowl
     const text = await callLLM({ system: systemMsg, userMessages: messages, maxTokens: 512 })
     res.json({ reply: text.trim() })
   } catch (err) {
-    console.error('LLM goal-chat error:', err.message)
-    res.status(500).json({ error: err.message })
+    failure(res, 'LLM goal-chat error', err)
   }
 })
 
@@ -1414,21 +1538,21 @@ Return ONLY valid JSON — no markdown, no code fences, no explanation outside t
 
 Only include categories that have spend data. Do not invent categories. Do NOT include goal names in budgets — goal funding is tracked via monthlySavings fields, not spending caps. If no active goals, set monthsToGoal to {}. Always set suggestedSavingsTarget to a round monthly dollar amount representing 10-20% of income based on the timeline preference.`
 
+  let raw = null
   try {
     const text = await callLLM({
       system: `You are a personal finance advisor. ${todayLine()} You always respond with valid JSON only.`,
       userMessages: [{ role: 'user', content: userMsg }],
       maxTokens: 1024,
     })
-    const raw = text.trim().replace(/^```json?\n?/, '').replace(/\n?```$/, '').trim()
+    raw = text.trim().replace(/^```json?\n?/, '').replace(/\n?```$/, '').trim()
     const result = JSON.parse(raw)
     res.json(result)
   } catch (err) {
-    console.error('LLM budget-builder error:', err.message)
     if (err instanceof SyntaxError) {
-      return res.status(500).json({ error: 'Failed to parse AI response' })
+      return failure(res, 'LLM budget-builder error', new Error('Failed to parse AI response'), { detail: raw })
     }
-    res.status(500).json({ error: err.message })
+    failure(res, 'LLM budget-builder error', err, { detail: raw })
   }
 })
 
@@ -1443,6 +1567,7 @@ app.post('/api/llm/detect-columns', async (req, res) => {
   if (!Array.isArray(headers) || headers.length === 0) {
     return res.status(400).json({ error: 'headers required' })
   }
+  let raw = null
   try {
     const text = await callLLM({
       userMessages: [{
@@ -1456,24 +1581,100 @@ Return ONLY a JSON object with these exact keys:
 {
   "date": "<header name for date column>",
   "description": "<header name for description/merchant column>",
-  "splitDebitCredit": false,
-  "amount": "<header name for amount column>",
+  "splitDebitCredit": <true if money out and money in are in SEPARATE columns, false if one signed amount column>,
+  "amount": "<header name for the single amount column, or empty string when splitDebitCredit is true>",
+  "debit": "<header name for the money-out column, or empty string when splitDebitCredit is false>",
+  "credit": "<header name for the money-in column, or empty string when splitDebitCredit is false>",
   "invertAmounts": <true if purchases show as positive numbers, false if negative>,
   "statementType": "credit_card" or "bank",
   "suggestedSourceName": "<best guess at institution name from the data, or empty string>"
 }
 
-For invertAmounts: look at the sample rows. If typical purchase/spending amounts appear as POSITIVE numbers (e.g. 50.00 for a store charge), set true so they get negated to expenses. If purchases appear as NEGATIVE numbers (e.g. -50.00), set false. Do not guess by bank name — read the actual values in the samples.`,
+For splitDebitCredit: set true when the statement has two separate value columns such as Debit/Credit, Withdrawals/Deposits, or Charges/Payments, and name both. Otherwise set false and name the single amount column.
+
+For invertAmounts (only meaningful when splitDebitCredit is false): look at the sample rows. If typical purchase/spending amounts appear as POSITIVE numbers (e.g. 50.00 for a store charge), set true so they get negated to expenses. If purchases appear as NEGATIVE numbers (e.g. -50.00), set false. Do not guess by bank name — read the actual values in the samples.`,
       }],
       maxTokens: 512,
       smart: true,
     })
-    const raw = text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
+    raw = text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
     const mapping = JSON.parse(raw)
     res.json({ mapping })
   } catch (err) {
-    console.error('detect-columns error:', err.message)
-    res.status(500).json({ error: err.message })
+    failure(res, 'detect-columns error', err, { detail: raw })
+  }
+})
+
+// Fallback for spreadsheets whose layout defeats column mapping — multi-section statements
+// (separate "Withdrawals" / "Deposits" blocks), stacked sub-tables, headers mid-file. The grid
+// goes up as text in chunks, which is both cheaper and more faithful than rasterizing it.
+app.post('/api/llm/extract-rows', async (req, res) => {
+  const db = readDb()
+  const { aiProvider = 'claude', claudeApiKey, openaiApiKey } = db.settings
+  const hasKey = aiProvider === 'openai' ? !!openaiApiKey : !!claudeApiKey
+  if (!hasKey) return res.status(400).json({ error: 'No AI API key configured. Add one in Settings.' })
+
+  const { rows, statementType = 'bank' } = req.body
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return res.status(400).json({ error: 'rows required' })
+  }
+
+  const isCard = statementType === 'credit_card'
+  const grid = rows.map(row => {
+    const cells = Array.isArray(row) ? row : Object.values(row ?? {})
+    return cells.map(c => String(c ?? '').replace(/\t/g, ' ').trim()).join('\t')
+  })
+
+  // Chunked so a long export neither blows the output token budget nor loses rows to
+  // truncation. Chunks overlap by a few rows so a section header isn't stranded.
+  const CHUNK = 120
+  const OVERLAP = 3
+  const transactions = []
+  const seen = new Set()
+  let raw = null
+
+  try {
+    for (let start = 0; start < grid.length; start += CHUNK) {
+      const from = start === 0 ? 0 : start - OVERLAP
+      const chunk = grid.slice(from, start + CHUNK)
+      const text = await callLLM({
+        system: 'You extract transactions from tabular financial statements. Respond with valid JSON only.',
+        userMessages: [{
+          role: 'user',
+          content: `These are tab-separated rows from a ${isCard ? 'credit card' : 'bank'} statement export${grid.length > CHUNK ? ` (rows ${from + 1}-${Math.min(start + CHUNK, grid.length)} of ${grid.length})` : ''}. The layout may include title rows, section headers, blank rows, subtotals, and separate sections for debits and credits.
+
+${chunk.join('\n')}
+
+Return ONLY a JSON object:
+{"transactions":[{"date":"YYYY-MM-DD","description":"<description>","amount":<number>${isCard ? ',"creditKind":"<only for positive amounts>"' : ''}}]}
+
+Rules:
+- Infer the year from any statement period, header text, or date codes present. If no year is discoverable, use ${new Date().getFullYear()}.
+${isCard
+  ? `- "amount" is NEGATIVE for purchases, fees, interest, and cash advances (omit "creditKind" for those).
+- Money credited back to you gets a POSITIVE "amount" and a "creditKind" of exactly one of "cashback" (rewards redeemed), "refund" (merchant refund, return, or reversed charge), "rebate" (issuer promotional credit, goodwill adjustment, waived fee), or "credit" (none of the above).
+- SKIP payments made TO the card entirely ("Payment - Thank You", "Autopay", "Online Payment", and similar), along with balance transfers. Those are paid from a bank account where they are already recorded. A payment reduces what you owe; a refund or cashback is money returned to you — decide from the DESCRIPTION, since both print as credits.`
+  : `- "amount" is positive for deposits/credits and negative for withdrawals/debits. Respect which section a row falls under: rows under a withdrawals/debits heading are negative, rows under a deposits/credits heading are positive, regardless of how the number is printed.`}
+- Skip title rows, column headers, blank rows, running balances, subtotals, and "daily balance" style sections.
+- If this chunk contains no transactions, return {"transactions":[]}.`,
+        }],
+        maxTokens: 8000,
+        smart: true,
+      })
+      raw = text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
+      const parsed = JSON.parse(raw)
+      const batch = Array.isArray(parsed) ? parsed : (parsed.transactions ?? [])
+      for (const tx of batch) {
+        // Overlapping chunk edges can yield the same row twice.
+        const key = `${tx.date}|${tx.description}|${tx.amount}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        transactions.push(tx)
+      }
+    }
+    res.json({ transactions })
+  } catch (err) {
+    failure(res, 'extract-rows error', err, { detail: raw })
   }
 })
 
@@ -1483,11 +1684,45 @@ app.post('/api/parse-pdf-vision', async (req, res) => {
   const hasKey = aiProvider === 'openai' ? !!openaiApiKey : !!claudeApiKey
   if (!hasKey) return res.status(400).json({ error: 'No AI API key configured. Add one in Settings.' })
 
-  const { pages } = req.body
+  const { pages, statementType = 'bank', statementPeriod = null } = req.body
   if (!Array.isArray(pages) || pages.length === 0) {
     return res.status(400).json({ error: 'No pages provided' })
   }
 
+  const isCard = statementType === 'credit_card'
+  const kindLabel = isCard ? 'credit card statement' : 'bank statement'
+  const shape = isCard
+    ? `{ "date": "YYYY-MM-DD", "description": "<description>", "amount": <number>, "creditKind": "<only for positive amounts, see below>" }`
+    : `{ "date": "YYYY-MM-DD", "description": "<description>", "amount": <number> }`
+  // Later page-batches of the same document no longer see the cover page, so the period read
+  // from the first batch is supplied to them explicitly.
+  const periodHint = statementPeriod
+    ? `The statement period is ${statementPeriod} — use it to resolve the year for every date.`
+    : `Read the statement period printed on the page and return it as "statementPeriod".`
+  // Credits are the subtle part: the money-back rows must be kept and labelled, while payments
+  // to the card must be dropped, and both are printed the same way on most statements.
+  const amountRules = isCard
+    ? `Rules for "amount" and "creditKind":
+- Purchases, fees, interest charges, and cash advances: NEGATIVE "amount", and omit "creditKind".
+- Money credited back to you: POSITIVE "amount", plus a "creditKind" of exactly one of:
+  - "cashback" — cash-back or rewards redeemed as a statement credit
+  - "refund"   — a merchant refund, return, or reversed/disputed charge
+  - "rebate"   — an issuer promotional credit, goodwill adjustment, or waived fee
+  - "credit"   — a credit you cannot place in the three above
+- SKIP these rows entirely, do not return them at all:
+  - PAYMENTS made TO the card (wording like "Payment - Thank You", "Autopay", "Online Payment",
+    "Electronic Payment", "Direct Debit"). These are paid from a bank account, where they are
+    already recorded, so returning them here would double-count the same money.
+  - balance transfers and cash-advance repayments.
+A payment reduces what you owe; a refund or cashback is money returned to you. Both are printed
+as credits, often with "CR" or in a credits column, so decide from the DESCRIPTION, not the sign.`
+    : `Rules for "amount": positive for deposits/credits, negative for withdrawals/debits.`
+
+  const exclusions = isCard
+    ? 'Exclude previous/new balance lines, minimum payment due, payment due date, credit limit and available credit figures, interest-charge and fees-year-to-date summary boxes, and rewards-points balances. Only return rows from the itemized transaction list.'
+    : 'Exclude balance summaries, running totals, fee summaries, and any non-transaction rows.'
+
+  let raw = null
   try {
     const text = await callLLM({
       userMessages: [{
@@ -1495,12 +1730,23 @@ app.post('/api/parse-pdf-vision', async (req, res) => {
         content: [
           {
             type: 'text',
-            text: `Extract all bank transactions from this scanned bank statement. Return ONLY a JSON array of transaction objects:
-- "date": YYYY-MM-DD (infer the year from the statement period shown on the page)
-- "description": transaction description
-- "amount": number, positive for deposits/credits, negative for withdrawals/debits
+            text: `Extract all transactions from this scanned ${kindLabel}.
 
-Exclude balance summaries, running totals, fee summaries, and any non-transaction rows. Return valid JSON only, no markdown.`,
+${periodHint}
+
+Return ONLY a JSON object:
+{
+  "statementPeriod": "<the statement period as printed, or null>",
+  "transactions": [
+    ${shape}
+  ]
+}
+
+${amountRules}
+
+${exclusions}
+
+Return valid JSON only, no markdown.`,
           },
           ...pages.map(data => ({
             type: 'image',
@@ -1508,16 +1754,20 @@ Exclude balance summaries, running totals, fee summaries, and any non-transactio
           })),
         ],
       }],
-      maxTokens: 4096,
+      maxTokens: 8192,
       vision: true,
     })
 
-    const raw = text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
-    const transactions = JSON.parse(raw)
-    res.json({ transactions })
+    raw = text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
+    const parsed = JSON.parse(raw)
+    // Tolerate a bare array, which is what the prompt used to ask for.
+    const transactions = Array.isArray(parsed) ? parsed : (parsed.transactions ?? [])
+    res.json({
+      transactions,
+      statementPeriod: Array.isArray(parsed) ? null : (parsed.statementPeriod ?? null),
+    })
   } catch (err) {
-    console.error('PDF vision error:', err.message)
-    res.status(500).json({ error: err.message })
+    failure(res, 'PDF vision error', err, { detail: raw })
   }
 })
 

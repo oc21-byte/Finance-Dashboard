@@ -1,19 +1,49 @@
-import { useRef, useState, useEffect } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import Papa from 'papaparse'
 import dayjs from 'dayjs'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer, LabelList,
 } from 'recharts'
 import { api } from '../api/client.js'
-import { CATEGORIES, CATEGORY_COLORS } from '../constants/categories.js'
-import { detectSource, processCSVRows, parsePdfVision } from '../utils/csvHelpers.js'
-import VisionReviewModal from '../components/VisionReviewModal.jsx'
+import { CATEGORIES, CATEGORY_COLORS, CREDIT_KIND_LABELS } from '../constants/categories.js'
+import { runImportQueue, sourceNameFromFile } from '../utils/importQueue.js'
+import { annotateDuplicates, duplicateFlags } from '../utils/duplicates.js'
+import { errorStatus } from '../utils/diagnostics.js'
+import ErrorBanner from '../components/ErrorBanner.jsx'
+import BulkImportReviewModal from '../components/BulkImportReviewModal.jsx'
 import AddTransactionModal from '../components/AddTransactionModal.jsx'
 import CategoryManager from '../components/CategoryManager.jsx'
 
+const SOURCE_NAME_KEY = 'visionSource_spendAnalyzer'
+
 const SOURCE_COLORS = ['#f87171', '#60a5fa', '#34d399', '#fbbf24', '#a78bfa', '#f472b6']
+
+function periodLabel(period) {
+  if (!period || period === 'all') return 'all time'
+  const d = dayjs(period + '-01')
+  return d.isValid() ? d.format('MMMM YYYY') : period
+}
+
+// A positive card amount is money coming back — cashback, a refund, a rebate. It is never
+// spending, so every chart and category total below is built from negatives only.
+const isCredit = tx => Number(tx.amount) > 0
+
+function summarizeCredits(transactions) {
+  const credits = transactions.filter(isCredit)
+  const byKind = {}
+  for (const tx of credits) {
+    const kind = tx.creditKind || 'credit'
+    byKind[kind] = (byKind[kind] || 0) + Number(tx.amount)
+  }
+  return {
+    credits,
+    total: Math.round(credits.reduce((s, t) => s + Number(t.amount), 0) * 100) / 100,
+    byKind: Object.entries(byKind)
+      .map(([kind, amount]) => ({ kind, amount: Math.round(amount * 100) / 100 }))
+      .sort((a, b) => b.amount - a.amount),
+  }
+}
 
 function buildMonthlySpend(transactions) {
   const months = [...new Set(transactions.map(t => t.date?.slice(0, 7)).filter(Boolean))].sort()
@@ -86,23 +116,24 @@ export default function SpendAnalyzer({ onTabChange }) {
   const fileInputRef = useRef()
   const tableRef = useRef()
   const queryClient = useQueryClient()
-const [visionData, setVisionData] = useState(null)
-  const [autoDetectData, setAutoDetectData] = useState(null)
+  const [reviewData, setReviewData] = useState(null)
   const [showAddModal, setShowAddModal] = useState(false)
   const [filterMonth, setFilterMonth] = useState('all')
   const [searchQuery, setSearchQuery] = useState('')
   const [showUncategorizedOnly, setShowUncategorizedOnly] = useState(false)
+  const [showDuplicatesOnly, setShowDuplicatesOnly] = useState(false)
   const [importStatus, setImportStatus] = useState(null)
   const [sortKey, setSortKey] = useState('date')
   const [sortDir, setSortDir] = useState('desc')
   const [editingCategoryId, setEditingCategoryId] = useState(null)
   const [recategorizing, setRecategorizing] = useState(false)
-  const [insights, setInsights] = useState([])
   const [insightsError, setInsightsError] = useState(null)
-  const [insightsPeriod, setInsightsPeriod] = useState(null)
-  const [chatMessages, setChatMessages] = useState([])
+  const [chatError, setChatError] = useState(null)
   const [chatInput, setChatInput] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
+  // The question being awaited. Held locally only so it can be shown immediately; the stored
+  // conversation is the source of truth once the reply lands.
+  const [pendingQuestion, setPendingQuestion] = useState(null)
 
   const { data: transactions = [], isLoading } = useQuery({
     queryKey: ['credit_card_transactions'],
@@ -120,19 +151,31 @@ const [visionData, setVisionData] = useState(null)
     queryFn: api.categories.list,
   })
 
+  // Persisted server-side so insights and their chat survive a tab change (which unmounts this
+  // page) and a browser reload.
+  const { data: storedInsights } = useQuery({
+    queryKey: ['spend-insights'],
+    queryFn: api.spendInsights.get,
+  })
+
+  const insights = storedInsights?.insights ?? []
+  const insightsPeriod = storedInsights?.period ?? null
+  const chatMessages = storedInsights?.messages ?? []
+
   const allCategories = [...CATEGORIES, ...customCategories.map(c => c.name)]
   const allCategoryColors = { ...CATEGORY_COLORS, ...Object.fromEntries(customCategories.map(c => [c.name, c.color])) }
+
+  const hasAiKey = settings?.aiProvider === 'openai' ? !!settings?.hasOpenaiApiKey : !!settings?.hasClaudeApiKey
 
   const batchMutation = useMutation({
     mutationFn: api.creditCardTransactions.batch,
     onSuccess: (imported) => {
       queryClient.invalidateQueries({ queryKey: ['credit_card_transactions'] })
-      setVisionData(null)
-      setAutoDetectData(null)
+      setReviewData(null)
       setImportStatus({ type: 'success', message: `Imported ${imported.length} transactions.` })
       setTimeout(() => setImportStatus(null), 4000)
     },
-    onError: () => setImportStatus({ type: 'error', message: 'Import failed. Please try again.' }),
+    onError: (err) => setImportStatus(errorStatus(err, { action: 'credit card import', stage: 'batch save' })),
   })
 
   const addMutation = useMutation({
@@ -160,29 +203,39 @@ const [visionData, setVisionData] = useState(null)
 
   const insightsMutation = useMutation({
     mutationFn: (period) => api.llm.spendInsights(period),
-    onSuccess: (data) => {
-      setInsights(data.insights || [])
+    onSuccess: () => {
       setInsightsError(null)
-      setInsightsPeriod(filterMonth)
-      setChatMessages([])
+      queryClient.invalidateQueries({ queryKey: ['spend-insights'] })
     },
     onError: (err) => setInsightsError(err.message || 'Failed to generate insights. Please try again.'),
+  })
+
+  const clearInsightsMutation = useMutation({
+    mutationFn: api.spendInsights.clear,
+    onSuccess: () => {
+      setInsightsError(null)
+      setChatError(null)
+      queryClient.invalidateQueries({ queryKey: ['spend-insights'] })
+    },
   })
 
   async function handleSendChat(e) {
     e.preventDefault()
     const message = chatInput.trim()
     if (!message || chatLoading) return
-    const newMessages = [...chatMessages, { role: 'user', content: message }]
-    setChatMessages(newMessages)
     setChatInput('')
+    setChatError(null)
+    setPendingQuestion(message)
     setChatLoading(true)
     try {
-      const result = await api.llm.spendChat(filterMonth, newMessages)
-      setChatMessages(prev => [...prev, { role: 'assistant', content: result.reply }])
-    } catch {
-      setChatMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, something went wrong. Please try again.' }])
+      await api.llm.spendChat(insightsPeriod ?? filterMonth, [...chatMessages, { role: 'user', content: message }])
+      await queryClient.invalidateQueries({ queryKey: ['spend-insights'] })
+    } catch (err) {
+      // Kept out of the stored conversation: a failed exchange isn't history worth replaying.
+      setChatError(err.message || 'Something went wrong. Please try again.')
+      setChatInput(message)
     } finally {
+      setPendingQuestion(null)
       setChatLoading(false)
     }
   }
@@ -199,7 +252,6 @@ const [visionData, setVisionData] = useState(null)
   }
 
   async function handleRecategorize() {
-    const uncategorized = transactions.filter(t => !t.category || t.category === 'Other')
     if (!uncategorized.length) return
     setRecategorizing(true)
     try {
@@ -215,105 +267,67 @@ const [visionData, setVisionData] = useState(null)
     }
   }
 
-  const PAYMENT_RE = /\b(payment\s*(-\s*)?(thank\s*you|received|applied|posted)|autopay|auto\s*pay|directpay|online\s*payment|electronic\s*payment|ach\s*payment|mobile\s*payment)\b/i
+  async function handleFileChange(e) {
+    const files = Array.from(e.target.files || [])
+    if (!files.length) return
+    e.target.value = ''
+    setImportStatus({ type: 'loading', message: 'Reading statements…' })
 
-  async function triggerVision(file) {
-    setImportStatus({ type: 'loading', message: 'Scanned PDF detected — analyzing with AI…' })
     try {
-      const { transactions } = await parsePdfVision(file)
-      setImportStatus(null)
-      if (!transactions?.length) {
-        setImportStatus({ type: 'error', message: 'AI could not find any transactions in this PDF.' })
+      const { groups, skipped } = await runImportQueue(files, {
+        statementType: 'credit_card',
+        csvSources: settings?.csvSources || {},
+        hasAiKey,
+        onProgress: ({ index, total, fileName, stage }) => setImportStatus({
+          type: 'loading',
+          message: total > 1 ? `${stage} — ${fileName} (${index} of ${total})` : `${stage} — ${fileName}`,
+        }),
+        postProcess: async (txs, { report }) => {
+          if (!hasAiKey) return txs
+          report('Categorizing with AI')
+          return categorizeTxs(txs)
+        },
+      })
+
+      if (!groups.length) {
+        const first = skipped[0]
+        setImportStatus({
+          type: 'error',
+          message: files.length === 1
+            ? (first?.reason ?? 'Nothing could be imported from this file.')
+            : `None of the ${files.length} files could be read. First problem: ${first?.reason ?? 'unknown'}`,
+          report: first?.report,
+        })
         return
       }
-      let normalized = transactions
-        .map(tx => ({
-          date: tx.date,
-          description: tx.description,
-          amount: Math.round(Number(tx.amount) * 100) / 100,
-          category: Number(tx.amount) >= 0 ? 'Income' : 'Expense',
-          type: Number(tx.amount) >= 0 ? 'income' : 'expense',
-          source: 'Bank Statement',
-        }))
-        .filter(tx => !PAYMENT_RE.test(tx.description))
-      if (settings?.hasClaudeApiKey) {
-        setImportStatus({ type: 'loading', message: 'Categorizing with AI…' })
-        normalized = await categorizeTxs(normalized)
-        setImportStatus(null)
-      }
-      setVisionData({ transactions: normalized })
+
+      const savedName = localStorage.getItem(SOURCE_NAME_KEY) || ''
+      const named = groups.map(g => ({
+        ...g,
+        sourceName: g.sourceName || savedName || sourceNameFromFile(g.fileName),
+      }))
+      const { groups: annotated } = annotateDuplicates(named, transactions)
+
+      setImportStatus(null)
+      setReviewData({ groups: annotated, skipped })
     } catch (err) {
-      setImportStatus({ type: 'error', message: err.message || 'AI analysis failed.' })
+      setImportStatus(errorStatus(err, { action: 'credit card import', stage: 'import queue' }))
     }
   }
 
-  async function handleFileChange(e) {
-    const file = e.target.files[0]
-    if (!file) return
-    e.target.value = ''
-
-    if (file.name.toLowerCase().endsWith('.pdf')) {
-      triggerVision(file)
-      return
-    }
-
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: async ({ data: rows, meta }) => {
-        const headers = meta.fields || []
-        const csvSources = settings?.csvSources || {}
-        const detected = detectSource(headers, csvSources, 'credit_card')
-        if (detected) {
-          let txs = processCSVRows(rows, { ...detected.mapping, sourceName: detected.name })
-          if (settings?.hasClaudeApiKey) {
-            setImportStatus({ type: 'loading', message: 'Categorizing with AI…' })
-            txs = await categorizeTxs(txs)
-          }
-          batchMutation.mutate(txs)
-        } else {
-          await runAutoDetect(null, headers, rows, {})
-        }
-      },
-      error: () => setImportStatus({ type: 'error', message: 'Could not parse CSV file.' }),
-    })
-  }
-
-async function runAutoDetect(file, headers, rows, { statementYear, statementEndYear, statementEndMonth } = {}) {
-    if (!settings?.hasClaudeApiKey) {
-      if (file) triggerVision(file)
-      else setImportStatus({ type: 'error', message: 'Claude API key required. Add one in Settings.' })
-      return
-    }
-    setImportStatus({ type: 'loading', message: 'Auto-detecting columns…' })
-    try {
-      const purchaseRows = rows.filter(r =>
-        !Object.values(r).some(v => /\bpayment\b/i.test(String(v)))
-      )
-      const samples = (purchaseRows.length >= 1 ? purchaseRows : rows).slice(0, 3)
-      const { mapping } = await api.llm.detectColumns(headers, samples)
-      let txs = processCSVRows(rows, { ...mapping, statementYear, statementEndYear, statementEndMonth }, { skipTypeFilter: true })
-        .filter(tx => !PAYMENT_RE.test(tx.description))
-      if (settings?.hasClaudeApiKey) {
-        setImportStatus({ type: 'loading', message: 'Categorizing with AI…' })
-        txs = await categorizeTxs(txs)
+  function handleReviewConfirm(readyGroups) {
+    const existing = settings?.csvSources || {}
+    const newSources = { ...existing }
+    let changed = false
+    for (const g of readyGroups) {
+      if (g.mapping) {
+        newSources[g.sourceName] = g.mapping
+        changed = true
       }
-      setImportStatus(null)
-      setAutoDetectData({ transactions: txs, mapping, suggestedSourceName: mapping.suggestedSourceName || '' })
-    } catch {
-      setImportStatus(null)
-      if (file) triggerVision(file)
-      else setImportStatus({ type: 'error', message: 'Could not auto-detect columns. Please try again.' })
     }
-  }
-
-  async function handleAutoDetectConfirm(sourceName, txs) {
-    if (autoDetectData?.mapping) {
-      const newSources = { ...(settings?.csvSources || {}), [sourceName]: autoDetectData.mapping }
-      saveMappingMutation.mutate(newSources)
-    }
-    batchMutation.mutate(txs)
-    setAutoDetectData(null)
+    if (changed) saveMappingMutation.mutate(newSources)
+    localStorage.setItem(SOURCE_NAME_KEY, readyGroups[0].sourceName)
+    batchMutation.mutate(readyGroups.flatMap(g => g.transactions))
   }
 
   function handleSort(field) {
@@ -329,7 +343,17 @@ async function runAutoDetect(file, headers, rows, { statementYear, statementEndY
     ...new Set(transactions.map(t => t.date?.slice(0, 7)).filter(Boolean)),
   ].sort().reverse()
 
-  const uncategorizedCount = transactions.filter(t => !t.category || t.category === 'Other').length
+  // Credits are excluded: an uncategorized refund needs no merchant category, since it never
+  // reaches the category charts.
+  const uncategorized = transactions.filter(t => !isCredit(t) && (!t.category || t.category === 'Other'))
+  const uncategorizedCount = uncategorized.length
+
+  // Compared across the whole ledger, not the visible month, so a duplicate that straddles a
+  // month boundary still surfaces.
+  const { groupCount: duplicateSetCount, byId: duplicateById } = useMemo(
+    () => duplicateFlags(transactions),
+    [transactions],
+  )
 
   const monthFiltered = transactions.filter(t =>
     filterMonth === 'all' || t.date?.startsWith(filterMonth)
@@ -337,6 +361,7 @@ async function runAutoDetect(file, headers, rows, { statementYear, statementEndY
 
   const filtered = monthFiltered.filter(t => {
     if (showUncategorizedOnly && t.category && t.category !== 'Other') return false
+    if (showDuplicatesOnly && !duplicateById.has(t.id)) return false
     if (searchQuery && !t.description?.toLowerCase().includes(searchQuery.toLowerCase())) return false
     return true
   })
@@ -355,9 +380,11 @@ async function runAutoDetect(file, headers, rows, { statementYear, statementEndY
     return 0
   })
 
-  const { data: monthlyData, sources: spendSources } = buildMonthlySpend(monthFiltered)
-  const categoryMonthlyData = buildMonthlyCategoryData(monthFiltered)
-  const topMerchants = buildTopMerchants(monthFiltered)
+  const monthFilteredSpend = monthFiltered.filter(t => !isCredit(t))
+  const { data: monthlyData, sources: spendSources } = buildMonthlySpend(monthFilteredSpend)
+  const categoryMonthlyData = buildMonthlyCategoryData(monthFilteredSpend)
+  const topMerchants = buildTopMerchants(monthFilteredSpend)
+  const creditSummary = summarizeCredits(monthFiltered)
   const hasData = transactions.length > 0
 
   return (
@@ -376,12 +403,13 @@ async function runAutoDetect(file, headers, rows, { statementYear, statementEndY
             disabled={batchMutation.isPending || importStatus?.type === 'loading'}
             className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors"
           >
-            {batchMutation.isPending || importStatus?.type === 'loading' ? 'Importing…' : 'Upload Credit Card Statement'}
+            {batchMutation.isPending || importStatus?.type === 'loading' ? 'Importing…' : 'Upload Credit Card Statements'}
           </button>
           <input
             ref={fileInputRef}
             type="file"
-            accept=".csv,.pdf"
+            accept=".csv,.xlsx,.xlsm,.xlsb,.xls,.pdf"
+            multiple
             className="hidden"
             onChange={handleFileChange}
           />
@@ -405,14 +433,38 @@ async function runAutoDetect(file, headers, rows, { statementYear, statementEndY
         </div>
       )}
 
-      {importStatus && (
+      {duplicateSetCount > 0 && (
+        <div className="mb-4 px-4 py-3 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-900 flex items-center justify-between gap-3">
+          <span>
+            You have <strong>{duplicateSetCount}</strong> set{duplicateSetCount !== 1 ? 's' : ''} of possible duplicate
+            transaction{duplicateSetCount !== 1 ? 's' : ''}. Delete the extra copy, or mark it as not a duplicate.
+          </span>
+          <button
+            onClick={() => {
+              setShowDuplicatesOnly(true)
+              setFilterMonth('all')
+              setTimeout(() => tableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
+            }}
+            className="shrink-0 px-3 py-1 text-xs font-medium bg-amber-100 hover:bg-amber-200 border border-amber-300 rounded-md transition-colors"
+          >
+            Review Now
+          </button>
+        </div>
+      )}
+
+      {importStatus?.type === 'error' ? (
+        <ErrorBanner
+          className="mb-4"
+          message={importStatus.message}
+          report={importStatus.report}
+          onDismiss={() => setImportStatus(null)}
+        />
+      ) : importStatus && (
         <div
           className={`mb-4 px-4 py-3 rounded-lg text-sm flex items-center justify-between ${
             importStatus.type === 'success'
               ? 'bg-green-50 text-green-800 border border-green-200'
-              : importStatus.type === 'loading'
-              ? 'bg-blue-50 text-blue-800 border border-blue-200'
-              : 'bg-red-50 text-red-800 border border-red-200'
+              : 'bg-blue-50 text-blue-800 border border-blue-200'
           }`}
         >
           {importStatus.message}
@@ -552,26 +604,75 @@ async function runAutoDetect(file, headers, rows, { statementYear, statementEndY
             </div>
           )}
 
+          {creditSummary.credits.length > 0 && (
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 mb-5">
+              <div className="flex items-baseline justify-between mb-4 gap-3 flex-wrap">
+                <h2 className="text-sm font-medium text-gray-500">Credits &amp; Refunds</h2>
+                <span className="text-xs text-gray-400">
+                  Excluded from all spending totals above
+                </span>
+              </div>
+              <div className="flex flex-wrap items-end gap-x-8 gap-y-4">
+                <div>
+                  <p className="text-2xl font-semibold text-green-600">
+                    +${creditSummary.total.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  </p>
+                  <p className="text-xs text-gray-400 mt-1">
+                    {creditSummary.credits.length} credit{creditSummary.credits.length !== 1 ? 's' : ''} received
+                  </p>
+                </div>
+                {creditSummary.byKind.map(({ kind, amount }) => (
+                  <div key={kind}>
+                    <p className="text-lg font-semibold text-gray-700">
+                      ${amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </p>
+                    <p className="text-xs text-gray-400 mt-1">{CREDIT_KIND_LABELS[kind] ?? kind}</p>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-gray-400 mt-4 pt-3 border-t border-gray-100">
+                Payments to the card aren't imported here — they're paid from your bank account, so
+                they already show as an expense on the Finances tab.
+              </p>
+            </div>
+          )}
+
           {/* AI Insights */}
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 mb-5">
             <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <h2 className="text-sm font-medium text-gray-500">AI Insights</h2>
                 <span className="text-xs px-1.5 py-0.5 bg-violet-100 text-violet-600 rounded font-medium">AI</span>
+                {storedInsights?.generatedAt && (
+                  <span className="text-xs text-gray-400">
+                    Saved {dayjs(storedInsights.generatedAt).format('MMM D, h:mm A')}
+                  </span>
+                )}
               </div>
               {settings?.hasClaudeApiKey && (
-                <button
-                  onClick={() => insightsMutation.mutate(filterMonth)}
-                  disabled={insightsMutation.isPending}
-                  className="px-3 py-1.5 text-sm bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-60 transition-colors flex items-center gap-1.5"
-                >
-                  {insightsMutation.isPending ? (
-                    <>
-                      <span className="inline-block w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      Analyzing…
-                    </>
-                  ) : 'Generate Insights'}
-                </button>
+                <div className="flex items-center gap-2">
+                  {insights.length > 0 && (
+                    <button
+                      onClick={() => clearInsightsMutation.mutate()}
+                      disabled={clearInsightsMutation.isPending || insightsMutation.isPending}
+                      className="px-3 py-1.5 text-sm text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-lg disabled:opacity-60 transition-colors"
+                    >
+                      Clear
+                    </button>
+                  )}
+                  <button
+                    onClick={() => insightsMutation.mutate(filterMonth)}
+                    disabled={insightsMutation.isPending}
+                    className="px-3 py-1.5 text-sm bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-60 transition-colors flex items-center gap-1.5"
+                  >
+                    {insightsMutation.isPending ? (
+                      <>
+                        <span className="inline-block w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        Analyzing…
+                      </>
+                    ) : insights.length > 0 ? 'Regenerate' : 'Generate Insights'}
+                  </button>
+                </div>
               )}
             </div>
 
@@ -587,8 +688,7 @@ async function runAutoDetect(file, headers, rows, { statementYear, statementEndY
 
             {settings?.hasClaudeApiKey && insights.length === 0 && !insightsMutation.isPending && !insightsError && (
               <p className="text-sm text-gray-400 py-4 text-center">
-                Click "Generate Insights" to get AI analysis of your{' '}
-                {filterMonth === 'all' ? 'all-time' : dayjs(filterMonth + '-01').format('MMMM YYYY')} spending.
+                Click "Generate Insights" to get AI analysis of your {periodLabel(filterMonth)} spending.
               </p>
             )}
 
@@ -596,7 +696,8 @@ async function runAutoDetect(file, headers, rows, { statementYear, statementEndY
               <>
                 {insightsPeriod !== filterMonth && (
                   <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-4">
-                    These insights are for a different period. Click "Generate Insights" to refresh.
+                    These insights cover {periodLabel(insightsPeriod)}, not the {periodLabel(filterMonth)} you're
+                    viewing. Follow-up answers use {periodLabel(insightsPeriod)} too — click Regenerate to switch.
                   </div>
                 )}
 
@@ -613,7 +714,7 @@ async function runAutoDetect(file, headers, rows, { statementYear, statementEndY
                 <div className="border-t border-gray-100 pt-4">
                   <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-3">Ask a follow-up</p>
 
-                  {chatMessages.length > 0 && (
+                  {(chatMessages.length > 0 || pendingQuestion) && (
                     <div className="space-y-3 mb-4 max-h-64 overflow-y-auto">
                       {chatMessages.map((msg, i) => (
                         <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
@@ -626,6 +727,13 @@ async function runAutoDetect(file, headers, rows, { statementYear, statementEndY
                           </div>
                         </div>
                       ))}
+                      {pendingQuestion && (
+                        <div className="flex justify-end">
+                          <div className="max-w-[75%] px-3 py-2 rounded-xl rounded-br-sm text-sm leading-relaxed bg-violet-600 text-white">
+                            {pendingQuestion}
+                          </div>
+                        </div>
+                      )}
                       {chatLoading && (
                         <div className="flex justify-start">
                           <div className="bg-gray-100 text-gray-400 px-3 py-2 rounded-xl rounded-bl-sm text-sm italic">
@@ -634,6 +742,10 @@ async function runAutoDetect(file, headers, rows, { statementYear, statementEndY
                         </div>
                       )}
                     </div>
+                  )}
+
+                  {chatError && (
+                    <p className="text-sm text-red-500 mb-3">{chatError}</p>
                   )}
 
                   <form onSubmit={handleSendChat} className="flex gap-2">
@@ -680,7 +792,15 @@ async function runAutoDetect(file, headers, rows, { statementYear, statementEndY
               Uncategorized only ✕
             </button>
           )}
-          {settings?.hasClaudeApiKey && transactions.some(t => !t.category || t.category === 'Other') && (
+          {showDuplicatesOnly && (
+            <button
+              onClick={() => setShowDuplicatesOnly(false)}
+              className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium bg-amber-100 text-amber-800 border border-amber-300 rounded-full hover:bg-amber-200 transition-colors"
+            >
+              Possible duplicates only ✕
+            </button>
+          )}
+          {settings?.hasClaudeApiKey && uncategorizedCount > 0 && (
             <button
               onClick={handleRecategorize}
               disabled={recategorizing}
@@ -699,9 +819,11 @@ async function runAutoDetect(file, headers, rows, { statementYear, statementEndY
         ) : sorted.length === 0 ? (
           <div className="py-16 text-center">
             <p className="text-gray-400 text-sm">
-              {searchQuery ? 'No transactions match your search.' : 'No transactions yet.'}
+              {searchQuery || showUncategorizedOnly || showDuplicatesOnly
+                ? 'No transactions match the current filters.'
+                : 'No transactions yet.'}
             </p>
-            {!searchQuery && (
+            {!searchQuery && !showUncategorizedOnly && !showDuplicatesOnly && (
               <p className="text-gray-300 text-xs mt-1">Upload a credit card statement or add one manually.</p>
             )}
           </div>
@@ -719,13 +841,38 @@ async function runAutoDetect(file, headers, rows, { statementYear, statementEndY
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
-                {sorted.map(tx => (
-                  <tr key={tx.id} className="hover:bg-gray-50 transition-colors">
+                {sorted.map(tx => {
+                  const dup = duplicateById.get(tx.id)
+                  const credit = isCredit(tx)
+                  return (
+                  <tr key={tx.id} className={`transition-colors ${dup ? 'bg-amber-50/60 hover:bg-amber-50' : 'hover:bg-gray-50'}`}>
                     <td className="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">
                       {tx.date ? dayjs(tx.date).format('MMM D, YYYY') : '—'}
                     </td>
-                    <td className="px-4 py-3 text-sm text-gray-900 max-w-xs truncate">
-                      {tx.description || <span className="text-gray-300 italic">No description</span>}
+                    <td className="px-4 py-3 text-sm text-gray-900 max-w-xs">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate">
+                          {tx.description || <span className="text-gray-300 italic">No description</span>}
+                        </span>
+                        {credit && (
+                          <span className="shrink-0 text-xs px-1.5 py-0.5 bg-green-100 text-green-700 rounded font-medium">
+                            {CREDIT_KIND_LABELS[tx.creditKind || 'credit'] ?? 'Credit'}
+                          </span>
+                        )}
+                      </div>
+                      {dup && (
+                        <div className="flex items-center gap-2 mt-1 text-xs">
+                          <span className="text-amber-700">
+                            Possible duplicate{dup.otherDate ? ` of ${dayjs(dup.otherDate).format('MMM D')}` : ''}
+                          </span>
+                          <button
+                            onClick={() => updateMutation.mutate({ id: tx.id, dupDismissed: true })}
+                            className="text-gray-400 hover:text-gray-700 underline"
+                          >
+                            Not a duplicate
+                          </button>
+                        </div>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       {editingCategoryId === tx.id ? (
@@ -758,8 +905,10 @@ async function runAutoDetect(file, headers, rows, { statementYear, statementEndY
                       )}
                     </td>
                     <td className="px-4 py-3 text-xs text-gray-400 hidden sm:table-cell">{tx.source || '—'}</td>
-                    <td className="px-4 py-3 text-sm font-medium text-right whitespace-nowrap text-red-500">
-                      −${Math.abs(tx.amount).toFixed(2)}
+                    <td className={`px-4 py-3 text-sm font-medium text-right whitespace-nowrap ${
+                      credit ? 'text-green-600' : 'text-red-500'
+                    }`}>
+                      {credit ? '+' : '−'}${Math.abs(tx.amount).toFixed(2)}
                     </td>
                     <td className="px-4 py-3">
                       <button
@@ -772,33 +921,24 @@ async function runAutoDetect(file, headers, rows, { statementYear, statementEndY
                       </button>
                     </td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>
         )}
       </div>
 
-      {visionData && (
-        <VisionReviewModal
-          transactions={visionData.transactions}
-          initialSourceName={localStorage.getItem('visionSource_spendAnalyzer') || ''}
-          onConfirm={(sourceName, txs) => {
-            localStorage.setItem('visionSource_spendAnalyzer', sourceName)
-            batchMutation.mutate(txs)
-          }}
-          onCancel={() => setVisionData(null)}
+      {reviewData && (
+        <BulkImportReviewModal
+          groups={reviewData.groups}
+          skipped={reviewData.skipped}
+          busy={batchMutation.isPending}
+          onConfirm={handleReviewConfirm}
+          onCancel={() => setReviewData(null)}
         />
       )}
-      {autoDetectData && (
-        <VisionReviewModal
-          transactions={autoDetectData.transactions}
-          initialSourceName={autoDetectData.suggestedSourceName}
-          onConfirm={handleAutoDetectConfirm}
-          onCancel={() => setAutoDetectData(null)}
-        />
-      )}
-{showAddModal && (
+      {showAddModal && (
         <AddTransactionModal
           categories={allCategories}
           onConfirm={data => addMutation.mutate(data)}

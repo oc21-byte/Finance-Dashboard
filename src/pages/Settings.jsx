@@ -4,6 +4,8 @@ import { api } from '../api/client.js'
 
 const inputClass = 'w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
 
+const DEFAULT_VISION_MODEL = 'claude-sonnet-4-6'
+
 export default function Settings() {
   const queryClient = useQueryClient()
   const [showInput, setShowInput] = useState(false)
@@ -16,6 +18,8 @@ export default function Settings() {
   const [returnSaved, setReturnSaved] = useState(false)
   const [savingsRateInput, setSavingsRateInput] = useState('')
   const [savingsRateSaved, setSavingsRateSaved] = useState(false)
+  const [visionModelInput, setVisionModelInput] = useState('')
+  const [visionModelSaved, setVisionModelSaved] = useState(false)
 
   const { data: settings } = useQuery({
     queryKey: ['settings'],
@@ -42,6 +46,9 @@ export default function Settings() {
     }
     if (settings?.budgetSavingsRate != null) {
       setSavingsRateInput(String(settings.budgetSavingsRate))
+    }
+    if (settings?.visionModel != null) {
+      setVisionModelInput(settings.visionModel)
     }
   }, [settings])
 
@@ -145,6 +152,20 @@ export default function Settings() {
   function handleSaveSavingsRate(e) {
     e.preventDefault()
     saveSavingsRate.mutate(savingsRateInput.trim())
+  }
+
+  const saveVisionModel = useMutation({
+    mutationFn: (val) => api.settings.update({ visionModel: val === '' ? DEFAULT_VISION_MODEL : val }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+      setVisionModelSaved(true)
+      setTimeout(() => setVisionModelSaved(false), 2000)
+    },
+  })
+
+  function handleSaveVisionModel(e) {
+    e.preventDefault()
+    saveVisionModel.mutate(visionModelInput.trim())
   }
 
   return (
@@ -338,6 +359,43 @@ export default function Settings() {
             </button>
           </form>
         </div>
+      </div>
+
+      {/* Statement Extraction Model */}
+      <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm mt-4">
+        <h2 className="text-sm font-semibold text-gray-700 mb-1">Statement Extraction Model</h2>
+        <p className="text-xs text-gray-400 mb-4">
+          The Claude model used to read scanned PDF statements. Statements are sent one file at a time
+          in small page batches, so the default handles multi-statement uploads accurately — switch to a
+          stronger model only if a particular statement keeps coming out wrong.
+          {currentProvider === 'openai' && ' Applies to the Claude provider only; OpenAI uses gpt-4o.'}
+        </p>
+        {visionModelSaved && <p className="text-xs text-green-600 mb-3">Saved ✓</p>}
+        <form onSubmit={handleSaveVisionModel} className="flex gap-2 items-center">
+          <input
+            className={inputClass}
+            type="text"
+            placeholder={DEFAULT_VISION_MODEL}
+            value={visionModelInput}
+            onChange={(e) => setVisionModelInput(e.target.value)}
+          />
+          <button
+            type="submit"
+            disabled={saveVisionModel.isPending}
+            className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors whitespace-nowrap"
+          >
+            {saveVisionModel.isPending ? 'Saving…' : 'Save'}
+          </button>
+          {visionModelInput !== DEFAULT_VISION_MODEL && (
+            <button
+              type="button"
+              onClick={() => { setVisionModelInput(DEFAULT_VISION_MODEL); saveVisionModel.mutate(DEFAULT_VISION_MODEL) }}
+              className="px-3 py-2 text-sm text-gray-400 hover:text-gray-600 whitespace-nowrap"
+            >
+              Reset
+            </button>
+          )}
+        </form>
       </div>
 
       {/* Row 3: PDF Upload History | CSV Sources */}

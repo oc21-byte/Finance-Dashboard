@@ -18,7 +18,10 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import App from './App.jsx'
+import { installGlobalHandlers } from './utils/diagnostics.js'
 import './index.css'
+
+installGlobalHandlers()
 
 const queryClient = new QueryClient({
   defaultOptions: {

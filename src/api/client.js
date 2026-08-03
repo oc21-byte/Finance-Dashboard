@@ -1,12 +1,45 @@
+import { logEvent } from '../utils/diagnostics.js'
+
 const BASE = '/api'
 
+// Carries the server's own error text and status alongside the message, so a failure can be
+// diagnosed without re-running it against the network tab.
+export class ApiError extends Error {
+  constructor(message, { method, path, status, body }) {
+    super(message)
+    this.name = 'ApiError'
+    this.method = method
+    this.path = path
+    this.status = status
+    this.body = body
+    this.serverMessage = body?.error
+    this.errorId = body?.errorId
+  }
+}
+
 async function request(method, path, body) {
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers: body ? { 'Content-Type': 'application/json' } : {},
-    body: body ? JSON.stringify(body) : undefined,
-  })
-  if (!res.ok) throw new Error(`${method} ${path} → ${res.status}`)
+  const startedAt = Date.now()
+  let res
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    })
+  } catch (err) {
+    logEvent('api', `${method} ${path} → network error (${Date.now() - startedAt}ms)`)
+    throw new ApiError(err.message || 'Network request failed', { method, path })
+  }
+
+  logEvent('api', `${method} ${path} → ${res.status} (${Date.now() - startedAt}ms)`)
+
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => null)
+    throw new ApiError(
+      errBody?.error || `${method} ${path} → ${res.status}`,
+      { method, path, status: res.status, body: errBody },
+    )
+  }
   return res.json()
 }
 
@@ -74,6 +107,12 @@ export const api = {
     create: (data) => request('POST',   '/upload-history', data),
     remove: (id)   => request('DELETE', `/upload-history/${id}`),
   },
+  // The last generated Spend Analyzer insights and their chat. Written by the LLM routes, so
+  // there is no create here — only read and clear.
+  spendInsights: {
+    get:   () => request('GET',    '/spend-insights'),
+    clear: () => request('DELETE', '/spend-insights'),
+  },
   shutdown: () => request('POST', '/shutdown'),
   llm: {
     insights: (payload) => request('POST', '/llm/insights', payload),
@@ -85,5 +124,6 @@ export const api = {
     goalChat: (goalId, messages) => request('POST', '/llm/goal-chat', { goalId, messages }),
     budgetBuilder: (payload) => request('POST', '/llm/budget-builder', payload),
     detectColumns: (headers, samples) => request('POST', '/llm/detect-columns', { headers, samples }),
+    extractRows: (rows, statementType) => request('POST', '/llm/extract-rows', { rows, statementType }),
   },
 }

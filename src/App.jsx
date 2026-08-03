@@ -1,6 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from './api/client.js'
+import { logEvent, setContext } from './utils/diagnostics.js'
+import ErrorBoundary from './components/ErrorBoundary.jsx'
 import Layout from './components/Layout.jsx'
 import Dashboard from './pages/Dashboard.jsx'
 import Finances from './pages/Finances.jsx'
@@ -31,9 +33,26 @@ export default function App() {
   })
   const demoMode = demoStatus?.demoMode ?? false
 
+  // Shares the cache with every page's settings query; used only to stamp failure reports.
+  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.settings.get })
+
+  useEffect(() => {
+    setContext({ tab: activeTab })
+    logEvent('nav', `opened ${activeTab}`)
+  }, [activeTab])
+
+  useEffect(() => {
+    if (!settings) return
+    setContext({
+      aiProvider: `${settings.aiProvider ?? 'claude'} (key configured: ${settings.aiProvider === 'openai' ? settings.hasOpenaiApiKey : settings.hasClaudeApiKey})`,
+    })
+  }, [settings])
+
   return (
     <Layout activeTab={activeTab} onTabChange={setActiveTab} demoMode={demoMode}>
-      <Page onTabChange={setActiveTab} demoMode={demoMode} />
+      <ErrorBoundary key={activeTab}>
+        <Page onTabChange={setActiveTab} demoMode={demoMode} />
+      </ErrorBoundary>
     </Layout>
   )
 }
