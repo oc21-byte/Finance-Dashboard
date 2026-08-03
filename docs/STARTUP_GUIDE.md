@@ -378,6 +378,11 @@ reload automatically.
 If the app behaves strangely after pulling new code, run `npm install` again (in case new
 packages were added) and restart with `npm run dev`.
 
+**Red screen: `Failed to resolve import "…"` (e.g. `"xlsx"`)**
+You pulled new code but didn't reinstall packages. A pull only downloads source files —
+new libraries stay missing until you install them. From the project folder, run
+`npm install`, then `npm run dev` again.
+
 ---
 
 *Still stuck? Reach out to whoever shared this app with you — they'll be able to help.*

@@ -42,6 +42,10 @@ cd finance-dashboard
 npm install
 ```
 
+Most packages come from the npm registry. One — `xlsx`, used to read `.xlsx` statements — is fetched
+from `cdn.sheetjs.com`, because SheetJS publishes its maintained builds there rather than to npm. If
+you're on a network that blocks it, `npm install` will report that it can't reach the host.
+
 ### 3. Start the app
 
 ```bash
@@ -68,6 +72,10 @@ npm install
 npm run dev
 ```
 
+Don't skip the `npm install` — a pull brings new code but not new packages. If you do skip it and the
+update added a dependency, the app fails to start with a red **`Failed to resolve import "…"`**
+screen naming the missing package. Running `npm install` fixes it.
+
 ---
 
 ## Setup & updates with GitHub Desktop (non-technical)
@@ -92,8 +100,21 @@ Whenever there's a new update, just do this:
 2. Make sure our project is selected in the top-left corner.
 3. Click the **"Fetch origin"** button at the top.
 4. If that button changes to say **"Pull origin"**, click it.
+5. **Install any new packages.** GitHub Desktop only downloads code, not the libraries the app
+   depends on. Open a terminal in the project folder and run:
 
-That's it! The app will download the latest code automatically. Your data files will stay exactly where they are, untouched.
+   ```bash
+   npm install
+   ```
+
+   You can skip this only if you know the update added no new packages. Running it when it wasn't
+   needed is harmless.
+
+Your data files stay exactly where they are, untouched.
+
+> **Skipping step 5 is the most common cause of an update breaking the app.** If you see a red
+> error screen saying **`Failed to resolve import "…"`** when you start it, that's what happened —
+> run `npm install`, then start the app again.
 
 ---
 
