@@ -1,33 +1,36 @@
 import { useMemo, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import dayjs from 'dayjs'
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  ResponsiveContainer, LabelList,
-} from 'recharts'
 import { api } from '../api/client.js'
 import { CATEGORIES, CATEGORY_COLORS, CREDIT_KIND_LABELS } from '../constants/categories.js'
 import { runImportQueue, sourceNameFromFile } from '../utils/importQueue.js'
 import { annotateDuplicates, duplicateFlags } from '../utils/duplicates.js'
+import { processCSVRows } from '../utils/csvHelpers.js'
 import { errorStatus } from '../utils/diagnostics.js'
+import {
+  resolvePeriod, priorRange, earliestDate, filterByRange, buildScopeKey, describeScope, isCredit,
+} from '../utils/period.js'
+import { applyFilters, buildKpis } from '../utils/spendAggregations.js'
+import { detectRecurring } from '../utils/recurring.js'
 import ErrorBanner from '../components/ErrorBanner.jsx'
 import BulkImportReviewModal from '../components/BulkImportReviewModal.jsx'
+import CsvMappingModal from '../components/CsvMappingModal.jsx'
 import AddTransactionModal from '../components/AddTransactionModal.jsx'
 import CategoryManager from '../components/CategoryManager.jsx'
+import AiInsightsPanel from '../components/spend/AiInsightsPanel.jsx'
+import ScopeHeader, { PINNED_BAR_H } from '../components/spend/ScopeHeader.jsx'
+import RecurringPanel from '../components/spend/RecurringPanel.jsx'
+import SpendOverTime from '../components/spend/SpendOverTime.jsx'
+import CategoryBreakdown from '../components/spend/CategoryBreakdown.jsx'
+import TopMerchants from '../components/spend/TopMerchants.jsx'
+import CardsBar from '../components/spend/CardsBar.jsx'
+import TransactionTable from '../components/spend/TransactionTable.jsx'
+import { buildCardColors } from '../components/spend/palette.js'
 
 const SOURCE_NAME_KEY = 'visionSource_spendAnalyzer'
 
-const SOURCE_COLORS = ['#f87171', '#60a5fa', '#34d399', '#fbbf24', '#a78bfa', '#f472b6']
-
-function periodLabel(period) {
-  if (!period || period === 'all') return 'all time'
-  const d = dayjs(period + '-01')
-  return d.isValid() ? d.format('MMMM YYYY') : period
-}
-
-// A positive card amount is money coming back — cashback, a refund, a rebate. It is never
-// spending, so every chart and category total below is built from negatives only.
-const isCredit = tx => Number(tx.amount) > 0
+const FILTER_KINDS = ['categories', 'cards', 'merchants']
+const FILTER_LABEL = { categories: 'Category', cards: 'Card', merchants: 'Merchant' }
+const NO_FILTERS = { categories: [], cards: [], merchants: [] }
 
 function summarizeCredits(transactions) {
   const credits = transactions.filter(isCredit)
@@ -45,88 +48,27 @@ function summarizeCredits(transactions) {
   }
 }
 
-function buildMonthlySpend(transactions) {
-  const months = [...new Set(transactions.map(t => t.date?.slice(0, 7)).filter(Boolean))].sort()
-  const sources = [...new Set(transactions.map(t => t.source).filter(Boolean))]
-  const data = months.map(month => {
-    const txs = transactions.filter(t => t.date?.startsWith(month))
-    const entry = { month: dayjs(month + '-01').format('MMM YY') }
-    let total = 0
-    for (const src of sources) {
-      const spend = txs.filter(t => t.source === src).reduce((s, t) => s + Math.abs(t.amount), 0)
-      entry[src] = Math.round(spend * 100) / 100
-      total += entry[src]
-    }
-    entry.total = Math.round(total * 100) / 100
-    return entry
-  })
-  return { data, sources }
-}
+// Layout's demo-mode banner is `sticky top-0 z-40`, so anything this page pins has to start below
+// it: text-sm (20px) + py-1.5 (12px).
+const DEMO_BANNER_H = 32
 
-function buildMonthlyCategoryData(transactions) {
-  const allMonths = [...new Set(transactions.map(t => t.date?.slice(0, 7)).filter(Boolean))].sort()
-  const categories = [...new Set(transactions.map(t => t.category).filter(Boolean))]
-  const data = allMonths.map(month => {
-    const txs = transactions.filter(t => t.date?.startsWith(month))
-    const entry = { month: dayjs(month + '-01').format('MMM YY') }
-    let total = 0
-    for (const cat of categories) {
-      const spend = txs.filter(t => t.category === cat).reduce((s, t) => s + Math.abs(t.amount), 0)
-      if (spend > 0) {
-        entry[cat] = Math.round(spend * 100) / 100
-        total += entry[cat]
-      }
-    }
-    entry.total = Math.round(total * 100) / 100
-    return entry
-  })
-  return { data, categories }
-}
-
-function buildTopMerchants(transactions, limit = 10) {
-  const totals = {}
-  for (const tx of transactions) {
-    const key = tx.description || 'Unknown'
-    totals[key] = (totals[key] || 0) + Math.abs(tx.amount)
-  }
-  return Object.entries(totals)
-    .map(([merchant, amount]) => ({ merchant, amount: Math.round(amount * 100) / 100 }))
-    .sort((a, b) => b.amount - a.amount)
-    .slice(0, limit)
-}
-
-function SortTh({ label, field, sortKey, sortDir, onSort, className = '' }) {
-  const active = sortKey === field
-  return (
-    <th
-      className={`px-4 py-3 cursor-pointer select-none hover:text-gray-600 transition-colors ${className}`}
-      onClick={() => onSort(field)}
-    >
-      <span className="inline-flex items-center gap-1">
-        {label}
-        <span className={`text-xs leading-none ${active ? 'text-gray-500' : 'text-gray-300'}`}>
-          {active ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
-        </span>
-      </span>
-    </th>
-  )
-}
-
-export default function SpendAnalyzer({ onTabChange }) {
+export default function SpendAnalyzer({ onTabChange, demoMode }) {
   const fileInputRef = useRef()
   const tableRef = useRef()
   const pendingUploadMetaRef = useRef(null)
   const queryClient = useQueryClient()
   const [reviewData, setReviewData] = useState(null)
+  const [csvModalData, setCsvModalData] = useState(null)
   const [showAddModal, setShowAddModal] = useState(false)
-  const [filterMonth, setFilterMonth] = useState('all')
+  const [period, setPeriod] = useState('6M')
+  const [filters, setFilters] = useState(NO_FILTERS)
+  const [showRecurring, setShowRecurring] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [showUncategorizedOnly, setShowUncategorizedOnly] = useState(false)
   const [showDuplicatesOnly, setShowDuplicatesOnly] = useState(false)
   const [importStatus, setImportStatus] = useState(null)
   const [sortKey, setSortKey] = useState('date')
   const [sortDir, setSortDir] = useState('desc')
-  const [editingCategoryId, setEditingCategoryId] = useState(null)
   const [recategorizing, setRecategorizing] = useState(false)
   const [insightsError, setInsightsError] = useState(null)
   const [chatError, setChatError] = useState(null)
@@ -163,8 +105,16 @@ export default function SpendAnalyzer({ onTabChange }) {
   const insightsPeriod = storedInsights?.period ?? null
   const chatMessages = storedInsights?.messages ?? []
 
-  const allCategories = [...CATEGORIES, ...customCategories.map(c => c.name)]
-  const allCategoryColors = { ...CATEGORY_COLORS, ...Object.fromEntries(customCategories.map(c => [c.name, c.color])) }
+  // Memoised because identity matters here, not just value: these feed the `useMemo` deps of every
+  // chart, so rebuilding them each render would recompute all four charts on any state change.
+  const allCategories = useMemo(
+    () => [...CATEGORIES, ...customCategories.map(c => c.name)],
+    [customCategories],
+  )
+  const allCategoryColors = useMemo(
+    () => ({ ...CATEGORY_COLORS, ...Object.fromEntries(customCategories.map(c => [c.name, c.color])) }),
+    [customCategories],
+  )
 
   const hasAiKey = settings?.aiProvider === 'openai' ? !!settings?.hasOpenaiApiKey : !!settings?.hasClaudeApiKey
 
@@ -253,7 +203,12 @@ export default function SpendAnalyzer({ onTabChange }) {
     setPendingQuestion(message)
     setChatLoading(true)
     try {
-      await api.llm.spendChat(insightsPeriod ?? filterMonth, [...chatMessages, { role: 'user', content: message }])
+      // Sent against the stored scope, not the one on screen: the answer has to describe the same
+      // data the insights above it describe, or the server refuses to record the exchange.
+      await api.llm.spendChat(
+        insightsPeriod ? { ...scopePayload, period: insightsPeriod } : scopePayload,
+        [...chatMessages, { role: 'user', content: message }],
+      )
       await queryClient.invalidateQueries({ queryKey: ['spend-insights'] })
     } catch (err) {
       // Kept out of the stored conversation: a failed exchange isn't history worth replaying.
@@ -296,10 +251,11 @@ export default function SpendAnalyzer({ onTabChange }) {
     const files = Array.from(e.target.files || [])
     if (!files.length) return
     e.target.value = ''
+    setCsvModalData(null)
     setImportStatus({ type: 'loading', message: 'Reading statements…' })
 
     try {
-      const { groups, skipped } = await runImportQueue(files, {
+      const { groups, skipped, needsMapping } = await runImportQueue(files, {
         statementType: 'credit_card',
         csvSources: settings?.csvSources || {},
         hasAiKey,
@@ -313,6 +269,19 @@ export default function SpendAnalyzer({ onTabChange }) {
           return categorizeTxs(txs)
         },
       })
+
+      // A lone file whose columns couldn't be worked out falls back to mapping by hand. Without
+      // this the card path dead-ends on "nothing could be imported" for any statement the AI can't
+      // read — the same file on the Finances tab would have offered the mapping modal.
+      if (needsMapping) {
+        setImportStatus(null)
+        setCsvModalData({
+          headers: needsMapping.headers,
+          rows: needsMapping.rows,
+          fileName: needsMapping.file.name,
+        })
+        return
+      }
 
       if (!groups.length) {
         const first = skipped[0]
@@ -338,6 +307,30 @@ export default function SpendAnalyzer({ onTabChange }) {
     } catch (err) {
       setImportStatus(errorStatus(err, { action: 'credit card import', stage: 'import queue' }))
     }
+  }
+
+  // Hand-mapped rows join the normal flow rather than going straight to the server: they still
+  // need duplicate flagging and a look before saving, exactly like auto-detected ones.
+  function handleMappingConfirm(sourceName, mapping) {
+    const rows = processCSVRows(csvModalData.rows, { ...mapping, sourceName })
+    if (!rows.length) {
+      setCsvModalData(null)
+      setImportStatus({ type: 'error', message: 'That mapping produced no transactions. Check the column choices and try again.' })
+      return
+    }
+    const group = {
+      id: `map${Date.now()}`,
+      fileName: csvModalData.fileName,
+      transactions: rows,
+      mapping,
+      sourceName,
+      note: 'Mapped by hand',
+      headers: csvModalData.headers,
+      rows: csvModalData.rows,
+    }
+    const { groups: annotated } = annotateDuplicates([group], transactions)
+    setCsvModalData(null)
+    setReviewData({ groups: annotated, skipped: [] })
   }
 
   function handleReviewConfirm(readyGroups) {
@@ -369,34 +362,116 @@ export default function SpendAnalyzer({ onTabChange }) {
     }
   }
 
-  const availableMonths = [
-    ...new Set(transactions.map(t => t.date?.slice(0, 7)).filter(Boolean)),
-  ].sort().reverse()
-
   // Credits are excluded: an uncategorized refund needs no merchant category, since it never
   // reaches the category charts.
   const uncategorized = transactions.filter(t => !isCredit(t) && (!t.category || t.category === 'Other'))
   const uncategorizedCount = uncategorized.length
 
-  // Compared across the whole ledger, not the visible month, so a duplicate that straddles a
-  // month boundary still surfaces.
+  // Compared across the whole ledger, not the visible period, so a duplicate that straddles a
+  // period boundary still surfaces.
   const { groupCount: duplicateSetCount, byId: duplicateById } = useMemo(
     () => duplicateFlags(transactions),
     [transactions],
   )
 
-  const monthFiltered = transactions.filter(t =>
-    filterMonth === 'all' || t.date?.startsWith(filterMonth)
+  // --- The derivation chain. Every number on the page hangs off these five steps, which is what
+  // lets a filter chip re-scope the whole page instead of just the table.
+  const ledgerStart = useMemo(() => earliestDate(transactions), [transactions])
+  const range = useMemo(() => resolvePeriod(period, transactions), [period, transactions])
+  const periodRows = useMemo(() => filterByRange(transactions, range), [transactions, range])
+  const scopedRows = useMemo(() => applyFilters(periodRows, filters), [periodRows, filters])
+  const scopedSpend = useMemo(() => scopedRows.filter(t => !isCredit(t)), [scopedRows])
+
+  // Same-length preceding window, for the "vs prior" delta. Null when the ledger doesn't cover it.
+  const priorSpend = useMemo(() => {
+    const prior = priorRange(range, ledgerStart)
+    if (!prior) return []
+    return applyFilters(filterByRange(transactions, prior), filters).filter(t => !isCredit(t))
+  }, [transactions, range, filters, ledgerStart])
+
+  const kpis = useMemo(() => buildKpis(scopedSpend, range, priorSpend), [scopedSpend, range, priorSpend])
+
+  // Detected across the *whole* ledger, not the visible range — cadence can only be read from
+  // history. Filters still apply, since they narrow which merchants are in scope, not which dates.
+  const recurring = useMemo(
+    () => detectRecurring(applyFilters(transactions, filters), { activeTo: range.to }),
+    [transactions, filters, range.to],
   )
 
-  const filtered = monthFiltered.filter(t => {
+  const monthsAvailable = useMemo(
+    () => new Set(transactions.map(t => t.date?.slice(0, 7)).filter(Boolean)).size,
+    [transactions],
+  )
+
+  // Keyed off the whole ledger, never the scoped set — a card has to keep its colour when a filter
+  // chip removes some of the others, or the legend you just read stops matching the chart.
+  // `|| 'Unknown'` matches `cardOf` in spendAggregations — a sourceless row has to key the same way
+  // here as it does in the totals, or it draws uncoloured.
+  const cardColors = useMemo(
+    () => buildCardColors(transactions.map(t => t.source || 'Unknown')),
+    [transactions],
+  )
+
+  // The table narrows further: search plus the two review toggles, which deliberately do not feed
+  // the KPIs or charts (see FilterBar). Memoised alongside the sort below because together they
+  // walk the whole ledger, and this page re-renders on every hover inside a chart.
+  const filtered = useMemo(() => scopedRows.filter(t => {
     if (showUncategorizedOnly && t.category && t.category !== 'Other') return false
     if (showDuplicatesOnly && !duplicateById.has(t.id)) return false
     if (searchQuery && !t.description?.toLowerCase().includes(searchQuery.toLowerCase())) return false
     return true
-  })
+  }), [scopedRows, showUncategorizedOnly, showDuplicatesOnly, searchQuery, duplicateById])
 
-  const sorted = [...filtered].sort((a, b) => {
+  function toggleFilter(kind, value) {
+    setFilters(f => ({
+      ...f,
+      [kind]: f[kind].includes(value) ? f[kind].filter(v => v !== value) : [...f[kind], value],
+    }))
+  }
+
+  const filterChips = [
+    ...FILTER_KINDS.flatMap(kind =>
+      filters[kind].map(value => ({
+        key: `${kind}:${value}`,
+        label: `${FILTER_LABEL[kind]}: ${value}`,
+        onRemove: () => toggleFilter(kind, value),
+      }))
+    ),
+    ...(showUncategorizedOnly ? [{
+      key: 'uncategorized',
+      label: 'Uncategorized only',
+      note: 'table only',
+      onRemove: () => setShowUncategorizedOnly(false),
+    }] : []),
+    ...(showDuplicatesOnly ? [{
+      key: 'duplicates',
+      label: 'Possible duplicates only',
+      note: 'table only',
+      onRemove: () => setShowDuplicatesOnly(false),
+    }] : []),
+  ]
+
+  const hasScopeFilters = FILTER_KINDS.some(k => filters[k].length > 0)
+
+  function clearAllFilters() {
+    setFilters(NO_FILTERS)
+    setShowUncategorizedOnly(false)
+    setShowDuplicatesOnly(false)
+  }
+
+  // What the AI is being asked about: the range plus the filter chips, as one opaque key the
+  // server stores and compares. Review toggles are excluded — they don't change the spend context.
+  const scopeKey = buildScopeKey(range, filters)
+  const scopeLabel = describeScope(range, filters)
+  const scopePayload = {
+    period: scopeKey,
+    from: range.from,
+    to: range.to,
+    filters,
+    periodLabel: scopeLabel,
+  }
+
+  const sorted = useMemo(() => [...filtered].sort((a, b) => {
     let av, bv
     if (sortKey === 'amount') {
       av = Math.abs(a.amount ?? 0)
@@ -408,19 +483,34 @@ export default function SpendAnalyzer({ onTabChange }) {
     if (av < bv) return sortDir === 'asc' ? -1 : 1
     if (av > bv) return sortDir === 'asc' ? 1 : -1
     return 0
-  })
+  }), [filtered, sortKey, sortDir])
 
-  const monthFilteredSpend = monthFiltered.filter(t => !isCredit(t))
-  const { data: monthlyData, sources: spendSources } = buildMonthlySpend(monthFilteredSpend)
-  const categoryMonthlyData = buildMonthlyCategoryData(monthFilteredSpend)
-  const topMerchants = buildTopMerchants(monthFilteredSpend)
-  const creditSummary = summarizeCredits(monthFiltered)
+  // Anything that changes what row 1 *is* sends the table back to page 1 — otherwise narrowing a
+  // 40-row list to 12 while sitting on page 3 lands you on a page that no longer means anything.
+  const tableResetKey = [
+    scopeKey, searchQuery, sortKey, sortDir, showUncategorizedOnly, showDuplicatesOnly,
+  ].join('|')
+
+  const creditSummary = summarizeCredits(scopedRows)
   const hasData = transactions.length > 0
+
+  // Everything that has to clear the pinned bar measures from here.
+  const pinnedTop = demoMode ? DEMO_BANNER_H : 0
+  const clearsPinned = pinnedTop + PINNED_BAR_H + 16
 
   return (
     <div className="p-3 sm:p-6">
-      <div className="flex items-center justify-between mb-6 gap-3 flex-wrap">
-        <h1 className="text-2xl font-semibold text-gray-900">Spend Analyzer</h1>
+      <div className="flex items-start justify-between mb-5 gap-3 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-semibold text-gray-900">Spend Analyzer</h1>
+          {hasData && (
+            <p className="mt-1.5 text-[13px] text-gray-500">
+              {range.monthCount > 0
+                ? `${range.label} · ${scopedRows.length} transaction${scopedRows.length === 1 ? '' : 's'} across ${kpis.cardCount} card${kpis.cardCount === 1 ? '' : 's'}`
+                : 'No transactions in the selected period'}
+            </p>
+          )}
+        </div>
         <div className="flex items-center gap-3 flex-wrap">
           <button
             onClick={() => setShowAddModal(true)}
@@ -433,7 +523,11 @@ export default function SpendAnalyzer({ onTabChange }) {
             disabled={batchMutation.isPending || importStatus?.type === 'loading'}
             className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors"
           >
-            {batchMutation.isPending || importStatus?.type === 'loading' ? 'Importing…' : 'Upload Credit Card Statements'}
+            {batchMutation.isPending || importStatus?.type === 'loading' ? 'Importing…' : (
+              <>
+                Upload<span className="hidden sm:inline"> Credit Card</span> Statements
+              </>
+            )}
           </button>
           <input
             ref={fileInputRef}
@@ -454,6 +548,10 @@ export default function SpendAnalyzer({ onTabChange }) {
           <button
             onClick={() => {
               setShowUncategorizedOnly(true)
+              // The banner counts the whole ledger, so the table has to show the whole ledger too
+              // or the count and the list disagree.
+              setPeriod('All')
+              setFilters(NO_FILTERS)
               setTimeout(() => tableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
             }}
             className="shrink-0 px-3 py-1 text-xs font-medium bg-yellow-100 hover:bg-yellow-200 border border-yellow-300 rounded-md transition-colors"
@@ -472,7 +570,10 @@ export default function SpendAnalyzer({ onTabChange }) {
           <button
             onClick={() => {
               setShowDuplicatesOnly(true)
-              setFilterMonth('all')
+              // Duplicates are flagged across the whole ledger, so widen the period to match —
+              // otherwise "Review Now" can land on an empty table.
+              setPeriod('All')
+              setFilters(NO_FILTERS)
               setTimeout(() => tableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
             }}
             className="shrink-0 px-3 py-1 text-xs font-medium bg-amber-100 hover:bg-amber-200 border border-amber-300 rounded-md transition-colors"
@@ -505,146 +606,118 @@ export default function SpendAnalyzer({ onTabChange }) {
       )}
 
 
-      {!hasData && (
+      {/* Loading and empty are different answers to "where are my charts?" — showing "no
+          transactions yet" during the first fetch tells a returning user their data is gone. */}
+      {!hasData && isLoading && (
         <div className="py-20 text-center">
-          <p className="text-gray-400 text-sm">No credit card transactions yet.</p>
-          <p className="text-gray-300 text-xs mt-1">Upload a credit card statement (CSV or PDF) to see your spending habits.</p>
+          <span className="inline-block w-5 h-5 border-2 border-gray-200 border-t-gray-400 rounded-full animate-spin" />
+          <p className="text-gray-400 text-sm mt-3">Loading your transactions…</p>
         </div>
       )}
 
+      {!hasData && !isLoading && (
+        <div className="py-20 text-center">
+          <p className="text-gray-400 text-sm">No credit card transactions yet.</p>
+          <p className="text-gray-300 text-xs mt-1 mb-5">
+            Upload a statement (CSV, Excel or PDF) to see where your money goes.
+          </p>
+          <button
+            onClick={() => fileInputRef.current.click()}
+            className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            Upload a statement
+          </button>
+        </div>
+      )}
+
+      {/* The scope header spans the full width rather than sharing it with the rail: at 1280px a
+          five-tile KPI grid squeezed beside a 320px column truncates its own values. It pins to the
+          top so the range and the headline numbers stay readable while you scroll the charts. */}
+      {hasData && (
+        <ScopeHeader
+          period={period}
+          onPeriodChange={setPeriod}
+          range={range}
+          txCount={periodRows.length}
+          monthsAvailable={monthsAvailable}
+          chips={filterChips}
+          filterSummary={hasScopeFilters ? `→ ${scopedRows.length} of ${periodRows.length} in period` : ''}
+          onClearAll={clearAllFilters}
+          kpis={kpis}
+          recurring={recurring}
+          recurringOpen={showRecurring}
+          onRecurringClick={() => setShowRecurring(v => !v)}
+          offsetTop={pinnedTop}
+        />
+      )}
+
+      {/* Deliberately outside the pinned block — a scrollable list of twenty subscriptions has no
+          business holding the top of the viewport. */}
+      {hasData && showRecurring && recurring.count > 0 && (
+        <div className="mb-5">
+          <RecurringPanel
+            recurring={recurring}
+            onClose={() => setShowRecurring(false)}
+            onSelectMerchant={merchant => {
+              toggleFilter('merchants', merchant)
+              setShowRecurring(false)
+            }}
+          />
+        </div>
+      )}
+
+      {/* Main column + sticky insights rail, starting level with "Spend over time". The rail drops
+          below the content under xl, where 320px of it would leave the charts too narrow to read. */}
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-6 items-start">
+      <div className="min-w-0">
+
       {hasData && (
         <>
-          {/* Month filter for charts */}
-          <div className="flex items-center gap-3 mb-5">
-            <span className="text-sm font-medium text-gray-500">Period:</span>
-            <select
-              value={filterMonth}
-              onChange={e => setFilterMonth(e.target.value)}
-              className="text-sm border border-gray-200 rounded-md px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="all">All time</option>
-              {availableMonths.map(m => (
-                <option key={m} value={m}>{dayjs(m + '-01').format('MMM YYYY')}</option>
-              ))}
-            </select>
+          <div className="flex flex-col gap-5 mb-5">
+            <SpendOverTime
+              spendTxs={scopedSpend}
+              range={range}
+              categoryColors={allCategoryColors}
+              cardColors={cardColors}
+              filters={filters}
+              onFilter={toggleFilter}
+            />
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+              <CategoryBreakdown
+                spendTxs={scopedSpend}
+                categoryColors={allCategoryColors}
+                filters={filters}
+                onFilter={toggleFilter}
+              />
+              <TopMerchants
+                spendTxs={scopedSpend}
+                filters={filters}
+                onFilter={toggleFilter}
+              />
+            </div>
+
+            <CardsBar
+              spendTxs={scopedSpend}
+              cardColors={cardColors}
+              filters={filters}
+              onFilter={toggleFilter}
+            />
           </div>
 
-          {/* Charts row */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-5">
-            {/* Monthly spend by source */}
-            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-              <h2 className="text-sm font-medium text-gray-500 mb-4">Monthly Spend by Source</h2>
-              <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={monthlyData} barCategoryGap="35%" margin={{ top: 20 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
-                  <XAxis dataKey="month" tick={{ fontSize: 12, fill: '#6b7280' }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 12, fill: '#6b7280' }} tickFormatter={v => `$${v}`} axisLine={false} tickLine={false} />
-                  <Tooltip
-                    formatter={(v, name) => [`$${v.toLocaleString(undefined, { minimumFractionDigits: 2 })}`, name]}
-                    contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 12 }}
-                  />
-                  <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} />
-                  {spendSources.map((src, i) => (
-                    <Bar
-                      key={src}
-                      dataKey={src}
-                      stackId="a"
-                      fill={SOURCE_COLORS[i % SOURCE_COLORS.length]}
-                      radius={i === spendSources.length - 1 ? [4, 4, 0, 0] : 0}
-                      maxBarSize={48}
-                    >
-                      {i === spendSources.length - 1 && (
-                        <LabelList dataKey="total" position="top" formatter={v => v > 0 ? `$${Math.round(v).toLocaleString()}` : ''} style={{ fontSize: 11, fill: '#6b7280', fontWeight: 500 }} />
-                      )}
-                    </Bar>
-                  ))}
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
 
-            {/* Spending by category */}
-            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-              <h2 className="text-sm font-medium text-gray-500 mb-4">Spending by Category</h2>
-              {categoryMonthlyData.data.length === 0 ? (
-                <div className="flex items-center justify-center h-[220px] text-sm text-gray-400">
-                  No data for selected period
-                </div>
-              ) : (
-                <ResponsiveContainer width="100%" height={220}>
-                  <BarChart data={categoryMonthlyData.data} barCategoryGap="35%" margin={{ top: 20 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
-                    <XAxis dataKey="month" tick={{ fontSize: 12, fill: '#6b7280' }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fontSize: 12, fill: '#6b7280' }} tickFormatter={v => `$${v}`} axisLine={false} tickLine={false} />
-                    <Tooltip
-                      formatter={(v, name) => [`$${v.toLocaleString(undefined, { minimumFractionDigits: 2 })}`, name]}
-                      contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 12 }}
-                    />
-                    <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} />
-                    {categoryMonthlyData.categories.map((cat, i) => (
-                      <Bar
-                        key={cat}
-                        dataKey={cat}
-                        stackId="a"
-                        fill={allCategoryColors[cat] || '#94a3b8'}
-                        radius={i === categoryMonthlyData.categories.length - 1 ? [4, 4, 0, 0] : 0}
-                        maxBarSize={48}
-                      >
-                        {i === categoryMonthlyData.categories.length - 1 && (
-                          <LabelList dataKey="total" position="top" formatter={v => v > 0 ? `$${Math.round(v).toLocaleString()}` : ''} style={{ fontSize: 11, fill: '#6b7280', fontWeight: 500 }} />
-                        )}
-                      </Bar>
-                    ))}
-                  </BarChart>
-                </ResponsiveContainer>
-              )}
-            </div>
-          </div>
-
-          {/* Top merchants */}
-          {topMerchants.length > 0 && (
-            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 mb-5">
-              <h2 className="text-sm font-medium text-gray-500 mb-4">Top Merchants</h2>
-              <ResponsiveContainer width="100%" height={Math.max(220, topMerchants.length * 36)}>
-                <BarChart data={topMerchants} layout="vertical" margin={{ left: 8, right: 80 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" horizontal={false} />
-                  <XAxis
-                    type="number"
-                    tick={{ fontSize: 12, fill: '#6b7280' }}
-                    tickFormatter={v => `$${v}`}
-                    axisLine={false}
-                    tickLine={false}
-                  />
-                  <YAxis
-                    type="category"
-                    dataKey="merchant"
-                    tick={{ fontSize: 12, fill: '#6b7280' }}
-                    width={150}
-                    axisLine={false}
-                    tickLine={false}
-                  />
-                  <Tooltip
-                    formatter={v => [`$${v.toLocaleString(undefined, { minimumFractionDigits: 2 })}`, 'Spent']}
-                    contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 12 }}
-                  />
-                  <Bar dataKey="amount" fill="#f87171" radius={[0, 4, 4, 0]} maxBarSize={22}>
-                    <LabelList dataKey="amount" position="right" formatter={v => `$${Math.round(v).toLocaleString()}`} style={{ fontSize: 11, fill: '#6b7280', fontWeight: 500 }} />
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-
+          {/* Money back, not spending — so it sits below the charts rather than in them, and says
+              plainly that none of the figures above include it. */}
           {creditSummary.credits.length > 0 && (
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 mb-5">
-              <div className="flex items-baseline justify-between mb-4 gap-3 flex-wrap">
-                <h2 className="text-sm font-medium text-gray-500">Credits &amp; Refunds</h2>
-                <span className="text-xs text-gray-400">
-                  Excluded from all spending totals above
-                </span>
-              </div>
+              <h2 className="text-[15px] font-semibold text-gray-900">Credits &amp; Refunds</h2>
+              <p className="mt-1 mb-4 text-[12.5px] text-gray-400">
+                Money back on the card · excluded from every spending figure above
+              </p>
+
               <div className="flex flex-wrap items-end gap-x-8 gap-y-4">
                 <div>
-                  <p className="text-2xl font-semibold text-green-600">
+                  <p className="text-[27px] leading-tight font-semibold tracking-tight text-green-600">
                     +${creditSummary.total.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                   </p>
                   <p className="text-xs text-gray-400 mt-1">
@@ -660,303 +733,91 @@ export default function SpendAnalyzer({ onTabChange }) {
                   </div>
                 ))}
               </div>
-              <p className="text-xs text-gray-400 mt-4 pt-3 border-t border-gray-100">
+
+              <p className="text-[12.5px] text-gray-400 mt-4 pt-3.5 border-t border-gray-100 leading-relaxed">
                 Payments to the card aren't imported here — they're paid from your bank account, so
                 they already show as an expense on the Finances tab.
               </p>
             </div>
           )}
 
-          {/* AI Insights */}
-          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 mb-5">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2 flex-wrap">
-                <h2 className="text-sm font-medium text-gray-500">AI Insights</h2>
-                <span className="text-xs px-1.5 py-0.5 bg-violet-100 text-violet-600 rounded font-medium">AI</span>
-                {storedInsights?.generatedAt && (
-                  <span className="text-xs text-gray-400">
-                    Saved {dayjs(storedInsights.generatedAt).format('MMM D, h:mm A')}
-                  </span>
-                )}
-              </div>
-              {settings?.hasClaudeApiKey && (
-                <div className="flex items-center gap-2">
-                  {insights.length > 0 && (
-                    <button
-                      onClick={() => clearInsightsMutation.mutate()}
-                      disabled={clearInsightsMutation.isPending || insightsMutation.isPending}
-                      className="px-3 py-1.5 text-sm text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-lg disabled:opacity-60 transition-colors"
-                    >
-                      Clear
-                    </button>
-                  )}
-                  <button
-                    onClick={() => insightsMutation.mutate(filterMonth)}
-                    disabled={insightsMutation.isPending}
-                    className="px-3 py-1.5 text-sm bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-60 transition-colors flex items-center gap-1.5"
-                  >
-                    {insightsMutation.isPending ? (
-                      <>
-                        <span className="inline-block w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                        Analyzing…
-                      </>
-                    ) : insights.length > 0 ? 'Regenerate' : 'Generate Insights'}
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {!settings?.hasClaudeApiKey && (
-              <p className="text-sm text-gray-400 py-4 text-center">
-                Connect your Claude API key in Settings to enable AI insights.
-              </p>
-            )}
-
-            {settings?.hasClaudeApiKey && insightsError && (
-              <p className="text-sm text-red-500 mb-4">{insightsError}</p>
-            )}
-
-            {settings?.hasClaudeApiKey && insights.length === 0 && !insightsMutation.isPending && !insightsError && (
-              <p className="text-sm text-gray-400 py-4 text-center">
-                Click "Generate Insights" to get AI analysis of your {periodLabel(filterMonth)} spending.
-              </p>
-            )}
-
-            {insights.length > 0 && (
-              <>
-                {insightsPeriod !== filterMonth && (
-                  <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-4">
-                    These insights cover {periodLabel(insightsPeriod)}, not the {periodLabel(filterMonth)} you're
-                    viewing. Follow-up answers use {periodLabel(insightsPeriod)} too — click Regenerate to switch.
-                  </div>
-                )}
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5">
-                  {insights.map((insight, i) => (
-                    <div key={i} className="bg-gray-50 rounded-lg p-4 border border-gray-100">
-                      <p className="text-sm font-semibold text-gray-800 mb-1.5">{insight.title}</p>
-                      <p className="text-sm text-gray-600 leading-relaxed">{insight.body}</p>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Chat follow-up */}
-                <div className="border-t border-gray-100 pt-4">
-                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-3">Ask a follow-up</p>
-
-                  {(chatMessages.length > 0 || pendingQuestion) && (
-                    <div className="space-y-3 mb-4 max-h-64 overflow-y-auto">
-                      {chatMessages.map((msg, i) => (
-                        <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                          <div className={`max-w-[75%] px-3 py-2 rounded-xl text-sm leading-relaxed ${
-                            msg.role === 'user'
-                              ? 'bg-violet-600 text-white rounded-br-sm'
-                              : 'bg-gray-100 text-gray-800 rounded-bl-sm'
-                          }`}>
-                            {msg.content}
-                          </div>
-                        </div>
-                      ))}
-                      {pendingQuestion && (
-                        <div className="flex justify-end">
-                          <div className="max-w-[75%] px-3 py-2 rounded-xl rounded-br-sm text-sm leading-relaxed bg-violet-600 text-white">
-                            {pendingQuestion}
-                          </div>
-                        </div>
-                      )}
-                      {chatLoading && (
-                        <div className="flex justify-start">
-                          <div className="bg-gray-100 text-gray-400 px-3 py-2 rounded-xl rounded-bl-sm text-sm italic">
-                            Thinking…
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {chatError && (
-                    <p className="text-sm text-red-500 mb-3">{chatError}</p>
-                  )}
-
-                  <form onSubmit={handleSendChat} className="flex gap-2">
-                    <input
-                      type="text"
-                      value={chatInput}
-                      onChange={e => setChatInput(e.target.value)}
-                      placeholder="E.g. What should I cut to save more this month?"
-                      disabled={chatLoading}
-                      className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-violet-500 disabled:opacity-60"
-                    />
-                    <button
-                      type="submit"
-                      disabled={chatLoading || !chatInput.trim()}
-                      className="px-4 py-2 text-sm bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-60 transition-colors"
-                    >
-                      Send
-                    </button>
-                  </form>
-                </div>
-              </>
-            )}
-          </div>
         </>
       )}
 
-      <CategoryManager />
+      {/* scroll-margin keeps the "Review Now" jump from parking the table's header under the
+          pinned scope block. */}
+      <TransactionTable
+        rows={sorted}
+        scopeCount={scopedRows.length}
+        isLoading={isLoading}
+        duplicateById={duplicateById}
+        categories={allCategories}
+        categoryColors={allCategoryColors}
+        sortKey={sortKey}
+        sortDir={sortDir}
+        onSort={handleSort}
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        showUncategorizedOnly={showUncategorizedOnly}
+        showDuplicatesOnly={showDuplicatesOnly}
+        onClearUncategorized={() => setShowUncategorizedOnly(false)}
+        onClearDuplicates={() => setShowDuplicatesOnly(false)}
+        hasAiKey={hasAiKey}
+        uncategorizedCount={uncategorizedCount}
+        recategorizing={recategorizing}
+        onRecategorize={handleRecategorize}
+        onUpdate={patch => updateMutation.mutate(patch)}
+        onDelete={id => deleteMutation.mutate(id)}
+        deleting={deleteMutation.isPending}
+        containerRef={tableRef}
+        scrollMarginTop={clearsPinned}
+        resetKey={tableResetKey}
+      />
 
-      {/* Transaction list */}
-      <div ref={tableRef} className="bg-white rounded-xl border border-gray-200 shadow-sm">
-        <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3 flex-wrap">
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            placeholder="Search transactions…"
-            className="text-sm border border-gray-200 rounded-md px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 w-full sm:w-56"
+      <div className="mt-5">
+        <CategoryManager />
+      </div>
+
+
+      </div>
+
+      {/* Offset by the pinned bar's fixed height. A constant, not a measurement: the rail only ever
+          pins after the bar is already showing, so this is correct in every state and costs no
+          re-render mid-scroll.
+
+          Capped to the viewport and scrollable *only* where it's sticky: three insight cards plus a
+          conversation runs taller than the screen, and a sticky element taller than its viewport
+          leaves its own bottom permanently out of reach. Below xl it's in normal flow, where a cap
+          would be wrong. */}
+      {hasData && (
+        <aside
+          className="xl:sticky xl:overflow-y-auto xl:max-h-[var(--rail-max-h)] min-w-0"
+          style={{ top: clearsPinned, '--rail-max-h': `calc(100vh - ${clearsPinned + 16}px)` }}
+        >
+          <AiInsightsPanel
+            hasAiKey={hasAiKey}
+            storedInsights={storedInsights}
+            insights={insights}
+            insightsPeriod={insightsPeriod}
+            chatMessages={chatMessages}
+            scopeKey={scopeKey}
+            scopeLabel={scopeLabel}
+            insightsError={insightsError}
+            chatError={chatError}
+            chatInput={chatInput}
+            chatLoading={chatLoading}
+            pendingQuestion={pendingQuestion}
+            generating={insightsMutation.isPending}
+            clearing={clearInsightsMutation.isPending}
+            onGenerate={() => insightsMutation.mutate(scopePayload)}
+            onClear={() => clearInsightsMutation.mutate()}
+            onSendChat={handleSendChat}
+            onChatInput={setChatInput}
+            onOpenSettings={onTabChange ? () => onTabChange('settings') : undefined}
           />
-          {showUncategorizedOnly && (
-            <button
-              onClick={() => setShowUncategorizedOnly(false)}
-              className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium bg-yellow-100 text-yellow-800 border border-yellow-300 rounded-full hover:bg-yellow-200 transition-colors"
-            >
-              Uncategorized only ✕
-            </button>
-          )}
-          {showDuplicatesOnly && (
-            <button
-              onClick={() => setShowDuplicatesOnly(false)}
-              className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium bg-amber-100 text-amber-800 border border-amber-300 rounded-full hover:bg-amber-200 transition-colors"
-            >
-              Possible duplicates only ✕
-            </button>
-          )}
-          {settings?.hasClaudeApiKey && uncategorizedCount > 0 && (
-            <button
-              onClick={handleRecategorize}
-              disabled={recategorizing}
-              className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50 disabled:opacity-60 transition-colors"
-            >
-              {recategorizing ? 'Categorizing…' : `Re-categorize uncategorized`}
-            </button>
-          )}
-          <span className="ml-auto text-sm text-gray-400">
-            {sorted.length} transaction{sorted.length !== 1 ? 's' : ''}
-          </span>
-        </div>
+        </aside>
+      )}
 
-        {isLoading ? (
-          <div className="py-12 text-center text-sm text-gray-400">Loading…</div>
-        ) : sorted.length === 0 ? (
-          <div className="py-16 text-center">
-            <p className="text-gray-400 text-sm">
-              {searchQuery || showUncategorizedOnly || showDuplicatesOnly
-                ? 'No transactions match the current filters.'
-                : 'No transactions yet.'}
-            </p>
-            {!searchQuery && !showUncategorizedOnly && !showDuplicatesOnly && (
-              <p className="text-gray-300 text-xs mt-1">Upload a credit card statement or add one manually.</p>
-            )}
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="text-left text-xs font-medium text-gray-400 uppercase tracking-wide border-b border-gray-100">
-                  <SortTh label="Date" field="date" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-                  <SortTh label="Description" field="description" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-                  <SortTh label="Category" field="category" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-                  <SortTh label="Source" field="source" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="hidden sm:table-cell" />
-                  <SortTh label="Amount" field="amount" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="text-right" />
-                  <th className="px-4 py-3 w-8"></th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {sorted.map(tx => {
-                  const dup = duplicateById.get(tx.id)
-                  const credit = isCredit(tx)
-                  return (
-                  <tr key={tx.id} className={`transition-colors ${dup ? 'bg-amber-50/60 hover:bg-amber-50' : 'hover:bg-gray-50'}`}>
-                    <td className="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">
-                      {tx.date ? dayjs(tx.date).format('MMM D, YYYY') : '—'}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-gray-900 max-w-xs">
-                      <div className="flex items-center gap-2">
-                        <span className="truncate">
-                          {tx.description || <span className="text-gray-300 italic">No description</span>}
-                        </span>
-                        {credit && (
-                          <span className="shrink-0 text-xs px-1.5 py-0.5 bg-green-100 text-green-700 rounded font-medium">
-                            {CREDIT_KIND_LABELS[tx.creditKind || 'credit'] ?? 'Credit'}
-                          </span>
-                        )}
-                      </div>
-                      {dup && (
-                        <div className="flex items-center gap-2 mt-1 text-xs">
-                          <span className="text-amber-700">
-                            Possible duplicate{dup.otherDate ? ` of ${dayjs(dup.otherDate).format('MMM D')}` : ''}
-                          </span>
-                          <button
-                            onClick={() => updateMutation.mutate({ id: tx.id, dupDismissed: true })}
-                            className="text-gray-400 hover:text-gray-700 underline"
-                          >
-                            Not a duplicate
-                          </button>
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      {editingCategoryId === tx.id ? (
-                        <select
-                          autoFocus
-                          defaultValue={tx.category || 'Other'}
-                          onChange={e => {
-                            updateMutation.mutate({ id: tx.id, category: e.target.value })
-                            setEditingCategoryId(null)
-                          }}
-                          onBlur={() => setEditingCategoryId(null)}
-                          className="text-xs border border-gray-300 rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        >
-                          {allCategories.map(cat => (
-                            <option key={cat} value={cat}>{cat}</option>
-                          ))}
-                        </select>
-                      ) : (
-                        <span
-                          onClick={() => setEditingCategoryId(tx.id)}
-                          title="Click to edit category"
-                          className="inline-block px-2.5 py-0.5 rounded-full text-xs font-medium cursor-pointer hover:opacity-75 transition-opacity"
-                          style={{
-                            backgroundColor: (allCategoryColors[tx.category] || '#94a3b8') + '1a',
-                            color: allCategoryColors[tx.category] || '#94a3b8',
-                          }}
-                        >
-                          {tx.category || 'Other'}
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-xs text-gray-400 hidden sm:table-cell">{tx.source || '—'}</td>
-                    <td className={`px-4 py-3 text-sm font-medium text-right whitespace-nowrap ${
-                      credit ? 'text-green-600' : 'text-red-500'
-                    }`}>
-                      {credit ? '+' : '−'}${Math.abs(tx.amount).toFixed(2)}
-                    </td>
-                    <td className="px-4 py-3">
-                      <button
-                        onClick={() => deleteMutation.mutate(tx.id)}
-                        disabled={deleteMutation.isPending}
-                        className="text-gray-300 hover:text-red-400 transition-colors text-lg leading-none"
-                        title="Delete"
-                      >
-                        ×
-                      </button>
-                    </td>
-                  </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
       </div>
 
       {reviewData && (
@@ -969,6 +830,16 @@ export default function SpendAnalyzer({ onTabChange }) {
             pendingUploadMetaRef.current = null
             setReviewData(null)
           }}
+        />
+      )}
+      {csvModalData && (
+        <CsvMappingModal
+          key={csvModalData.headers.join('\0')}
+          headers={csvModalData.headers}
+          existingSources={settings?.csvSources || {}}
+          initialSourceName={sourceNameFromFile(csvModalData.fileName)}
+          onConfirm={handleMappingConfirm}
+          onCancel={() => setCsvModalData(null)}
         />
       )}
       {showAddModal && (

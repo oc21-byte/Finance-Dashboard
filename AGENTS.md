@@ -56,6 +56,8 @@ backfills any missing top-level keys.
 | Failure diagnostics | `src/utils/diagnostics.js`, `ErrorBanner.jsx`, `ErrorBoundary.jsx` |
 | Pages | `src/pages/{Dashboard,Finances,SpendAnalyzer,Investments,Goals,Settings}.jsx` |
 | Categories + colors | `src/constants/categories.js` |
+| Spend Analyzer maths | `src/utils/{period,spendAggregations,recurring,spendChartModel}.js` |
+| Spend Analyzer UI | `src/components/spend/*` |
 
 **Import pipeline:** both tabs accept **multiple files at once** (`.csv`, `.xlsx/.xlsm/.xlsb/.xls`,
 `.pdf`). `runImportQueue()` processes them one at a time so one bad statement can't take down the
@@ -70,7 +72,9 @@ batch; failures land in a `skipped[]` list surfaced in the review modal. Per fil
 4. AI column detection (`/api/llm/detect-columns`) → `processCSVRows()`.
 5. AI row extraction (`/api/llm/extract-rows`) — sends the raw grid as **text**, chunked, for
    multi-section or otherwise unmappable sheets. Spreadsheets are never rasterized.
-6. Single-file uploads only: fall back to `CsvMappingModal` for manual mapping.
+6. Single-file uploads only: fall back to `CsvMappingModal` for manual mapping (`needsMapping` from
+   `runImportQueue`). **Both tabs handle this** — Finances saves the mapped rows straight to the
+   batch; Spend Analyzer routes them through `annotateDuplicates` into the review modal first.
 
 Everything lands in `BulkImportReviewModal` (per-file groups, editable source name, per-row
 tick/removal, per-group "Remap" on Finances) before a single batch POST. Rows carry a `_rid` for
@@ -114,17 +118,67 @@ JSON-parsing routes, the model's raw output. Reports never include API keys.
 - The LLM context builders apply the same split, and say so in the prompt, so insights never report
   a refund as spending or add credits to income.
 
-**Spend Analyzer insight memory:** the last generated insights and their follow-up chat live in
+## Spend Analyzer
+
+The page is an orchestrator: queries, mutations, the import flow, the derivation chain, and layout.
+All maths lives in `src/utils/`, all UI in `src/components/spend/`. Adding a chart means adding a
+component there, not growing the page.
+
+**The derivation chain.** Every number on the page hangs off these steps, in this order. This is
+what lets one filter chip re-scope the whole page instead of each widget filtering for itself:
+
+```
+transactions   → periodRows   → scopedRows   → scopedSpend    KPIs + every chart
+  (useQuery)      (date range)   (+ filters)    (negatives only)
+                                     ├──────────→ creditSummary   Credits & Refunds
+                                     └──────────→ filtered → sorted → TransactionTable
+```
+
+`duplicateFlags()` deliberately runs against **all** transactions, never `periodRows`, so a
+duplicate straddling a period boundary still surfaces.
+
+**Period model** (`src/utils/period.js`). A rolling range, not a single month:
+`7D / 1M / 3M / 6M / 1Y / YTD / All`. `resolvePeriod(key, transactions)` anchors to the **latest
+transaction date, not today** — anchoring to today gives a half-empty trailing month whenever the
+statements lag. It returns `{ key, from, to, months[], label, monthCount }` where `months` is an
+explicit `YYYY-MM` list, so a 6M view always draws 6 bars even where a month has no spend. Date
+filtering is plain string comparison (`d >= from && d <= to`); that's why dates are stored
+`YYYY-MM-DD`.
+
+**Recurring detection** (`src/utils/recurring.js`). `detectRecurring(transactions, { activeTo })`
+groups by `normalizeDescription` (reused from `duplicates.js` — don't write a second normalizer),
+clusters by amount within each merchant (one `APPLE.COM/BILL` line hosts several plans), then fits
+cadence by whole cycles so a skipped month reads as "two cycles" rather than disqualifying the
+series. Min charges and amount tolerance vary per cadence on purpose: only semiannual and annual
+may qualify on two charges, or a yearly renewal would need three years of statements to appear. A
+series quiet for longer than 1.5× its own cadence counts as cancelled and is excluded.
+
+**Colour is a contract** (`src/components/spend/palette.js`). A category or card owns exactly one
+colour across the whole page — its donut slice, its bar segments, its row in "Where it went" or
+"Cards". Nothing may assign colour per-chart, and `buildCardColors` must be called with the
+**whole ledger's** sources, never the filtered set, or removing a chip would recolour the legend
+you just read.
+
+**Insight memory and scope.** The last generated insights and their follow-up chat live in
 `db.json` under `spendInsights`, not in component state — switching tabs unmounts the page
-(`<Page />` swaps in `App.jsx`), and a reload would lose them either way. `/api/llm/spend-insights`
-writes the record (replacing any previous one, which resets the chat); `/api/llm/spend-chat`
-appends the question and reply **only when the stored `period` matches the request**, so an
-exchange never attaches to a set of insights that has since been replaced. Read and cleared via
-`GET`/`DELETE /api/spend-insights` (`api.spendInsights`). The page reads it through
+(`<Page />` swaps in `App.jsx`), and a reload would lose them either way. Read and cleared via
+`GET`/`DELETE /api/spend-insights` (`api.spendInsights`); the page reads it through
 `useQuery(['spend-insights'])` and keeps only the draft input and the in-flight question local.
 
-**Notable features:** Budget Builder (`BudgetBuilderModal` on Spend Analyzer →
-`/api/llm/budget-builder`), net-worth history (Dashboard auto-snapshots on mount via
+Both spend routes take `{ period, from, to, filters, periodLabel }`. **`period` is an opaque scope
+key** (`buildScopeKey` → e.g. `6M|2026-02-01|2026-07-31|cat:Food & Dining`) encoding range *and*
+filters; it is only ever compared for equality, never parsed. `buildSpendContextFromTransactions`
+accepts either that `{from, to, filters}` object or a legacy `period` string (which keeps using
+`startsWith`), so old stored records still read.
+
+`/api/llm/spend-insights` writes the record, replacing any previous one and resetting the chat.
+`/api/llm/spend-chat` answers against the **stored** scope rather than whatever is on screen, and
+appends the exchange **only when the stored `period` matches the request** — so a reply never
+attaches to insights that have since been re-scoped or replaced. The panel surfaces that mismatch
+rather than letting stale analysis pass as current.
+
+**Notable features:** Budget Builder (on the **Budget** tab → `/api/llm/budget-builder`),
+net-worth history (Dashboard auto-snapshots on mount via
 `/api/net-worth-snapshot`, charts `/api/net-worth-history`), holdings as purchase lots
 (`holdings[].purchases[]` with weighted-average cost basis).
 
@@ -139,7 +193,10 @@ holdings[]                  { id, ticker, accountType, shares, purchasePrice, pu
 savings_accounts[]          { id, name, accountType, balance, apy }
 goals[]                     { id, name, targetAmount, currentAmount, targetDate, monthlySavings }
 netWorthHistory[]           { date, netWorth, breakdown:{cash,savings,portfolio} }
-spendInsights               { period, insights[], messages[], generatedAt } — or null when cleared
+spendInsights               { period, periodLabel, scope, insights[], messages[], generatedAt }
+                            or null when cleared. `period` is an opaque scope key (range +
+                            filters), compared for equality only. `scope` is {from,to,filters}
+                            for range-scoped records, null for legacy period-string ones.
 uploadHistory[]             { id, filename, sourceName, transactionCount, transactionIds[],
                               ledger:'bank'|'credit_card', importedAt }
                               DELETE cascades on transactionIds into the matching ledger

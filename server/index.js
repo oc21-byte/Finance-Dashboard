@@ -689,10 +689,30 @@ app.delete('/api/categories/:name', (req, res) => {
 
 // --- LLM ---
 
-function buildSpendContextFromTransactions(ccTransactions, period) {
-  const filtered = period === 'all'
-    ? ccTransactions
-    : ccTransactions.filter(t => t.date?.startsWith(period))
+// A scope is either the legacy period string ('all' or 'YYYY-MM') or a range object
+// { from, to, filters:{categories,cards,merchants} } from the Spend Analyzer's period chips. A
+// rolling window like "last 6 months" cannot be expressed as a date prefix, hence the second form;
+// the string form stays for any caller that still passes one.
+function scopeMatcher(scope) {
+  if (typeof scope === 'string' || !scope) {
+    const period = scope || 'all'
+    return period === 'all' ? () => true : t => t.date?.startsWith(period)
+  }
+  const { from, to, filters = {} } = scope
+  const { categories, cards, merchants } = filters || {}
+  return t => {
+    if (!t.date) return false
+    if (from && t.date < from) return false
+    if (to && t.date > to) return false
+    if (categories?.length && !categories.includes(t.category || 'Other')) return false
+    if (cards?.length && !cards.includes(t.source)) return false
+    if (merchants?.length && !merchants.includes(t.description)) return false
+    return true
+  }
+}
+
+function buildSpendContextFromTransactions(ccTransactions, scope) {
+  const filtered = ccTransactions.filter(scopeMatcher(scope))
 
   // Positive card rows are cashback, refunds and rebates — money coming back. Folding them into
   // spend aggregates would understate nothing and overstate everything, so they are summarized
@@ -749,11 +769,20 @@ function buildSpendContextFromTransactions(ccTransactions, period) {
   }
 }
 
-function formatPeriodLabel(period) {
-  if (period === 'all') return 'all time'
-  const [year, month] = period.split('-')
-  const names = ['January','February','March','April','May','June','July','August','September','October','November','December']
-  return `${names[parseInt(month, 10) - 1]} ${year}`
+const MONTH_FULL = ['January','February','March','April','May','June','July','August','September','October','November','December']
+
+function formatPeriodLabel(scope) {
+  if (typeof scope === 'string' || !scope) {
+    const period = scope || 'all'
+    if (period === 'all') return 'all time'
+    const [year, month] = period.split('-')
+    return `${MONTH_FULL[parseInt(month, 10) - 1]} ${year}`
+  }
+  // The client sends the phrasing it is already showing the user, so the prompt and the "Based
+  // on …" line in the insights rail can never drift apart.
+  if (scope.label) return scope.label
+  const { from, to } = scope
+  return from && to ? `${from} to ${to}` : 'all time'
 }
 
 const CREDIT_KIND_TEXT = {
@@ -763,11 +792,11 @@ const CREDIT_KIND_TEXT = {
   credit: 'other credits',
 }
 
-function buildSpendSummaryText(period, {
+function buildSpendSummaryText(scope, {
   totalSpend, txCount, categories, topMerchants, largestTxs,
   totalCredits = 0, creditCount = 0, creditsByKind = [],
 }) {
-  const periodLabel = formatPeriodLabel(period)
+  const periodLabel = formatPeriodLabel(scope)
   const catLines = categories.map(c => {
     const pct = totalSpend > 0 ? Math.round(c.amount / totalSpend * 100) : 0
     return `- ${c.name}: $${c.amount.toFixed(2)} (${pct}%)`
@@ -1305,16 +1334,31 @@ Write 3–4 sentences: (1) state whether they are on track or behind using the l
 // fresh generation invalidates any chat that was following the old one. Re-reads the db rather
 // than reusing the copy from the start of the route, since the LLM call takes seconds and an
 // import may have written in the meantime.
-function saveSpendInsights(period, insights, messages = []) {
+function saveSpendInsights(period, insights, messages = [], periodLabel = null, scope = null) {
   const db = readDb()
   db.spendInsights = {
+    // `period` is an opaque scope key: the legacy 'all' / 'YYYY-MM', or the Spend Analyzer's
+    // range-and-filters key. It is only ever compared for equality, never parsed.
     period,
+    periodLabel,
+    // The range and filters the insights were built from, kept so a follow-up question can be
+    // answered against exactly the same data — otherwise a reply shown beneath these insights
+    // would silently describe whatever the user has since scrolled the period to.
+    scope: scope && typeof scope !== 'string' ? scope : null,
     insights,
     messages,
     generatedAt: new Date().toISOString(),
   }
   writeDb(db)
   return db.spendInsights
+}
+
+// Both spend routes take the same body: a `period` scope key plus, optionally, the range and
+// filters it stands for. Without the range this is the old prefix-match behaviour.
+function readSpendScope(body = {}) {
+  const { period = 'all', from, to, filters, periodLabel } = body
+  const scope = (from || to || filters) ? { from, to, filters, label: periodLabel } : period
+  return { period, scope, periodLabel: periodLabel ?? null }
 }
 
 app.get('/api/spend-insights', (req, res) => {
@@ -1335,18 +1379,18 @@ app.post('/api/llm/spend-insights', async (req, res) => {
   const hasKey = aiProvider === 'openai' ? !!openaiApiKey : !!claudeApiKey
   if (!hasKey) return res.status(400).json({ error: 'No AI API key configured. Add one in Settings.' })
 
-  const { period = 'all' } = req.body
-  const context = buildSpendContextFromTransactions(db.credit_card_transactions || [], period)
+  const { period, scope, periodLabel } = readSpendScope(req.body)
+  const context = buildSpendContextFromTransactions(db.credit_card_transactions || [], scope)
 
   if (context.txCount === 0) {
     // Stored like any other result, so the page shows the same thing after a reload instead of
     // silently falling back to the "click Generate" empty state.
     const insights = [{ title: 'No Data', body: 'No credit card transactions found for the selected period.' }]
-    saveSpendInsights(period, insights)
+    saveSpendInsights(period, insights, [], periodLabel, scope)
     return res.json({ insights })
   }
 
-  const summaryText = buildSpendSummaryText(period, context)
+  const summaryText = buildSpendSummaryText(scope, context)
   const userMsg = `${summaryText}
 
 Provide exactly 3 insights as JSON:
@@ -1368,7 +1412,7 @@ Be specific with dollar amounts. No markdown. Valid JSON only.`
     })
     raw = text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
     const result = JSON.parse(raw)
-    saveSpendInsights(period, result.insights)
+    saveSpendInsights(period, result.insights, [], periodLabel, scope)
     res.json({ insights: result.insights })
   } catch (err) {
     failure(res, 'LLM spend-insights error', err, { detail: raw })
@@ -1381,11 +1425,19 @@ app.post('/api/llm/spend-chat', async (req, res) => {
   const hasKey = aiProvider === 'openai' ? !!openaiApiKey : !!claudeApiKey
   if (!hasKey) return res.status(400).json({ error: 'No AI API key configured. Add one in Settings.' })
 
-  const { period = 'all', messages = [] } = req.body
+  const { messages = [] } = req.body
   if (!messages.length) return res.status(400).json({ error: 'No messages provided' })
 
-  const context = buildSpendContextFromTransactions(db.credit_card_transactions || [], period)
-  const summaryText = buildSpendSummaryText(period, context)
+  const { period, scope: requestScope } = readSpendScope(req.body)
+
+  // Answer against the scope the stored insights were generated from, not whatever the page is
+  // currently showing. The reply is rendered directly beneath those insights, so it has to be
+  // about the same data; the client's scope is only the fallback when there is nothing stored.
+  const storedScope = db.spendInsights?.period === period ? db.spendInsights.scope : null
+  const scope = storedScope ?? requestScope
+
+  const context = buildSpendContextFromTransactions(db.credit_card_transactions || [], scope)
+  const summaryText = buildSpendSummaryText(scope, context)
 
   const systemMsg = `You are a personal finance assistant. The user is asking follow-up questions about their credit card spending.
 
@@ -1397,8 +1449,9 @@ Be concise and specific. Answer in 2–4 sentences. Plain text only, no markdown
     const text = await callLLM({ system: systemMsg, userMessages: messages, maxTokens: 512 })
     const reply = text.trim()
 
-    // Appended only when the stored insights still describe the period being discussed —
-    // otherwise this exchange belongs to a set of insights that has since been replaced.
+    // Appended only when the stored insights still describe the scope being discussed — the same
+    // range *and* the same filters. Otherwise this exchange belongs to a set of insights that has
+    // since been replaced or re-scoped.
     const fresh = readDb()
     if (fresh.spendInsights?.period === period) {
       const lastUser = [...messages].reverse().find(m => m.role === 'user')

@@ -43,6 +43,10 @@ async function request(method, path, body) {
   return res.json()
 }
 
+function spendScopeBody(scope) {
+  return typeof scope === 'string' || !scope ? { period: scope || 'all' } : scope
+}
+
 export const api = {
   transactions: {
     list: () => request('GET', '/transactions'),
@@ -119,8 +123,10 @@ export const api = {
     insights: (payload) => request('POST', '/llm/insights', payload),
     goalAnalysis: (payload) => request('POST', '/llm/goal-analysis', payload),
     categorize: (transactions) => request('POST', '/llm/categorize', { transactions }),
-    spendInsights: (period) => request('POST', '/llm/spend-insights', { period }),
-    spendChat: (period, messages) => request('POST', '/llm/spend-chat', { period, messages }),
+    // `scope` is either a bare period string ('all' | 'YYYY-MM') or the Spend Analyzer's
+    // { period, from, to, filters, periodLabel } — a rolling range can't be a date prefix.
+    spendInsights: (scope) => request('POST', '/llm/spend-insights', spendScopeBody(scope)),
+    spendChat: (scope, messages) => request('POST', '/llm/spend-chat', { ...spendScopeBody(scope), messages }),
     dashboardChat: (messages) => request('POST', '/llm/dashboard-chat', { messages }),
     goalChat: (goalId, messages) => request('POST', '/llm/goal-chat', { goalId, messages }),
     budgetBuilder: (payload) => request('POST', '/llm/budget-builder', payload),
