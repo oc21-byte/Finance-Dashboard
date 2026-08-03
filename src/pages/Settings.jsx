@@ -13,7 +13,6 @@ export default function Settings() {
   const [saved, setSaved] = useState(false)
   const [incomeInput, setIncomeInput] = useState('')
   const [incomeSaved, setIncomeSaved] = useState(false)
-  const [sourcesSaved, setSourcesSaved] = useState(false)
   const [returnInput, setReturnInput] = useState('')
   const [returnSaved, setReturnSaved] = useState(false)
   const [savingsRateInput, setSavingsRateInput] = useState('')
@@ -32,17 +31,25 @@ export default function Settings() {
     queryFn: api.uploadHistory.list,
   })
 
+  const bankHistory = uploadHistory.filter(e => e.ledger !== 'credit_card')
+  const cardHistory = uploadHistory.filter(e => e.ledger === 'credit_card')
+
   const deleteHistoryEntry = useMutation({
     mutationFn: api.uploadHistory.remove,
     onSuccess: () => {
       setPendingDelete(null)
       queryClient.invalidateQueries({ queryKey: ['upload-history'] })
       queryClient.invalidateQueries({ queryKey: ['transactions'] })
+      queryClient.invalidateQueries({ queryKey: ['credit_card_transactions'] })
     },
   })
 
   function linkedTxCount(entry) {
     return Array.isArray(entry.transactionIds) ? entry.transactionIds.length : 0
+  }
+
+  function ledgerLabel(entry) {
+    return entry.ledger === 'credit_card' ? 'Spend Analyzer' : 'Finances'
   }
 
   useEffect(() => {
@@ -85,27 +92,6 @@ export default function Settings() {
       setTimeout(() => setSaved(false), 3000)
     },
   })
-
-  const saveSources = useMutation({
-    mutationFn: (csvSources) => api.settings.update({ csvSources }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['settings'] })
-      setSourcesSaved(true)
-      setTimeout(() => setSourcesSaved(false), 2000)
-    },
-  })
-
-  function deleteSource(name) {
-    const updated = { ...(settings?.csvSources || {}) }
-    delete updated[name]
-    saveSources.mutate(updated)
-  }
-
-  function deleteAllSources() {
-    saveSources.mutate({})
-  }
-
-  const sourceNames = Object.keys(settings?.csvSources || {})
 
   const saveIncome = useMutation({
     mutationFn: (val) => api.settings.update({
@@ -407,86 +393,26 @@ export default function Settings() {
         </form>
       </div>
 
-      {/* Row 3: Bank Upload History | CSV Sources */}
+      {/* Row 3: Bank Upload History | Credit Card Upload History */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
-        {/* Bank Upload History */}
-        <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
-          <h2 className="text-sm font-semibold text-gray-700 mb-1">Bank Upload History</h2>
-          <p className="text-xs text-gray-400 mb-4">
-            Finances imports (CSV, XLSX, or PDF). Deleting a recent upload also removes its linked
-            transactions. Older entries (before this feature) only clear the history log.
-          </p>
-          {uploadHistory.length === 0 ? (
-            <p className="text-sm text-gray-400">No bank imports yet.</p>
-          ) : (
-            <ul className="divide-y divide-gray-100">
-              {uploadHistory.map(entry => {
-                const linked = linkedTxCount(entry)
-                return (
-                  <li key={entry.id} className="flex items-center justify-between py-2 gap-3">
-                    <div className="min-w-0">
-                      <p className="text-sm text-gray-800 truncate">{entry.filename}</p>
-                      <p className="text-xs text-gray-400 mt-0.5">
-                        {entry.sourceName && <span className="text-gray-500 mr-2">{entry.sourceName}</span>}
-                        {entry.transactionCount} transaction{entry.transactionCount !== 1 ? 's' : ''}
-                        {linked > 0
-                          ? ` · ${linked} linked`
-                          : ' · history only'}
-                        {' · '}
-                        {new Date(entry.importedAt).toLocaleDateString(undefined, {
-                          year: 'numeric', month: 'short', day: 'numeric',
-                        })}
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => setPendingDelete(entry)}
-                      disabled={deleteHistoryEntry.isPending}
-                      className="text-xs text-red-400 hover:text-red-600 transition-colors shrink-0 disabled:opacity-40"
-                    >
-                      Delete
-                    </button>
-                  </li>
-                )
-              })}
-            </ul>
-          )}
-        </div>
-
-        {/* CSV Sources */}
-        <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
-          <div className="flex items-center justify-between mb-1">
-            <h2 className="text-sm font-semibold text-gray-700">Saved CSV Sources</h2>
-            {sourcesSaved && <span className="text-xs text-green-600">Saved ✓</span>}
-          </div>
-          <p className="text-xs text-gray-400 mb-4">
-            Auto-detected column mappings saved from previous imports. Delete a source to re-run AI detection on next upload.
-          </p>
-          {sourceNames.length === 0 ? (
-            <p className="text-sm text-gray-400">No saved sources.</p>
-          ) : (
-            <>
-              <ul className="divide-y divide-gray-100 mb-3">
-                {sourceNames.map(name => (
-                  <li key={name} className="flex items-center justify-between py-2">
-                    <span className="text-sm text-gray-800">{name}</span>
-                    <button
-                      onClick={() => deleteSource(name)}
-                      className="text-xs text-red-400 hover:text-red-600 transition-colors"
-                    >
-                      Delete
-                    </button>
-                  </li>
-                ))}
-              </ul>
-              <button
-                onClick={deleteAllSources}
-                className="text-xs text-red-500 hover:text-red-700 font-medium transition-colors"
-              >
-                Delete all sources
-              </button>
-            </>
-          )}
-        </div>
+        <UploadHistoryPanel
+          title="Bank Upload History"
+          description="Finances imports (CSV, XLSX, or PDF). Deleting a recent upload also removes its linked transactions. Older entries (before this feature) only clear the history log."
+          emptyLabel="No bank imports yet."
+          entries={bankHistory}
+          linkedTxCount={linkedTxCount}
+          onDelete={setPendingDelete}
+          deletePending={deleteHistoryEntry.isPending}
+        />
+        <UploadHistoryPanel
+          title="Credit Card Upload History"
+          description="Spend Analyzer imports (CSV, XLSX, or PDF). Deleting a recent upload also removes its linked card transactions."
+          emptyLabel="No credit card imports yet."
+          entries={cardHistory}
+          linkedTxCount={linkedTxCount}
+          onDelete={setPendingDelete}
+          deletePending={deleteHistoryEntry.isPending}
+        />
       </div>
 
       {pendingDelete && (
@@ -499,7 +425,7 @@ export default function Settings() {
                   This will permanently remove <span className="font-medium">{pendingDelete.filename}</span>
                   {' '}and{' '}
                   <span className="font-medium">
-                    {linkedTxCount(pendingDelete)} linked Finances transaction
+                    {linkedTxCount(pendingDelete)} linked {ledgerLabel(pendingDelete)} transaction
                     {linkedTxCount(pendingDelete) !== 1 ? 's' : ''}
                   </span>
                   . This cannot be undone.
@@ -538,6 +464,47 @@ export default function Settings() {
             </div>
           </div>
         </div>
+      )}
+    </div>
+  )
+}
+
+function UploadHistoryPanel({ title, description, emptyLabel, entries, linkedTxCount, onDelete, deletePending }) {
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
+      <h2 className="text-sm font-semibold text-gray-700 mb-1">{title}</h2>
+      <p className="text-xs text-gray-400 mb-4">{description}</p>
+      {entries.length === 0 ? (
+        <p className="text-sm text-gray-400">{emptyLabel}</p>
+      ) : (
+        <ul className="divide-y divide-gray-100">
+          {entries.map(entry => {
+            const linked = linkedTxCount(entry)
+            return (
+              <li key={entry.id} className="flex items-center justify-between py-2 gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm text-gray-800 truncate">{entry.filename}</p>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    {entry.sourceName && <span className="text-gray-500 mr-2">{entry.sourceName}</span>}
+                    {entry.transactionCount} transaction{entry.transactionCount !== 1 ? 's' : ''}
+                    {linked > 0 ? ` · ${linked} linked` : ' · history only'}
+                    {' · '}
+                    {new Date(entry.importedAt).toLocaleDateString(undefined, {
+                      year: 'numeric', month: 'short', day: 'numeric',
+                    })}
+                  </p>
+                </div>
+                <button
+                  onClick={() => onDelete(entry)}
+                  disabled={deletePending}
+                  className="text-xs text-red-400 hover:text-red-600 transition-colors shrink-0 disabled:opacity-40"
+                >
+                  Delete
+                </button>
+              </li>
+            )
+          })}
+        </ul>
       )}
     </div>
   )

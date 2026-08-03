@@ -115,6 +115,7 @@ function SortTh({ label, field, sortKey, sortDir, onSort, className = '' }) {
 export default function SpendAnalyzer({ onTabChange }) {
   const fileInputRef = useRef()
   const tableRef = useRef()
+  const pendingUploadMetaRef = useRef(null)
   const queryClient = useQueryClient()
   const [reviewData, setReviewData] = useState(null)
   const [showAddModal, setShowAddModal] = useState(false)
@@ -167,6 +168,11 @@ export default function SpendAnalyzer({ onTabChange }) {
 
   const hasAiKey = settings?.aiProvider === 'openai' ? !!settings?.hasOpenaiApiKey : !!settings?.hasClaudeApiKey
 
+  const historyMutation = useMutation({
+    mutationFn: api.uploadHistory.create,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['upload-history'] }),
+  })
+
   const batchMutation = useMutation({
     mutationFn: api.creditCardTransactions.batch,
     onSuccess: (imported) => {
@@ -174,8 +180,27 @@ export default function SpendAnalyzer({ onTabChange }) {
       setReviewData(null)
       setImportStatus({ type: 'success', message: `Imported ${imported.length} transactions.` })
       setTimeout(() => setImportStatus(null), 4000)
+      // Same order as the flat list we sent — slice by file so cascade-delete can reverse it.
+      const metas = pendingUploadMetaRef.current ?? []
+      let offset = 0
+      for (const meta of metas) {
+        const count = meta.transactionCount ?? 0
+        const slice = imported.slice(offset, offset + count)
+        offset += count
+        historyMutation.mutate({
+          filename: meta.filename,
+          sourceName: meta.sourceName ?? '',
+          transactionCount: slice.length,
+          transactionIds: slice.map(t => t.id),
+          ledger: 'credit_card',
+        })
+      }
+      pendingUploadMetaRef.current = null
     },
-    onError: (err) => setImportStatus(errorStatus(err, { action: 'credit card import', stage: 'batch save' })),
+    onError: (err) => {
+      pendingUploadMetaRef.current = null
+      setImportStatus(errorStatus(err, { action: 'credit card import', stage: 'batch save' }))
+    },
   })
 
   const addMutation = useMutation({
@@ -327,6 +352,11 @@ export default function SpendAnalyzer({ onTabChange }) {
     }
     if (changed) saveMappingMutation.mutate(newSources)
     localStorage.setItem(SOURCE_NAME_KEY, readyGroups[0].sourceName)
+    pendingUploadMetaRef.current = readyGroups.map(g => ({
+      filename: g.fileName,
+      sourceName: g.sourceName,
+      transactionCount: g.transactions.length,
+    }))
     batchMutation.mutate(readyGroups.flatMap(g => g.transactions))
   }
 
@@ -935,7 +965,10 @@ export default function SpendAnalyzer({ onTabChange }) {
           skipped={reviewData.skipped}
           busy={batchMutation.isPending}
           onConfirm={handleReviewConfirm}
-          onCancel={() => setReviewData(null)}
+          onCancel={() => {
+            pendingUploadMetaRef.current = null
+            setReviewData(null)
+          }}
         />
       )}
       {showAddModal && (

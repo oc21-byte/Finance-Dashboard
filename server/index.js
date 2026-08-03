@@ -559,9 +559,15 @@ app.delete('/api/upload-history/:id', (req, res) => {
   )
   let deletedTransactionCount = 0
   if (ids.size) {
-    const before = db.transactions.length
-    db.transactions = db.transactions.filter(t => !ids.has(t.id))
-    deletedTransactionCount = before - db.transactions.length
+    if (removed.ledger === 'credit_card') {
+      const before = (db.credit_card_transactions ?? []).length
+      db.credit_card_transactions = (db.credit_card_transactions ?? []).filter(t => !ids.has(t.id))
+      deletedTransactionCount = before - db.credit_card_transactions.length
+    } else {
+      const before = db.transactions.length
+      db.transactions = db.transactions.filter(t => !ids.has(t.id))
+      deletedTransactionCount = before - db.transactions.length
+    }
   }
 
   writeDb(db)
