@@ -222,7 +222,9 @@ test('routes subjective questions to advisory wording with calculated context', 
   assert.equal(outcome.type, 'advice')
   assert.match(outcome.prompt.system, /Use only the supplied facts/)
   assert.match(outcome.prompt.system, /Apr 1, 2026 – Jun 30, 2026/)
+  assert.match(outcome.prompt.system, /\$5,000\.00/)
   assert.equal(chat.completeAdvice('Start with one flexible category and choose a limit you can sustain.'), 'Start with one flexible category and choose a limit you can sustain.')
+  assert.equal(chat.completeAdvice('Keep $1037.88 available for your savings target.'), 'Keep $1,037.88 available for your savings target.')
 })
 
 test('validates intent JSON and supports a short clarification response', () => {

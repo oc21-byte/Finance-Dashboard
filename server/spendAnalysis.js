@@ -1,6 +1,7 @@
 import dayjs from 'dayjs'
 import { normalizeDescription } from '../src/utils/duplicates.js'
 import { detectRecurring } from '../src/utils/recurring.js'
+import { formatUsd } from './currencyFormatting.js'
 
 const PROFILE_MONTHS = 6
 const FINANCIAL_MONTHS = 6
@@ -343,7 +344,7 @@ function buildProfile(profileFacts, recurring) {
       `Monthly spending varied by ${monthlyCv === null ? 'an unknown amount' : `${Math.round(monthlyCv * 100)}%`} around its average.`)
   const purchaseTrait = purchaseKey === 'everyday'
     ? trait('purchase_style', 'everyday', 'Everyday', 'Big-ticket', everydayScore,
-      `The median purchase was $${profileFacts.medianTransaction.toFixed(2)}.`)
+      `The median purchase was ${formatUsd(profileFacts.medianTransaction)}.`)
     : trait('purchase_style', 'big_ticket', 'Big-ticket', 'Everyday', 100 - everydayScore,
       `The largest purchases accounted for ${Math.round(topTenShare * 100)}% of spending.`)
 
@@ -466,10 +467,10 @@ function buildFinancialPace(bankTransactions, settings) {
   const status = headroom < 0 ? 'over_pace' : headroom < savingsTarget ? 'little_room' : 'on_track'
   const labels = { over_pace: 'Over Pace', little_room: 'Little Room', on_track: 'On Track' }
   const evidence = [
-    `Average monthly expenses were $${expenses.toFixed(2)} against $${income.toFixed(2)} of ${hasConfirmedIncome ? 'confirmed' : 'observed'} income.`,
+    `Average monthly expenses were ${formatUsd(expenses)} against ${formatUsd(income)} of ${hasConfirmedIncome ? 'confirmed' : 'observed'} income.`,
   ]
-  if (status === 'over_pace') evidence.push(`Expenses exceeded income by $${Math.abs(headroom).toFixed(2)} per month.`)
-  else evidence.push(`Average monthly headroom was $${headroom.toFixed(2)} before the $${savingsTarget.toFixed(2)} savings target.`)
+  if (status === 'over_pace') evidence.push(`Expenses exceeded income by ${formatUsd(Math.abs(headroom))} per month.`)
+  else evidence.push(`Average monthly headroom was ${formatUsd(headroom)} before the ${formatUsd(savingsTarget)} savings target.`)
 
   return {
     status,

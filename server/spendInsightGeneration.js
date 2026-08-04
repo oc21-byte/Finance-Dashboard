@@ -1,3 +1,5 @@
+import { formatUsd, normalizeUsdText } from './currencyFormatting.js'
+
 const EXPLORE_OPTIONS = [
   {
     id: '1',
@@ -58,8 +60,8 @@ function parseCopy(text) {
   if (keys.length !== 2 || keys[0] !== 'financialPaceSummary' || keys[1] !== 'profileSummary') {
     throw new Error('AI response must include exactly profileSummary and financialPaceSummary')
   }
-  const profileSummary = validateSummary(parsed.profileSummary, 'profileSummary')
-  const financialPaceSummary = validateSummary(parsed.financialPaceSummary, 'financialPaceSummary')
+  const profileSummary = normalizeUsdText(validateSummary(parsed.profileSummary, 'profileSummary'))
+  const financialPaceSummary = normalizeUsdText(validateSummary(parsed.financialPaceSummary, 'financialPaceSummary'))
   return { profileSummary, financialPaceSummary }
 }
 
@@ -69,26 +71,61 @@ function promptFacts(analysis) {
     profile: {
       name: profile.name,
       tagline: profile.tagline,
-      traits: profile.traits.map(({ label, score, evidence }) => ({ label, score, evidence })),
+      traits: profile.traits.map(({ label, score, evidence }) => ({
+        label,
+        score,
+        evidence: normalizeUsdText(evidence),
+      })),
       confidence: profile.confidence,
-      recurring: profile.recurring ?? null,
+      recurring: profile.recurring
+        ? { ...profile.recurring, monthlyTotal: formatUsd(profile.recurring.monthlyTotal) }
+        : null,
       period: scopes.profile?.label ?? 'no card-spending history',
     },
     financialPace: {
       status: financialPace.status,
       label: financialPace.label,
-      income: financialPace.income,
+      income: financialPace.income == null ? null : formatUsd(financialPace.income),
       incomeSource: financialPace.incomeSource,
-      observedIncome: financialPace.observedIncome ?? null,
-      expenses: financialPace.expenses,
-      headroom: financialPace.headroom,
-      savingsTarget: financialPace.savingsTarget,
+      observedIncome: financialPace.observedIncome == null ? null : formatUsd(financialPace.observedIncome),
+      expenses: financialPace.expenses == null ? null : formatUsd(financialPace.expenses),
+      headroom: financialPace.headroom == null ? null : formatUsd(financialPace.headroom),
+      savingsTarget: financialPace.savingsTarget == null ? null : formatUsd(financialPace.savingsTarget),
       savingsTargetSource: financialPace.savingsTargetSource,
       monthsCovered: financialPace.monthsCovered,
       confidence: financialPace.confidence,
-      evidence: financialPace.evidence,
+      evidence: financialPace.evidence.map(normalizeUsdText),
       period: scopes.financial?.label ?? 'no complete bank months',
     },
+  }
+}
+
+// Older persisted insights may have been generated before prompt amounts were formatted. Keep
+// those records readable immediately without rewriting db.json or requiring another model call.
+export function normalizeSpendInsightRecord(record) {
+  if (!record || Array.isArray(record) || typeof record !== 'object') return record
+  const normalizeField = value => typeof value === 'string' ? normalizeUsdText(value) : value
+  return {
+    ...record,
+    profile: record.profile ? {
+      ...record.profile,
+      summary: normalizeField(record.profile.summary),
+      traits: Array.isArray(record.profile.traits)
+        ? record.profile.traits.map(trait => ({ ...trait, evidence: normalizeField(trait.evidence) }))
+        : record.profile.traits,
+    } : record.profile,
+    financialPace: record.financialPace ? {
+      ...record.financialPace,
+      summary: normalizeField(record.financialPace.summary),
+      evidence: Array.isArray(record.financialPace.evidence)
+        ? record.financialPace.evidence.map(normalizeField)
+        : record.financialPace.evidence,
+    } : record.financialPace,
+    messages: Array.isArray(record.messages)
+      ? record.messages.map(message => message?.role === 'assistant'
+        ? { ...message, content: normalizeField(message.content) }
+        : message)
+      : record.messages,
   }
 }
 

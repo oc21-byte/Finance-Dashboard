@@ -10,7 +10,7 @@ import OpenAI from 'openai'
 import { DEMO_MODE } from './config.js'
 import { buildSpendAnalysis } from './spendAnalysis.js'
 import { createSpendChatBinding, createSpendChatTurn } from './spendChat.js'
-import { createSpendInsightGeneration } from './spendInsightGeneration.js'
+import { createSpendInsightGeneration, normalizeSpendInsightRecord } from './spendInsightGeneration.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DB_PATH = path.join(__dirname, '../data/db.json')
@@ -1213,7 +1213,7 @@ function readSpendScope(body = {}) {
 
 app.get('/api/spend-insights', (req, res) => {
   const db = readDb()
-  res.json(db.spendInsights ?? null)
+  res.json(normalizeSpendInsightRecord(db.spendInsights ?? null))
 })
 
 app.delete('/api/spend-insights', (req, res) => {

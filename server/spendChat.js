@@ -1,5 +1,6 @@
 import { normalizeDescription } from '../src/utils/duplicates.js'
 import { detectRecurring } from '../src/utils/recurring.js'
+import { formatUsd, normalizeUsdText } from './currencyFormatting.js'
 
 const FACT_METRICS = new Set([
   'spend', 'credits', 'transactions', 'recurring', 'income', 'expenses', 'headroom',
@@ -19,15 +20,8 @@ const DEFAULT_GUIDED_OPTIONS = [
   { id: '3', key: 'anomalies_opportunities', title: 'Anomalies & opportunities', prompt: 'Show me unusual spending and realistic opportunities to improve.' },
 ]
 
-const money = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-})
-
 function formatMoney(value) {
-  return money.format(Number(value) || 0)
+  return formatUsd(Number(value) || 0)
 }
 
 function plural(count, singular, pluralForm = `${singular}s`) {
@@ -399,14 +393,14 @@ function answerProfileQuery(context) {
   const profile = context.storedInsights?.profile ?? context.analysis.profile
   const basis = scopeLabel(context.profileScope, 'the Spend Style period')
   if (!profile?.traits?.length) return withBasis('There is not enough card activity to explain a Spend Style yet.', basis)
-  const traits = profile.traits.map(trait => `${trait.label}: ${trait.evidence}`)
+  const traits = profile.traits.map(trait => `${trait.label}: ${normalizeUsdText(trait.evidence)}`)
   return withBasis(`Your Spend Style is ${profile.name}. ${listSentence(traits)}`, basis)
 }
 
 function answerFinancialQuery(query, context) {
   const pace = context.storedInsights?.financialPace ?? context.analysis.financialPace
   const basis = scopeLabel(context.financialScope, 'the Financial Pace period')
-  if (pace.status === 'not_enough_data') return withBasis(pace.evidence.join(' '), basis)
+  if (pace.status === 'not_enough_data') return withBasis(normalizeUsdText(pace.evidence.join(' ')), basis)
   const facts = {
     income: ['Average monthly income', pace.income],
     expenses: ['Average monthly expenses', pace.expenses],
@@ -414,7 +408,7 @@ function answerFinancialQuery(query, context) {
     savings_target: ['Monthly savings target', pace.savingsTarget],
   }
   if (query.metric === 'financial_pace') {
-    return withBasis(`Your Financial Pace is ${pace.label}. ${pace.evidence.join(' ')}`, basis)
+    return withBasis(`Your Financial Pace is ${pace.label}. ${normalizeUsdText(pace.evidence.join(' '))}`, basis)
   }
   const [label, value] = facts[query.metric]
   return withBasis(`${label} was ${formatMoney(value)}.`, basis)
@@ -495,29 +489,33 @@ function advicePrompt(context) {
     insightPeriod: scopeLabel(context.insightScope, context.storedInsights?.periodLabel),
     profile: {
       name: profile?.name,
-      traits: profile?.traits?.map(trait => ({ label: trait.label, evidence: trait.evidence })),
+      traits: profile?.traits?.map(trait => ({ label: trait.label, evidence: normalizeUsdText(trait.evidence) })),
       confidence: profile?.confidence,
     },
     financialPace: {
       status: pace?.status,
       label: pace?.label,
-      income: pace?.income,
+      income: pace?.income == null ? null : formatUsd(pace.income),
       incomeSource: pace?.incomeSource,
-      expenses: pace?.expenses,
-      headroom: pace?.headroom,
-      savingsTarget: pace?.savingsTarget,
+      expenses: pace?.expenses == null ? null : formatUsd(pace.expenses),
+      headroom: pace?.headroom == null ? null : formatUsd(pace.headroom),
+      savingsTarget: pace?.savingsTarget == null ? null : formatUsd(pace.savingsTarget),
       monthsCovered: pace?.monthsCovered,
-      evidence: pace?.evidence,
+      evidence: pace?.evidence?.map(normalizeUsdText),
       scope: pace?.scope,
     },
     scopedSpending: {
-      totalSpend: facts.totalSpend,
+      totalSpend: formatUsd(facts.totalSpend),
       txCount: facts.txCount,
-      categories: facts.categories.slice(0, 10),
-      merchants: facts.merchants.slice(0, 10),
-      largestTransactions: facts.largestTransactions,
-      outliers: facts.outliers,
-      credits: facts.credits,
+      categories: facts.categories.slice(0, 10).map(item => ({ ...item, amount: formatUsd(item.amount) })),
+      merchants: facts.merchants.slice(0, 10).map(item => ({ ...item, amount: formatUsd(item.amount) })),
+      largestTransactions: facts.largestTransactions.map(item => ({ ...item, amount: formatUsd(item.amount) })),
+      outliers: facts.outliers.map(item => ({ ...item, amount: formatUsd(item.amount) })),
+      credits: {
+        ...facts.credits,
+        total: formatUsd(facts.credits.total),
+        byKind: facts.credits.byKind.map(item => ({ ...item, amount: formatUsd(item.amount) })),
+      },
     },
   }
   return {
@@ -606,7 +604,7 @@ export function createSpendChatTurn({
       return { type: 'reply', reply: executeFactQuery(intent.query, context) }
     },
     completeAdvice(rawText) {
-      return validateModelPlainText(rawText, 'advisory', MAX_ADVICE_CHARS)
+      return normalizeUsdText(validateModelPlainText(rawText, 'advisory', MAX_ADVICE_CHARS))
     },
   }
 }
