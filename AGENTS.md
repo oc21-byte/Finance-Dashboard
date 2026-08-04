@@ -6,6 +6,7 @@ localhost. Vite proxies `/api/*` → `:3001` (no CORS concerns).
 
 ```bash
 npm run dev      # Vite + Express together (concurrently)
+npm test         # deterministic Spend Analyzer analysis/generation/chat tests
 npm run build    # vite build → dist/
 ```
 
@@ -15,14 +16,16 @@ backfills any missing top-level keys.
 ## Architecture rules (don't break these)
 
 - **All** React data access goes through `src/api/client.js` (the `api` object) → `/api/*`. Never `fetch('/api/...')` directly from a component (one exception: `parsePdfVision` in `csvHelpers.js`).
-- **All** external calls (Yahoo Finance prices, Claude API) happen **only** in `server/index.js`. The browser never holds the Claude key or hits a third party.
+- **All** external calls (Yahoo Finance prices and the selected AI provider) happen **only** in
+  `server/index.js`. The browser never holds an API key or hits a third party.
 - Server state via TanStack Query (`useQuery`/`useMutation`) — no `useEffect` fetching. After a mutation, `invalidateQueries` the affected key.
 - Dates are `YYYY-MM-DD` strings; use `dayjs`. IDs are assigned server-side (`uuidv4`) — never send one from the client.
 - Amounts: expenses negative, income positive. Bank txns carry a `type` (`income`/`expense`/`savings`). Card txns carry **no `type`** — the sign is the discriminator: negative is spending, positive is a credit and carries a `creditKind`.
 - **Payments to a card are never stored.** They settle from the bank account, where they already
   appear as an expense, so importing them on the card side would double-count. `PAYMENT_RE` in
   `csvHelpers.js` drops them on every import path, and the extraction prompts are told to skip them.
-- Claude key lives in `db.json` and is **never** returned. `GET/PUT /api/settings` strips it and returns `hasClaudeApiKey: boolean`.
+- AI provider keys live in `db.json` and are **never** returned. `GET/PUT /api/settings` strips
+  both and returns only `hasClaudeApiKey` / `hasOpenaiApiKey` booleans.
 - Never call `/api/shutdown` from `pagehide` / unload. Hard reload would kill Express (and often
   Vite). Shutdown is only via the explicit Close App button in `Layout.jsx`, which exits the
   Express process with `process.exit(0)` — not `process.kill(0)`.
@@ -35,11 +38,13 @@ backfills any missing top-level keys.
 
 ## Models (easy to get wrong)
 
-- `claude-haiku-4-5-20251001` — insights, categorize, all chat endpoints, budget-builder.
-- `claude-sonnet-4-6` — column detection (`/api/llm/detect-columns`), row extraction
-  (`/api/llm/extract-rows`), and the default for PDF Vision (`/api/parse-pdf-vision`).
+- Fast tier: `claude-haiku-4-5-20251001` or `gpt-4o-mini` — insights, categorization, chat,
+  and budget-builder.
+- Smart/vision tier: `claude-sonnet-4-6` or `gpt-4o` — column detection
+  (`/api/llm/detect-columns`), row extraction (`/api/llm/extract-rows`), and PDF Vision
+  (`/api/parse-pdf-vision`).
 - Vision's model is `settings.visionModel` (editable in Settings), so it can be pointed at a
-  stronger model without a code change. `callLLM({ model })` overrides the tier outright.
+  stronger Claude model without a code change. `callLLM({ model })` overrides the tier outright.
 
 ## Where things live
 
@@ -57,7 +62,11 @@ backfills any missing top-level keys.
 | Pages | `src/pages/{Dashboard,Finances,SpendAnalyzer,Investments,Goals,Settings}.jsx` |
 | Categories + colors | `src/constants/categories.js` |
 | Spend Analyzer maths | `src/utils/{period,spendAggregations,recurring,spendChartModel}.js` |
+| Spend insight facts + classifications | `server/spendAnalysis.js` |
+| Spend insight generation + v2 record | `server/spendInsightGeneration.js` |
+| Spend chat intent + deterministic answers | `server/spendChat.js` |
 | Spend Analyzer UI | `src/components/spend/*` |
+| Spend insight tests | `test/spend{Analysis,InsightGeneration,Chat}.test.js` |
 
 **Import pipeline:** both tabs accept **multiple files at once** (`.csv`, `.xlsx/.xlsm/.xlsb/.xls`,
 `.pdf`). `runImportQueue()` processes them one at a time so one bad statement can't take down the
@@ -115,14 +124,14 @@ JSON-parsing routes, the model's raw output. Reports never include API keys.
   badged non-editable rows, and are kept **out** of Income and Net Cash unless
   `settings.countCardCreditsAsIncome` is on. Off by default because a credit shrinks the card bill,
   and that bill is already an expense on the bank side — counting it as income too double-counts it.
-- The LLM context builders apply the same split, and say so in the prompt, so insights never report
-  a refund as spending or add credits to income.
+- Spend insight analysis applies the same split before any model prompt is built, so insights never
+  report a refund as spending or add credits to income.
 
 ## Spend Analyzer
 
 The page is an orchestrator: queries, mutations, the import flow, the derivation chain, and layout.
-All maths lives in `src/utils/`, all UI in `src/components/spend/`. Adding a chart means adding a
-component there, not growing the page.
+Visual maths lives in `src/utils/`, insight maths lives in `server/spendAnalysis.js`, and UI lives
+in `src/components/spend/`. Adding a chart means adding a component there, not growing the page.
 
 **The derivation chain.** Every number on the page hangs off these steps, in this order. This is
 what lets one filter chip re-scope the whole page instead of each widget filtering for itself:
@@ -159,23 +168,51 @@ colour across the whole page — its donut slice, its bar segments, its row in "
 **whole ledger's** sources, never the filtered set, or removing a chip would recolour the legend
 you just read.
 
-**Insight memory and scope.** The last generated insights and their follow-up chat live in
-`db.json` under `spendInsights`, not in component state — switching tabs unmounts the page
-(`<Page />` swaps in `App.jsx`), and a reload would lose them either way. Read and cleared via
-`GET`/`DELETE /api/spend-insights` (`api.spendInsights`); the page reads it through
-`useQuery(['spend-insights'])` and keeps only the draft input and the in-flight question local.
+**Insight analysis.** `buildSpendAnalysis()` is the single deterministic source for every fact and
+classification used by Spend Style, Financial Pace, guided exploration, and exact chat answers.
+The same ledger snapshot must always produce the same result; equal-value rankings use stable
+tie-breakers. The model never calculates totals, percentages, scores, status, or the assigned
+archetype.
+
+- **Spend Style** describes the latest six calendar months of unfiltered card activity, anchored to
+  the latest card date. Active period/filter chips never redefine it. Four deterministic traits are
+  Merchant Pattern (`Loyal` / `Exploring`), Category Pattern (`Focused` / `Eclectic`), Spending
+  Cadence (`Steady` / `Event-driven`), and Purchase Style (`Everyday` / `Big-ticket`). The first
+  three select one of eight fixed archetypes; Purchase Style is an additional badge. Confidence is
+  High at 60+ purchases across six spending months, Medium at 30+ across three, otherwise Early Read.
+- **Financial Pace** uses up to the latest six complete bank months and never card rows. Confirmed
+  monthly income wins when configured; otherwise observed positive bank income is used. Headroom is
+  monthly income minus bank expenses. The savings target is the explicit monthly target or the
+  configured income rate (15% default). Negative headroom is `Over Pace`; non-negative headroom
+  below target is `Little Room`; headroom meeting target is `On Track`; missing complete bank months
+  or income is `Not Enough Data`.
+- **Exploration scope** is the selected Spend Analyzer range plus category/card/merchant filters.
+  Options `1`, `2`, and `3` return deterministic Category patterns, Merchant habits, and Anomalies &
+  opportunities for that scope. Clicking an option and typing its number take the same chat path.
+
+**AI responsibility.** `/api/llm/spend-insights` asks the model for only two short summaries after
+all facts are calculated, then validates the JSON/plain-text response before writing it. Spend chat
+uses a small model call to classify natural-language questions into a validated intent. Exact
+questions are answered directly from the ledger by `server/spendChat.js`; only subjective advice
+gets a second model call, supplied with deterministic facts. Prompts receive only the settings they
+need, never provider credentials. See `docs/adr/0001-deterministic-spend-insights.md`.
+
+**Insight memory and scopes.** The last generated record and its chat live in `db.json` under
+`spendInsights`, not component state. Read/clear through `GET`/`DELETE /api/spend-insights` and
+`api.spendInsights`; React reads it with `useQuery(['spend-insights'])` and keeps only draft/in-flight
+text local. Version 2 stores separate `scope` (exploration), `profileScope`, and `financialScope`.
+Version 1 records with `insights[]` remain readable in the original three-card layout.
 
 Both spend routes take `{ period, from, to, filters, periodLabel }`. **`period` is an opaque scope
-key** (`buildScopeKey` → e.g. `6M|2026-02-01|2026-07-31|cat:Food & Dining`) encoding range *and*
-filters; it is only ever compared for equality, never parsed. `buildSpendContextFromTransactions`
-accepts either that `{from, to, filters}` object or a legacy `period` string (which keeps using
-`startsWith`), so old stored records still read.
+key** (`buildScopeKey` → e.g. `6M|2026-02-01|2026-07-31|cat:Food & Dining`) encoding range and
+filters; compare it for equality and never parse it. Range objects filter by `{from,to,filters}`;
+legacy bare period strings still use date-prefix matching.
 
-`/api/llm/spend-insights` writes the record, replacing any previous one and resetting the chat.
-`/api/llm/spend-chat` answers against the **stored** scope rather than whatever is on screen, and
-appends the exchange **only when the stored `period` matches the request** — so a reply never
-attaches to insights that have since been re-scoped or replaced. The panel surfaces that mismatch
-rather than letting stale analysis pass as current.
+`/api/llm/spend-insights` replaces the prior record and resets chat. `/api/llm/spend-chat` answers
+against the stored record's scopes, not the current screen. `createSpendChatBinding()` appends only
+if `period`, `generatedAt`, and `analysisVersion` still identify the same generation after any model
+call; refreshing, clearing, or re-scoping cannot attach a stale reply. The panel surfaces scope
+mismatches instead of presenting stale exploration as current.
 
 **Notable features:** Budget Builder (on the **Budget** tab → `/api/llm/budget-builder`),
 net-worth history (Dashboard auto-snapshots on mount via
@@ -193,16 +230,22 @@ holdings[]                  { id, ticker, accountType, shares, purchasePrice, pu
 savings_accounts[]          { id, name, accountType, balance, apy }
 goals[]                     { id, name, targetAmount, currentAmount, targetDate, monthlySavings }
 netWorthHistory[]           { date, netWorth, breakdown:{cash,savings,portfolio} }
-spendInsights               { period, periodLabel, scope, insights[], messages[], generatedAt }
-                            or null when cleared. `period` is an opaque scope key (range +
-                            filters), compared for equality only. `scope` is {from,to,filters}
-                            for range-scoped records, null for legacy period-string ones.
+spendInsights               v2: { analysisVersion:2, period, periodLabel, scope, profileScope,
+                                  financialScope, profile, financialPace, explorePrompt,
+                                  exploreOptions[3], messages[], generatedAt }
+                            v1: { period, periodLabel, scope, insights[3], messages[], generatedAt }
+                            or null. `period` is an opaque equality key. Each scope is
+                            {from,to,months?,filters,label,basis}; legacy bare periods may have
+                            null `scope`. `profile` and `financialPace` include their deterministic
+                            fields plus model-written `summary` text.
 uploadHistory[]             { id, filename, sourceName, transactionCount, transactionIds[],
                               ledger:'bank'|'credit_card', importedAt }
                               DELETE cascades on transactionIds into the matching ledger
                               (empty/missing IDs = history-only delete)
-settings                    { claudeApiKey, customCategories[], cashBalance, confirmedMonthlyIncome,
-                              csvSources, visionModel, countCardCreditsAsIncome }
+settings                    { aiProvider, claudeApiKey, openaiApiKey, customCategories[],
+                              cashBalance, confirmedMonthlyIncome, categoryBudgets,
+                              budgetSavingsTarget, budgetSavingsRate, csvSources, visionModel,
+                              countCardCreditsAsIncome }
 ```
 
 ## Note

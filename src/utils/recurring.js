@@ -223,7 +223,7 @@ export function detectRecurring(transactions = [], options = {}) {
     }
   }
 
-  series.sort((a, b) => b.monthly - a.monthly)
+  series.sort((a, b) => b.monthly - a.monthly || a.label.localeCompare(b.label))
 
   const byCadence = {}
   for (const s of series) byCadence[s.cadence] = (byCadence[s.cadence] ?? 0) + 1

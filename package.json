@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently \"vite\" \"nodemon server/index.js\"",
+    "test": "node --test",
     "build": "vite build",
     "preview": "vite preview"
   },

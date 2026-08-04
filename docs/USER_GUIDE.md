@@ -92,8 +92,8 @@ real cost depends on how much data you have — but they're in the right ballpar
 
 | What you're doing | Roughly costs | Notes |
 |---|---|---|
-| **AI Insights** (Dashboard & Spend Analyzer) | a fraction of a cent | Reads a summary of your transactions |
-| **Asking a follow-up in chat** | a fraction of a cent | Each message is tiny |
+| **AI Insights** (Dashboard & Spend Analyzer) | a fraction of a cent | Spend Analyzer uses AI only to word already-calculated results |
+| **Asking a follow-up in chat** | a fraction of a cent | Guided choices are calculated directly; typed questions may use AI to understand what you asked |
 | **Goal analysis & goal chat** | a fraction of a cent | |
 | **Re-categorize uncategorized** (AI) | a fraction of a cent | |
 | **Budget Builder** | about 1 cent | Reads more data, so slightly more |
@@ -113,6 +113,7 @@ your transactions. The easiest way to feed it your spending is to upload a state
 your bank or credit card. You only have to teach it about each account once.
 
 You can add data in three ways:
+
 - **Upload a statement file** (the fast way — recommended)
 - **Type transactions in by hand** (fine for one-offs)
 - Let it **read a PDF statement automatically** using AI
@@ -132,6 +133,7 @@ A **CSV** is just a spreadsheet file your bank lets you download — usually the
 
 **If it recognizes the account** (you've uploaded from it before), a little banner pops up
 that says *"Recognized format: [your bank's name]"*.
+
 - Click **Yes, use it** and your transactions import right away. Done!
 - Click **No, remap** only if something changed and you want to set it up again.
 
@@ -141,6 +143,7 @@ it found so you can look them over before importing.
 
 **If it needs your help matching things up**, a small setup window appears. Don't worry,
 it's quick:
+
 1. **Name this source** — give the account a friendly name like "Chase Checking" or
    "Amex Card." (You'll only do this once per account.)
 2. **Point out the columns** — tell it which column has the **Date**, which has the
@@ -267,6 +270,7 @@ your money goes — which stores, which categories — and lets you dig into spe
 ### Tidy up your categories
 
 Good categories make everything else more useful. In the transaction table:
+
 - Click any **category tag** to change it.
 - Got transactions with no category? Click the **Uncategorized only** button to see just
   those, then fix them.
@@ -275,8 +279,39 @@ Good categories make everything else more useful. In the transaction table:
 
 ### Insights and chat
 
-Just like the Dashboard, there's a **Generate Insights** button and a chat box here too —
-ask things like *"What should I cut to save more this month?"*
+With an AI key configured, click **Generate** to create two complementary views:
+
+- **Spend Style** gives your recent card-purchase pattern a friendly archetype and four traits:
+  whether you tend to revisit merchants or explore, concentrate on a few categories or spread
+  spending around, spend steadily or around bigger moments, and favour everyday or larger-ticket
+  purchases. It describes recent behaviour, not a permanent personality. The confidence label tells
+  you how much history supports the result.
+- **Financial Pace** compares average monthly income and bank expenses with your savings target.
+  **On Track** means the available room meets that target, **Little Room** means there is some room
+  but less than the target, and **Over Pace** means expenses are above income. If the app does not
+  have enough complete bank history or reliable income, it says **Not Enough Data** instead of
+  guessing.
+
+Spend Style looks at up to the latest six months of unfiltered card activity, so changing a chart
+filter does not change your profile. Financial Pace uses complete bank months and never adds card
+purchases again—the bank ledger already includes card payments.
+
+Under the two cards, choose a deeper look:
+
+1. **Category patterns** — where spending is concentrated.
+2. **Merchant habits** — repeat merchants and purchasing routines.
+3. **Anomalies & opportunities** — unusual purchases and practical places to create more room.
+
+Clicking a choice or typing **1**, **2**, or **3** gives the same result for the period and filters
+saved with the insight. You can also ask your own question, such as *"How much did I spend on
+groceries?"*, *"Compare April and May"*, or *"Why did I get this Spend Style?"* Exact amounts are
+calculated from your local transactions, and each answer states the period it used. Advice questions
+like *"What should I cut to save more?"* use the same calculated facts but allow a more interpretive
+answer.
+
+If you change the visible period or filters after generating, the card warns that exploration still
+refers to the saved scope. Click **Re-analyze** to replace it, or **Clear** to remove the saved insight
+and its conversation.
 
 ---
 
@@ -347,11 +382,13 @@ your **savings accounts** (like a high-yield savings account earning interest).
 
 1. Click **+ Add Holding**.
 2. Fill in:
+
    - **Ticker** — the stock's short symbol, like `AAPL` for Apple.
    - **Shares** — how many you own.
    - **Purchase Price** — what you paid per share.
    - **Purchase Date** — when you bought them.
    - **Account Type** — where it's held (a retirement account, a regular brokerage, etc.).
+
 3. Click **Add Holding**.
 
 The app fetches the *current* price automatically, so you can see your **gain or loss** at
@@ -399,6 +436,7 @@ sanity check on whether you have enough set aside for a rainy day.
 
 1. Click **New Goal**.
 2. Fill in:
+
    - **Goal name** — like "Emergency Fund."
    - **Target amount** — how much you want to save.
    - **Target date** — when you'd like to hit it.
@@ -406,14 +444,17 @@ sanity check on whether you have enough set aside for a rainy day.
      powers the timeline estimate). If you've been saving consistently, you'll see a
      suggestion like *"Your avg savings: $400/mo over 6 mo — Use this"* — click it to
      fill in the field automatically.
+
 3. **Link accounts (optional but powerful)** — at the bottom of the form, you'll see a
    **Linked accounts** section. This lets the goal automatically track money you already
    have in savings accounts or investment holdings, instead of you manually adding funds.
+
    - Pick an account from the dropdown and enter the **percentage** of that account to
      count toward this goal (e.g. "50% of my High-Yield Savings").
    - You can link multiple accounts. The app caps the total at 100% per account across
      all goals — so two goals can't double-count the same money.
    - Click **Add** for each account, then continue.
+
 4. Click **Create Goal**.
 
 Each goal shows up as a card with a progress bar, the percentage you've reached, and — if

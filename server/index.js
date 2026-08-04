@@ -8,6 +8,9 @@ import { v4 as uuidv4 } from 'uuid'
 import Anthropic from '@anthropic-ai/sdk'
 import OpenAI from 'openai'
 import { DEMO_MODE } from './config.js'
+import { buildSpendAnalysis } from './spendAnalysis.js'
+import { createSpendChatBinding, createSpendChatTurn } from './spendChat.js'
+import { createSpendInsightGeneration } from './spendInsightGeneration.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DB_PATH = path.join(__dirname, '../data/db.json')
@@ -689,147 +692,6 @@ app.delete('/api/categories/:name', (req, res) => {
 
 // --- LLM ---
 
-// A scope is either the legacy period string ('all' or 'YYYY-MM') or a range object
-// { from, to, filters:{categories,cards,merchants} } from the Spend Analyzer's period chips. A
-// rolling window like "last 6 months" cannot be expressed as a date prefix, hence the second form;
-// the string form stays for any caller that still passes one.
-function scopeMatcher(scope) {
-  if (typeof scope === 'string' || !scope) {
-    const period = scope || 'all'
-    return period === 'all' ? () => true : t => t.date?.startsWith(period)
-  }
-  const { from, to, filters = {} } = scope
-  const { categories, cards, merchants } = filters || {}
-  return t => {
-    if (!t.date) return false
-    if (from && t.date < from) return false
-    if (to && t.date > to) return false
-    if (categories?.length && !categories.includes(t.category || 'Other')) return false
-    if (cards?.length && !cards.includes(t.source)) return false
-    if (merchants?.length && !merchants.includes(t.description)) return false
-    return true
-  }
-}
-
-function buildSpendContextFromTransactions(ccTransactions, scope) {
-  const filtered = ccTransactions.filter(scopeMatcher(scope))
-
-  // Positive card rows are cashback, refunds and rebates — money coming back. Folding them into
-  // spend aggregates would understate nothing and overstate everything, so they are summarized
-  // separately and the model is told not to mix the two.
-  const spend = filtered.filter(t => Number(t.amount) < 0)
-  const credits = filtered.filter(t => Number(t.amount) > 0)
-
-  const totalSpend = spend.reduce((s, t) => s + Math.abs(t.amount), 0)
-
-  const catMap = {}
-  for (const t of spend) {
-    const cat = t.category || 'Other'
-    catMap[cat] = (catMap[cat] || 0) + Math.abs(t.amount)
-  }
-  const categories = Object.entries(catMap)
-    .map(([name, amount]) => ({ name, amount: Math.round(amount * 100) / 100 }))
-    .sort((a, b) => b.amount - a.amount)
-
-  const merchantMap = {}
-  const merchantCount = {}
-  for (const t of spend) {
-    const key = t.description || 'Unknown'
-    merchantMap[key] = (merchantMap[key] || 0) + Math.abs(t.amount)
-    merchantCount[key] = (merchantCount[key] || 0) + 1
-  }
-  const topMerchants = Object.entries(merchantMap)
-    .map(([name, amount]) => ({ name, amount: Math.round(amount * 100) / 100, visits: merchantCount[name] }))
-    .sort((a, b) => b.amount - a.amount)
-    .slice(0, 10)
-
-  const largestTxs = [...spend]
-    .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
-    .slice(0, 10)
-    .map(t => ({ description: t.description, amount: Math.round(Math.abs(t.amount) * 100) / 100, date: t.date, category: t.category || 'Other' }))
-
-  const creditByKind = {}
-  for (const t of credits) {
-    const kind = t.creditKind || 'credit'
-    creditByKind[kind] = (creditByKind[kind] || 0) + Number(t.amount)
-  }
-
-  return {
-    filtered,
-    totalSpend: Math.round(totalSpend * 100) / 100,
-    txCount: spend.length,
-    categories,
-    topMerchants,
-    largestTxs,
-    totalCredits: Math.round(credits.reduce((s, t) => s + Number(t.amount), 0) * 100) / 100,
-    creditCount: credits.length,
-    creditsByKind: Object.entries(creditByKind)
-      .map(([kind, amount]) => ({ kind, amount: Math.round(amount * 100) / 100 }))
-      .sort((a, b) => b.amount - a.amount),
-  }
-}
-
-const MONTH_FULL = ['January','February','March','April','May','June','July','August','September','October','November','December']
-
-function formatPeriodLabel(scope) {
-  if (typeof scope === 'string' || !scope) {
-    const period = scope || 'all'
-    if (period === 'all') return 'all time'
-    const [year, month] = period.split('-')
-    return `${MONTH_FULL[parseInt(month, 10) - 1]} ${year}`
-  }
-  // The client sends the phrasing it is already showing the user, so the prompt and the "Based
-  // on …" line in the insights rail can never drift apart.
-  if (scope.label) return scope.label
-  const { from, to } = scope
-  return from && to ? `${from} to ${to}` : 'all time'
-}
-
-const CREDIT_KIND_TEXT = {
-  cashback: 'cashback/rewards',
-  refund: 'merchant refunds',
-  rebate: 'rebates/adjustments',
-  credit: 'other credits',
-}
-
-function buildSpendSummaryText(scope, {
-  totalSpend, txCount, categories, topMerchants, largestTxs,
-  totalCredits = 0, creditCount = 0, creditsByKind = [],
-}) {
-  const periodLabel = formatPeriodLabel(scope)
-  const catLines = categories.map(c => {
-    const pct = totalSpend > 0 ? Math.round(c.amount / totalSpend * 100) : 0
-    return `- ${c.name}: $${c.amount.toFixed(2)} (${pct}%)`
-  }).join('\n')
-  const merchantLines = topMerchants.map((m, i) =>
-    `${i + 1}. ${m.name}: $${m.amount.toFixed(2)} (${m.visits} transaction${m.visits !== 1 ? 's' : ''})`
-  ).join('\n')
-  const largeTxLines = largestTxs.map(t =>
-    `- $${t.amount.toFixed(2)} at ${t.description} on ${t.date} [${t.category}]`
-  ).join('\n')
-
-  const creditSection = creditCount > 0
-    ? `
-
-Credits received (money back — NOT spending, and already excluded from every figure above; do not subtract them from the total):
-Total: $${totalCredits.toFixed(2)} across ${creditCount} credit${creditCount !== 1 ? 's' : ''}
-${creditsByKind.map(c => `- ${CREDIT_KIND_TEXT[c.kind] ?? c.kind}: $${c.amount.toFixed(2)}`).join('\n')}
-Payments made to the card are deliberately not recorded here; they are tracked on the bank side.`
-    : ''
-
-  return `Credit card spending for ${periodLabel}:
-Total: $${totalSpend.toFixed(2)} across ${txCount} transaction${txCount !== 1 ? 's' : ''}
-
-Categories:
-${catLines || '  (none)'}
-
-Top merchants:
-${merchantLines || '  (none)'}
-
-Largest transactions:
-${largeTxLines || '  (none)'}${creditSection}`
-}
-
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 function monthLabel(yyyymm) {
   const [y, m] = yyyymm.split('-').map(Number)
@@ -1334,21 +1196,9 @@ Write 3–4 sentences: (1) state whether they are on track or behind using the l
 // fresh generation invalidates any chat that was following the old one. Re-reads the db rather
 // than reusing the copy from the start of the route, since the LLM call takes seconds and an
 // import may have written in the meantime.
-function saveSpendInsights(period, insights, messages = [], periodLabel = null, scope = null) {
+function saveSpendInsights(record) {
   const db = readDb()
-  db.spendInsights = {
-    // `period` is an opaque scope key: the legacy 'all' / 'YYYY-MM', or the Spend Analyzer's
-    // range-and-filters key. It is only ever compared for equality, never parsed.
-    period,
-    periodLabel,
-    // The range and filters the insights were built from, kept so a follow-up question can be
-    // answered against exactly the same data — otherwise a reply shown beneath these insights
-    // would silently describe whatever the user has since scrolled the period to.
-    scope: scope && typeof scope !== 'string' ? scope : null,
-    insights,
-    messages,
-    generatedAt: new Date().toISOString(),
-  }
+  db.spendInsights = record
   writeDb(db)
   return db.spendInsights
 }
@@ -1380,40 +1230,25 @@ app.post('/api/llm/spend-insights', async (req, res) => {
   if (!hasKey) return res.status(400).json({ error: 'No AI API key configured. Add one in Settings.' })
 
   const { period, scope, periodLabel } = readSpendScope(req.body)
-  const context = buildSpendContextFromTransactions(db.credit_card_transactions || [], scope)
-
-  if (context.txCount === 0) {
-    // Stored like any other result, so the page shows the same thing after a reload instead of
-    // silently falling back to the "click Generate" empty state.
-    const insights = [{ title: 'No Data', body: 'No credit card transactions found for the selected period.' }]
-    saveSpendInsights(period, insights, [], periodLabel, scope)
-    return res.json({ insights })
-  }
-
-  const summaryText = buildSpendSummaryText(scope, context)
-  const userMsg = `${summaryText}
-
-Provide exactly 3 insights as JSON:
-{"insights":[{"title":"...","body":"..."},{"title":"...","body":"..."},{"title":"...","body":"..."}]}
-
-Cover exactly these three areas:
-1. Category spending patterns — which categories dominate and whether the distribution looks healthy
-2. Notable merchant habits — repeat merchants or high-spend vendors worth noting
-3. Anomalies or outliers — large one-offs, unexpected charges, or patterns worth flagging
-
-Be specific with dollar amounts. No markdown. Valid JSON only.`
+  const analysis = buildSpendAnalysis({
+    bankTransactions: db.transactions || [],
+    cardTransactions: db.credit_card_transactions || [],
+    settings: db.settings || {},
+    insightScope: scope,
+  })
+  const generation = createSpendInsightGeneration({ analysis, period, periodLabel, scope })
 
   let raw = null
   try {
     const text = await callLLM({
-      system: 'You are a personal finance assistant analyzing credit card spending. Respond with valid JSON only.',
-      userMessages: [{ role: 'user', content: userMsg }],
-      maxTokens: 768,
+      system: generation.prompt.system,
+      userMessages: [{ role: 'user', content: generation.prompt.user }],
+      maxTokens: generation.prompt.maxTokens,
     })
-    raw = text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
-    const result = JSON.parse(raw)
-    saveSpendInsights(period, result.insights, [], periodLabel, scope)
-    res.json({ insights: result.insights })
+    raw = text
+    const result = generation.complete(text, new Date().toISOString())
+    saveSpendInsights(result)
+    res.json(result)
   } catch (err) {
     failure(res, 'LLM spend-insights error', err, { detail: raw })
   }
@@ -1427,37 +1262,64 @@ app.post('/api/llm/spend-chat', async (req, res) => {
 
   const { messages = [] } = req.body
   if (!messages.length) return res.status(400).json({ error: 'No messages provided' })
+  if (![...messages].reverse().some(message => message.role === 'user' && message.content?.trim())) {
+    return res.status(400).json({ error: 'No user message provided' })
+  }
 
   const { period, scope: requestScope } = readSpendScope(req.body)
 
-  // Answer against the scope the stored insights were generated from, not whatever the page is
-  // currently showing. The reply is rendered directly beneath those insights, so it has to be
-  // about the same data; the client's scope is only the fallback when there is nothing stored.
-  const storedScope = db.spendInsights?.period === period ? db.spendInsights.scope : null
-  const scope = storedScope ?? requestScope
+  // The stored record owns the conversational scope. If it no longer matches the request, use the
+  // client's scope but do not borrow profile or Financial Pace facts from a different analysis.
+  const binding = createSpendChatBinding({ record: db.spendInsights, period, requestScope })
+  const { storedInsights, scope } = binding
+  const analysis = buildSpendAnalysis({
+    bankTransactions: db.transactions || [],
+    cardTransactions: db.credit_card_transactions || [],
+    settings: db.settings || {},
+    insightScope: scope,
+  })
+  const turn = createSpendChatTurn({
+    analysis,
+    storedInsights,
+    bankTransactions: db.transactions || [],
+    cardTransactions: db.credit_card_transactions || [],
+    settings: db.settings || {},
+    messages,
+  })
 
-  const context = buildSpendContextFromTransactions(db.credit_card_transactions || [], scope)
-  const summaryText = buildSpendSummaryText(scope, context)
-
-  const systemMsg = `You are a personal finance assistant. The user is asking follow-up questions about their credit card spending.
-
-${summaryText}
-
-Be concise and specific. Answer in 2–4 sentences. Plain text only, no markdown — the reply is rendered as-is.`
-
+  let rawIntent = null
+  let rawAdvice = null
   try {
-    const text = await callLLM({ system: systemMsg, userMessages: messages, maxTokens: 512 })
-    const reply = text.trim()
+    let reply = turn.directReply
+    if (!reply) {
+      const intentText = await callLLM({
+        system: turn.intentPrompt.system,
+        userMessages: [{ role: 'user', content: turn.intentPrompt.user }],
+        maxTokens: turn.intentPrompt.maxTokens,
+      })
+      rawIntent = intentText
+      const outcome = turn.completeIntent(intentText)
+      if (outcome.type === 'advice') {
+        const adviceText = await callLLM({
+          system: outcome.prompt.system,
+          userMessages: outcome.prompt.messages,
+          maxTokens: outcome.prompt.maxTokens,
+        })
+        rawAdvice = adviceText
+        reply = turn.completeAdvice(adviceText)
+      } else {
+        reply = outcome.reply
+      }
+    }
 
     // Appended only when the stored insights still describe the scope being discussed — the same
     // range *and* the same filters. Otherwise this exchange belongs to a set of insights that has
     // since been replaced or re-scoped.
     const fresh = readDb()
-    if (fresh.spendInsights?.period === period) {
-      const lastUser = [...messages].reverse().find(m => m.role === 'user')
+    if (binding.canAppend(fresh.spendInsights)) {
       fresh.spendInsights.messages = [
         ...(fresh.spendInsights.messages ?? []),
-        ...(lastUser ? [{ role: 'user', content: lastUser.content }] : []),
+        turn.userMessage,
         { role: 'assistant', content: reply },
       ]
       writeDb(fresh)
@@ -1465,7 +1327,9 @@ Be concise and specific. Answer in 2–4 sentences. Plain text only, no markdown
 
     res.json({ reply })
   } catch (err) {
-    failure(res, 'LLM spend-chat error', err)
+    failure(res, 'LLM spend-chat error', err, {
+      detail: rawAdvice ?? rawIntent,
+    })
   }
 })
 

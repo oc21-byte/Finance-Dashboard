@@ -194,9 +194,8 @@ export default function SpendAnalyzer({ onTabChange, demoMode }) {
     },
   })
 
-  async function handleSendChat(e) {
-    e.preventDefault()
-    const message = chatInput.trim()
+  async function sendChatMessage(rawMessage) {
+    const message = String(rawMessage ?? '').trim()
     if (!message || chatLoading) return
     setChatInput('')
     setChatError(null)
@@ -218,6 +217,15 @@ export default function SpendAnalyzer({ onTabChange, demoMode }) {
       setPendingQuestion(null)
       setChatLoading(false)
     }
+  }
+
+  function handleSendChat(e) {
+    e.preventDefault()
+    sendChatMessage(chatInput)
+  }
+
+  function handleExplore(option) {
+    sendChatMessage(option.id)
   }
 
   async function categorizeTxs(txs) {
@@ -785,10 +793,10 @@ export default function SpendAnalyzer({ onTabChange, demoMode }) {
           pins after the bar is already showing, so this is correct in every state and costs no
           re-render mid-scroll.
 
-          Capped to the viewport and scrollable *only* where it's sticky: three insight cards plus a
-          conversation runs taller than the screen, and a sticky element taller than its viewport
-          leaves its own bottom permanently out of reach. Below xl it's in normal flow, where a cap
-          would be wrong. */}
+          Capped to the viewport and scrollable *only* where it's sticky: the profile, Financial
+          Pace, exploration choices and conversation run taller than the screen, and a sticky
+          element taller than its viewport leaves its own bottom permanently out of reach. Below
+          xl it's in normal flow, where a cap would be wrong. */}
       {hasData && (
         <aside
           className="xl:sticky xl:overflow-y-auto xl:max-h-[var(--rail-max-h)] min-w-0"
@@ -812,6 +820,7 @@ export default function SpendAnalyzer({ onTabChange, demoMode }) {
             onGenerate={() => insightsMutation.mutate(scopePayload)}
             onClear={() => clearInsightsMutation.mutate()}
             onSendChat={handleSendChat}
+            onExplore={handleExplore}
             onChatInput={setChatInput}
             onOpenSettings={onTabChange ? () => onTabChange('settings') : undefined}
           />
