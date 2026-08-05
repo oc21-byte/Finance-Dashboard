@@ -14,7 +14,14 @@ import { createSpendInsightGeneration, normalizeSpendInsightRecord } from './spe
 import { buildFinanceAnalysis } from './financeAnalysis.js'
 import { createFinanceChatBinding, createFinanceChatTurn } from './financeChat.js'
 import { createFinanceInsightGeneration, normalizeFinanceInsightRecord } from './financeInsightGeneration.js'
+import { buildDashboardAnalysis } from './dashboardAnalysis.js'
+import { createDashboardChatBinding, createDashboardChatTurn } from './dashboardChat.js'
+import { createDashboardInsightGeneration, normalizeDashboardInsightRecord } from './dashboardInsightGeneration.js'
 import { bankFlowOf } from '../src/constants/financeRules.js'
+import {
+  HISTORY_VERSION, rebuildHistory, valueHoldingsAsOf, buildEntry,
+  cashAsOf, statementChecks, sortedBalances, deriveOpeningBalance, ledgerCoverageEnd,
+} from './netWorthHistory.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DB_PATH = path.join(__dirname, '../data/db.json')
@@ -34,6 +41,9 @@ const DEFAULT_DB = {
   // The same, for the Finances tab. `ensureDb()` back-fills any key missing from an existing
   // db.json, so adding this needs no migration.
   financeInsights: null,
+  // And for the Dashboard. Three separate keys on purpose: they answer different questions over
+  // different scopes, and refreshing one must not invalidate another's conversation.
+  dashboardInsights: null,
   settings: {
     claudeApiKey: '',
     openaiApiKey: '',
@@ -48,6 +58,20 @@ const DEFAULT_DB = {
     // Off by default: a card credit already shows up as a smaller card bill on the bank side,
     // so counting it as income too would double-count it. See Finances for the full note.
     countCardCreditsAsIncome: false,
+    // Shape version of `netWorthHistory`. Starts at 0 so an existing db.json — whose points were
+    // built by the old cost-basis, frozen-savings logic — rebuilds once against HISTORY_VERSION.
+    netWorthHistoryVersion: 0,
+    // Cash is the chequing account the imported statements describe, so the STATEMENTS are the
+    // authority on it and `cashBalance` above is a DERIVED cache of `cashAsOf(today)` — kept in
+    // settings because goal links, the LLM prompts and the Goals tab all read it directly.
+    //
+    // There is no way to type a cash balance anywhere in the app, and that is deliberate. What the
+    // user supplies is the closing balance printed on each statement — [{ date, balance, source }],
+    // oldest first — and cash is that figure plus every row since. Discrepancies are DERIVED by
+    // `statementChecks` on read, never stored: an earlier design froze them at entry time, and a
+    // corrected ledger could not recompute them.
+    cashOpeningBalance: null,
+    statementBalances: [],
   },
 }
 
@@ -288,6 +312,62 @@ async function fetchPrices(tickers) {
   return Object.fromEntries(entries)
 }
 
+// Monthly closes for the last 5 years, used to value historical holdings when rebuilding net
+// worth history. Same Yahoo endpoint as `fetchPrices`, coarser interval: each bar's timestamp is
+// the month it opened and its close is that month's last traded price, which is what a month-end
+// snapshot wants.
+//
+// Returns { TICKER: { 'YYYY-MM': close } }. Any failure yields no entry for that ticker rather
+// than throwing — `valueHoldingsAsOf` falls the holding back to cost basis and downgrades the
+// entry's `basis`, so a Yahoo outage degrades the chart instead of breaking the rebuild.
+async function fetchHistoricalPrices(tickers) {
+  const unique = [...new Set(tickers.filter(Boolean).map(t => t.toUpperCase()))]
+  if (!unique.length) return {}
+  const entries = await Promise.all(
+    unique.map(async (ticker) => {
+      try {
+        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1mo&range=5y`
+        const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
+        if (!r.ok) return [ticker, null]
+        const data = await r.json()
+        const result = data?.chart?.result?.[0]
+        const stamps = result?.timestamp ?? []
+        const closes = result?.indicators?.quote?.[0]?.close ?? []
+        if (!stamps.length) return [ticker, null]
+        const byMonth = {}
+        stamps.forEach((ts, i) => {
+          const close = closes[i]
+          if (close === null || close === undefined) return
+          byMonth[new Date(ts * 1000).toISOString().slice(0, 7)] = close
+        })
+        return [ticker, Object.keys(byMonth).length ? byMonth : null]
+      } catch {
+        return [ticker, null]
+      }
+    })
+  )
+  return Object.fromEntries(entries.filter(([, v]) => v !== null))
+}
+
+/**
+ * Build the `priceOf(ticker, yyyymm)` lookup that the history module expects.
+ *
+ * Months before a ticker's earliest bar have no close, so the nearest EARLIER month is carried
+ * forward rather than returning null — otherwise a holding bought mid-history would flicker
+ * between market and cost basis from month to month and fake a return each time it did.
+ */
+function historicalPriceLookup(history, livePrices = {}) {
+  return (ticker, yyyymm) => {
+    const series = history[ticker]
+    if (!series) return livePrices[ticker] ?? null
+    if (!yyyymm) return livePrices[ticker] ?? null
+    if (series[yyyymm] !== undefined) return series[yyyymm]
+    const earlier = Object.keys(series).filter(m => m < yyyymm).sort()
+    if (earlier.length) return series[earlier[earlier.length - 1]]
+    return null
+  }
+}
+
 app.get('/api/prices', async (req, res) => {
   const tickers = (req.query.tickers || '').split(',').filter(Boolean)
   res.json(await fetchPrices(tickers))
@@ -510,10 +590,61 @@ app.get('/api/settings', (req, res) => {
 
 app.put('/api/settings', (req, res) => {
   const db = readDb()
+  const previousCash = db.settings?.cashBalance ?? 0
   db.settings = { ...db.settings, ...req.body }
+
+  // `cashBalance` is a cache of a derivation, never an input. A client that PUTs one is ignored
+  // rather than obeyed — there is no field for it in the UI, and honouring a stray value would
+  // reintroduce exactly the typed-balance drift this model exists to remove.
+  db.settings.cashBalance = cashAsOf(cashSourcesFor(db), new Date().toISOString().slice(0, 10))
+  // Statement balances arrive here as a whole array. Normalized at the door so a malformed entry
+  // cannot poison every downstream derivation.
+  if ('statementBalances' in (req.body ?? {})) {
+    db.settings.statementBalances = sortedBalances(req.body.statementBalances ?? [])
+  }
+
   writeDb(db)
   const { claudeApiKey, openaiApiKey, ...rest } = db.settings
   res.json({ ...rest, hasClaudeApiKey: !!(claudeApiKey), hasOpenaiApiKey: !!(openaiApiKey) })
+})
+
+// Where cash comes from, in one place: the opening anchor, the reconciliations, and the rows.
+function cashSourcesFor(db) {
+  return {
+    opening: db.settings?.cashOpeningBalance ?? null,
+    statementBalances: db.settings?.statementBalances ?? [],
+    bankRows: (db.transactions ?? []).filter(t => t.date),
+  }
+}
+
+// How fresh the derived cash figure is. The chequing balance is only knowable up to the last
+// statement plus whatever the user has reconciled since, so the UI states an "as of" date rather
+// than implying it knows today.
+app.get('/api/cash-status', (req, res) => {
+  const db = readDb()
+  const sources = cashSourcesFor(db)
+  const today = new Date().toISOString().slice(0, 10)
+  const coverageEnd = ledgerCoverageEnd(sources.bankRows)
+  const balances = sortedBalances(sources.statementBalances)
+  const lastStatement = balances[balances.length - 1] ?? null
+  // Cash is only knowable to the newest statement; anything after it is rows the user typed.
+  const asOf = lastStatement?.date ?? coverageEnd ?? null
+  // Derived here rather than stored, and shipped to the client so the waterfall decomposes against
+  // the same figures this card reports. One computation, two readers.
+  const checks = statementChecks(sources)
+  res.json({
+    balance: cashAsOf(sources, today),
+    opening: sources.opening,
+    ledgerCoverageEnd: coverageEnd,
+    asOf,
+    uncoveredDays: coverageEnd ? Math.max(0, Math.round((new Date(today) - new Date(coverageEnd)) / 86400000)) : null,
+    lastStatement,
+    statementCount: balances.length,
+    checks,
+    // Discrepancies inside ledger coverage are short imports; ones past it are statements whose
+    // rows were never brought in at all.
+    unexplained: checks.filter(c => !c.beyondLedger).reduce((s, c) => s + c.discrepancy, 0),
+  })
 })
 
 // Wipe every top-level collection and restore default settings (including API keys).
@@ -1043,43 +1174,10 @@ async function callLLM({ system, userMessages, maxTokens, vision = false, smart 
   }
 }
 
-app.post('/api/llm/insights', async (req, res) => {
-  const db = readDb()
-  const { aiProvider = 'claude', claudeApiKey, openaiApiKey } = db.settings
-  const hasKey = aiProvider === 'openai' ? !!openaiApiKey : !!claudeApiKey
-  if (!hasKey) return res.status(400).json({ error: 'No AI API key configured. Add one in Settings.' })
-
-  const fin = buildMonthlyFinancials(db)
-  const priceMap = await fetchPrices(tickersForGoalLinks(db))
-  const goalSummaries = db.goals.map(g => {
-    const { currentAmount } = computeGoalProgress(db, g, priceMap)
-    return `${g.name}: $${currentAmount} of $${g.targetAmount} (${g.targetAmount > 0 ? Math.round(currentAmount / g.targetAmount * 100) : 0}%)` +
-      (g.monthlySavings ? `, saving $${g.monthlySavings}/mo` : '')
-  }).join('\n')
-
-  const userMsg = `Financial data (monthly averages):
-${formatMonthlyFinancials(fin)}
-Net monthly cash flow (income − expenses): $${fin.income - fin.expenses}
-
-Goals:
-${goalSummaries || 'No goals set'}
-
-Return ONLY a valid JSON array of exactly 3 strings. Each string is one concise, actionable insight (1–2 sentences). No markdown, no wrapping object — just the array.`
-
-  let raw = null
-  try {
-    const text = await callLLM({
-      system: `You are a personal finance assistant. ${todayLine()} You always respond with valid JSON only.`,
-      userMessages: [{ role: 'user', content: userMsg }],
-      maxTokens: 512,
-    })
-    raw = text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
-    const insights = JSON.parse(raw)
-    res.json({ insights })
-  } catch (err) {
-    failure(res, 'LLM insights error', err, { detail: raw })
-  }
-})
+// `POST /api/llm/insights` lived here: three free-form strings from one unvalidated model call,
+// with every number in them written by the model. It was the Dashboard's only caller and is
+// replaced by the deterministic triad below (`/api/llm/dashboard-insights`), where the figures come
+// from `buildDashboardAnalysis` and the model contributes wording alone.
 
 app.post('/api/llm/categorize', async (req, res) => {
   const db = readDb()
@@ -1179,7 +1277,7 @@ ${tl.verdict}${tl.growthVerdict ? `\nOptimistic projection (assumes investment/i
 All goals:
 ${allGoalsSummary || '  No other goals'}
 
-Net worth snapshot:
+Liquid net worth snapshot (cash + savings + investments; excludes property, vehicles, private shares, and debts):
 ${netWorthSummary}
 
 ${formatMonthlyFinancials(fin)}${volatilityNote}
@@ -1473,6 +1571,82 @@ app.post('/api/llm/finance-chat', async (req, res) => {
   }
 })
 
+// The Dashboard triad. Structurally identical to the two above — same replace-wholesale storage,
+// same re-read before appending a chat reply — over BALANCES rather than a ledger. Everything it
+// quotes comes from `src/utils/liquidNetWorth.js`, the same module the cards render from, which is
+// what makes an insight agreeing with the KPI strip structural rather than a coincidence.
+function saveDashboardInsights(record) {
+  const db = readDb()
+  db.dashboardInsights = record
+  writeDb(db)
+  return db.dashboardInsights
+}
+
+// Everything the deterministic analysis needs, assembled from the db. Kept in one place because
+// the insight route and the chat route MUST see the same figures — a chat reply computed from a
+// different cash basis than the insights above it is the exact failure the triad exists to prevent.
+async function dashboardAnalysisInputs(db, insightScope) {
+  const priceMap = await fetchPrices((db.holdings ?? []).map(h => h.ticker).filter(Boolean))
+  const today = new Date().toISOString().slice(0, 10)
+  return {
+    netWorthHistory: db.netWorthHistory ?? [],
+    bankTransactions: (db.transactions ?? []).filter(t => t.date),
+    // Linked goals derive their balance from the accounts they point at, so the stored
+    // `currentAmount` is stale for them. Use the same computation `/api/goals` serves the UI.
+    goals: (db.goals ?? []).map(goal => ({
+      ...goal,
+      currentAmount: computeGoalProgress(db, goal, priceMap).currentAmount,
+    })),
+    savingsAccounts: db.savings_accounts ?? [],
+    holdings: db.holdings ?? [],
+    prices: priceMap,
+    // The statements are the authority on chequing, not `settings.cashBalance`, which is a cache.
+    cash: cashAsOf(cashSourcesFor(db), today),
+    checks: statementChecks(cashSourcesFor(db)),
+    settings: db.settings ?? {},
+    insightScope,
+    asOf: today,
+  }
+}
+
+app.get('/api/dashboard-insights', (req, res) => {
+  const db = readDb()
+  res.json(normalizeDashboardInsightRecord(db.dashboardInsights ?? null))
+})
+
+app.delete('/api/dashboard-insights', (req, res) => {
+  const db = readDb()
+  db.dashboardInsights = null
+  writeDb(db)
+  res.json(null)
+})
+
+app.post('/api/llm/dashboard-insights', async (req, res) => {
+  const db = readDb()
+  const { aiProvider = 'claude', claudeApiKey, openaiApiKey } = db.settings
+  const hasKey = aiProvider === 'openai' ? !!openaiApiKey : !!claudeApiKey
+  if (!hasKey) return res.status(400).json({ error: 'No AI API key configured. Add one in Settings.' })
+
+  const { period, scope, periodLabel } = readScopeBody(req.body)
+  const analysis = buildDashboardAnalysis(await dashboardAnalysisInputs(db, scope))
+  const generation = createDashboardInsightGeneration({ analysis, period, periodLabel, scope })
+
+  let raw = null
+  try {
+    const text = await callLLM({
+      system: generation.prompt.system,
+      userMessages: [{ role: 'user', content: generation.prompt.user }],
+      maxTokens: generation.prompt.maxTokens,
+    })
+    raw = text
+    const result = generation.complete(text, new Date().toISOString())
+    saveDashboardInsights(result)
+    res.json(result)
+  } catch (err) {
+    failure(res, 'LLM dashboard-insights error', err, { detail: raw })
+  }
+})
+
 app.post('/api/llm/dashboard-chat', async (req, res) => {
   const db = readDb()
   const { aiProvider = 'claude', claudeApiKey, openaiApiKey } = db.settings
@@ -1481,35 +1655,58 @@ app.post('/api/llm/dashboard-chat', async (req, res) => {
 
   const { messages = [] } = req.body
   if (!messages.length) return res.status(400).json({ error: 'No messages provided' })
+  if (![...messages].reverse().some(message => message.role === 'user' && message.content?.trim())) {
+    return res.status(400).json({ error: 'No user message provided' })
+  }
 
-  const fin = buildMonthlyFinancials(db)
+  const { period, scope: requestScope } = readScopeBody(req.body)
 
-  const goalLines = db.goals.map(g => {
-    const pct = g.targetAmount > 0 ? Math.round(g.currentAmount / g.targetAmount * 100) : 0
-    return `  ${g.name}: $${g.currentAmount} / $${g.targetAmount} (${pct}%)${g.monthlySavings ? `, saving $${g.monthlySavings}/mo` : ''}`
-  }).join('\n')
+  // The stored record owns the conversational scope, so re-scoping the page while a question is in
+  // flight still gets an answer about what was asked. See `chatBinding.js`.
+  const binding = createDashboardChatBinding({ record: db.dashboardInsights, period, requestScope })
+  const { storedInsights, scope } = binding
+  const analysis = buildDashboardAnalysis(await dashboardAnalysisInputs(db, scope))
+  const turn = createDashboardChatTurn({ analysis, storedInsights, messages })
 
-  const cashBalance = db.settings.cashBalance ?? 0
-  const savingsTotal = (db.savings_accounts ?? []).reduce((s, a) => s + a.balance, 0)
-  const portfolioValue = (db.holdings ?? []).reduce((s, h) => s + h.purchasePrice * h.shares, 0)
-  const netWorth = cashBalance + savingsTotal + portfolioValue
-
-  const systemMsg = `You are a personal finance assistant. ${todayLine()} Here is the user's current financial picture:
-
-Net worth: $${netWorth.toFixed(2)} (Cash: $${cashBalance.toFixed(2)}, Savings: $${savingsTotal.toFixed(2)}, Portfolio cost basis: $${portfolioValue.toFixed(2)})
-
-${formatMonthlyFinancials(fin)}
-
-Goals:
-${goalLines || '  No goals set'}
-
-Be concise and specific. Answer in 2–4 sentences.`
-
+  let rawIntent = null
+  let rawAdvice = null
   try {
-    const text = await callLLM({ system: systemMsg, userMessages: messages, maxTokens: 512 })
-    res.json({ reply: text.trim() })
+    let reply = turn.directReply
+    if (!reply) {
+      const intentText = await callLLM({
+        system: turn.intentPrompt.system,
+        userMessages: [{ role: 'user', content: turn.intentPrompt.user }],
+        maxTokens: turn.intentPrompt.maxTokens,
+      })
+      rawIntent = intentText
+      const outcome = turn.completeIntent(intentText)
+      if (outcome.type === 'advice') {
+        const adviceText = await callLLM({
+          system: outcome.prompt.system,
+          userMessages: outcome.prompt.messages,
+          maxTokens: outcome.prompt.maxTokens,
+        })
+        rawAdvice = adviceText
+        reply = turn.completeAdvice(adviceText)
+      } else {
+        reply = outcome.reply
+      }
+    }
+
+    // Appended only when the stored insights still describe the scope being discussed.
+    const fresh = readDb()
+    if (binding.canAppend(fresh.dashboardInsights)) {
+      fresh.dashboardInsights.messages = [
+        ...(fresh.dashboardInsights.messages ?? []),
+        turn.userMessage,
+        { role: 'assistant', content: reply },
+      ]
+      writeDb(fresh)
+    }
+
+    res.json({ reply })
   } catch (err) {
-    failure(res, 'LLM dashboard-chat error', err)
+    failure(res, 'LLM dashboard-chat error', err, { detail: rawAdvice ?? rawIntent })
   }
 })
 
@@ -1557,7 +1754,7 @@ ${tl.verdict}${tl.growthVerdict ? `\nOptimistic projection (assumes investment/i
 All goals:
 ${allGoalLines || '  No other goals'}
 
-Net worth: Cash $${cashBalance.toFixed(2)}, Savings $${savingsTotal.toFixed(2)}, Portfolio cost basis $${portfolioValue.toFixed(2)}
+Liquid net worth: Cash $${cashBalance.toFixed(2)}, Savings $${savingsTotal.toFixed(2)}, Portfolio cost basis $${portfolioValue.toFixed(2)}
 
 ${formatMonthlyFinancials(fin)}
 
@@ -1859,28 +2056,136 @@ Return valid JSON only, no markdown.`,
 })
 
 // --- Net Worth History ---
+//
+// Three routes over the one derivation in `netWorthHistory.js`:
+//
+//   snapshot — overwrite today's point with live-priced balances (every Dashboard mount)
+//   backfill — add month-end points for months that have none yet (every mount; usually a no-op)
+//   rebuild  — recompute every point from scratch, once, when the stored shape is out of date
+//
+// The route paths and the `netWorthHistory` key keep their original names even though the UI now
+// calls the metric "liquid net worth". They are persisted contracts; renaming them would cost a
+// db migration and buy nothing a user can see.
 
-app.post('/api/net-worth-snapshot', (req, res) => {
-  const db = readDb()
-  const cash = db.settings.cashBalance ?? 0
-  const savings = (db.savings_accounts ?? []).reduce((s, a) => s + a.balance, 0)
-  const portfolio = (db.holdings ?? []).reduce((s, h) => s + h.shares * h.purchasePrice, 0)
-  const netWorth = Math.round((cash + savings + portfolio) * 100) / 100
-  const breakdown = {
-    cash: Math.round(cash * 100) / 100,
-    savings: Math.round(savings * 100) / 100,
-    portfolio: Math.round(portfolio * 100) / 100,
+// Live and monthly-historical prices for everything held, fetched together. Both are needed on
+// any path that touches more than today: `historicalPriceLookup` falls back to the live price for
+// a ticker Yahoo has no monthly series for.
+async function priceLookupForHoldings(db) {
+  const tickers = (db.holdings ?? []).map(h => h.ticker).filter(Boolean)
+  const [live, historical] = await Promise.all([
+    fetchPrices(tickers),
+    fetchHistoricalPrices(tickers),
+  ])
+  return historicalPriceLookup(historical, live)
+}
+
+async function computeHistory(db, today, keepDates) {
+  const sources = cashSourcesFor(db)
+  return rebuildHistory({
+    transactions: db.transactions ?? [],
+    holdings: db.holdings ?? [],
+    savingsAccounts: db.savings_accounts ?? [],
+    opening: sources.opening,
+    statementBalances: sources.statementBalances,
+    today,
+    keepDates,
+    priceOf: await priceLookupForHoldings(db),
+  })
+}
+
+/**
+ * Establish the cash anchor for a db that predates it, in place, returning whether anything moved.
+ *
+ * Two jobs. First, seed `cashOpeningBalance` by running the earliest balance we ever recorded
+ * backwards to the start of the ledger — the six months before that first entry have no anchor at
+ * all otherwise.
+ *
+ * Second, convert the legacy `cashBalanceHistory` observations into reconciliations. Those were
+ * harvested from DAILY SNAPSHOTS, so a value repeats for every day the user simply had not
+ * re-typed it; only the first date of each run is a real edit, and treating the repeats as
+ * observations pins the balance flat across days when money genuinely moved. Runs are collapsed
+ * to their first date, and a value that survives a single day before reversing is dropped as a
+ * typo rather than enshrined as fact.
+ */
+function migrateCashModel(db) {
+  const settings = db.settings ?? {}
+  // The array rename runs even for a db that already has an opening balance — the anchor is fine,
+  // it is the storage key underneath it that moved.
+  if (settings.cashReconciliations && !settings.statementBalances?.length) {
+    settings.statementBalances = sortedBalances(
+      settings.cashReconciliations.map(r => ({ date: r.date, balance: r.balance, source: 'typed' })),
+    )
+    delete settings.cashReconciliations
   }
+  if (settings.cashOpeningBalance) return false
+
+  const bankRows = (db.transactions ?? []).filter(t => t.date)
+  if (!bankRows.length) return false
+  const openingDate = bankRows.map(t => t.date).sort()[0]
+
+  const legacy = (settings.cashBalanceHistory ?? [])
+    .filter(o => o?.date && Number.isFinite(o.balance))
+    .sort((a, b) => a.date.localeCompare(b.date))
+
+  const edits = []
+  let prev = null
+  for (const o of legacy) {
+    if (o.balance !== prev) { edits.push(o); prev = o.balance }
+  }
+  // A balance that lasts one day and then reverses is a mis-key, not a reconciliation.
+  const real = edits.filter((o, i) => {
+    const next = edits[i + 1]
+    const prevEdit = edits[i - 1]
+    if (!next || !prevEdit) return true
+    const oneDay = (new Date(next.date) - new Date(o.date)) / 86400000 <= 1
+    const reverses = Math.sign(o.balance - prevEdit.balance) !== Math.sign(next.balance - o.balance)
+    const large = Math.abs(o.balance - prevEdit.balance) > 10000
+    return !(oneDay && reverses && large)
+  })
+
+  const anchor = real[0]
+  settings.cashOpeningBalance = anchor
+    ? deriveOpeningBalance(bankRows, anchor.date, anchor.balance, openingDate)
+    : deriveOpeningBalance(bankRows, ledgerCoverageEnd(bankRows), settings.cashBalance ?? 0, openingDate)
+
+  // Every balance ever recorded becomes a dated anchor. They were typed rather than read off a
+  // statement, so they are carried with `source: 'typed'` — the Settings list marks them as
+  // unverified, because a round number someone estimated is not a bank-issued figure and the app
+  // should not present it as one.
+  settings.statementBalances = sortedBalances(
+    [...real, ...(settings.cashReconciliations ?? [])]
+      .map(o => ({ date: o.date, balance: o.balance, source: 'typed' })),
+  )
+  delete settings.cashBalanceHistory
+  delete settings.cashReconciliations
+
+  const today = new Date().toISOString().slice(0, 10)
+  settings.cashBalance = cashAsOf(
+    { opening: settings.cashOpeningBalance, statementBalances: settings.statementBalances, bankRows },
+    today,
+  )
+  return true
+}
+
+app.post('/api/net-worth-snapshot', async (req, res) => {
+  const db = readDb()
   const date = new Date().toISOString().slice(0, 10)
+  const prices = await fetchPrices((db.holdings ?? []).map(h => h.ticker).filter(Boolean))
+  const { market, cost, basis } = valueHoldingsAsOf(db.holdings ?? [], date, t => prices[t] ?? null)
+  const entry = buildEntry({
+    date,
+    // Derived, not the cached settings value: the ledger is the authority on chequing.
+    cash: cashAsOf(cashSourcesFor(db), date),
+    savings: (db.savings_accounts ?? []).reduce((s, a) => s + (a.balance ?? 0), 0),
+    market,
+    cost,
+    basis,
+  })
 
   if (!db.netWorthHistory) db.netWorthHistory = []
   const idx = db.netWorthHistory.findIndex(e => e.date === date)
-  const entry = { date, netWorth, breakdown }
-  if (idx !== -1) {
-    db.netWorthHistory[idx] = entry
-  } else {
-    db.netWorthHistory.push(entry)
-  }
+  if (idx !== -1) db.netWorthHistory[idx] = entry
+  else db.netWorthHistory.push(entry)
   writeDb(db)
   res.json(entry)
 })
@@ -1891,71 +2196,51 @@ app.get('/api/net-worth-history', (req, res) => {
   res.json(history)
 })
 
-app.post('/api/net-worth-backfill', (req, res) => {
+app.post('/api/net-worth-backfill', async (req, res) => {
   const db = readDb()
-  const bankTxns = db.transactions ?? []
-  const allTxns = [...bankTxns, ...(db.credit_card_transactions ?? [])]
-  if (!allTxns.length) return res.json({ added: 0 })
+  const dated = (db.transactions ?? []).filter(t => t.date)
+  if (!dated.length) return res.json({ added: 0 })
 
   const today = new Date().toISOString().slice(0, 10)
-  const earliestDate = allTxns.map(t => t.date).sort()[0]
-
-  // Skip months that already have any snapshot
   const existingMonths = new Set((db.netWorthHistory ?? []).map(e => e.date.slice(0, 7)))
 
-  const currentCash = db.settings?.cashBalance ?? 0
-  const currentSavings = (db.savings_accounts ?? []).reduce((s, a) => s + (a.balance ?? 0), 0)
+  // Derive the full series, then keep only the months that have no point at all. Existing points
+  // are never touched here — correcting stale ones is `rebuild`'s job, and doing it silently on
+  // every mount would rewrite history behind the user's back.
+  const derived = await computeHistory(db, today, [])
+  const added = derived.filter(e => !existingMonths.has(e.date.slice(0, 7)))
+  if (!added.length) return res.json({ added: 0 })
 
-  const added = []
-  let year = parseInt(earliestDate.slice(0, 4))
-  let month = parseInt(earliestDate.slice(5, 7))
-  const [todayYear, todayMonth] = today.split('-').map(Number)
+  db.netWorthHistory = [...(db.netWorthHistory ?? []), ...added]
+    .sort((a, b) => a.date.localeCompare(b.date))
+  writeDb(db)
+  res.json({ added: added.length, dates: added.map(e => e.date) })
+})
 
-  while (year < todayYear || (year === todayYear && month <= todayMonth)) {
-    const ym = `${year}-${String(month).padStart(2, '0')}`
-    if (!existingMonths.has(ym)) {
-      const daysInMonth = new Date(year, month, 0).getDate()
-      const lastDay = `${ym}-${String(daysInMonth).padStart(2, '0')}`
-      const targetDate = lastDay > today ? today : lastDay
-
-      // Cash: work backwards from current balance using bank transactions after this date
-      const cashAdjustment = bankTxns
-        .filter(t => t.date > targetDate)
-        .reduce((s, t) => s + (t.amount ?? 0), 0)
-      const cashAtDate = Math.round((currentCash - cashAdjustment) * 100) / 100
-
-      // Portfolio: holdings (and lots) with purchaseDate on or before this date
-      const portfolioAtDate = Math.round(
-        (db.holdings ?? []).reduce((sum, h) => {
-          if (h.purchases?.length) {
-            return sum + h.purchases
-              .filter(p => (p.purchaseDate ?? '') <= targetDate)
-              .reduce((s, p) => s + (p.shares ?? 0) * (p.purchasePrice ?? 0), 0)
-          }
-          return (h.purchaseDate ?? '') <= targetDate
-            ? sum + (h.shares ?? 0) * (h.purchasePrice ?? 0)
-            : sum
-        }, 0) * 100
-      ) / 100
-
-      const netWorth = Math.round((cashAtDate + currentSavings + portfolioAtDate) * 100) / 100
-      const entry = {
-        date: targetDate,
-        netWorth,
-        breakdown: { cash: cashAtDate, savings: currentSavings, portfolio: portfolioAtDate },
-      }
-      if (!db.netWorthHistory) db.netWorthHistory = []
-      db.netWorthHistory.push(entry)
-      existingMonths.add(ym)
-      added.push(targetDate)
-    }
-
-    month++
-    if (month > 12) { month = 1; year++ }
+// Recompute every point. Guarded by `settings.netWorthHistoryVersion` so the Dashboard can call
+// it unconditionally on mount and have it run exactly once per shape change — the version check
+// lives here rather than in the client because HISTORY_VERSION does. `?force=1` re-runs it, which
+// is the escape hatch after editing holdings or savings balances by hand.
+app.post('/api/net-worth-rebuild', async (req, res) => {
+  const db = readDb()
+  const force = req.query.force === '1' || req.body?.force === true
+  const stored = db.settings?.netWorthHistoryVersion ?? 0
+  if (!force && stored >= HISTORY_VERSION) {
+    return res.json({ rebuilt: 0, skipped: true, version: stored })
   }
 
-  if (added.length > 0) writeDb(db)
-  res.json({ added: added.length, dates: added })
+  const today = new Date().toISOString().slice(0, 10)
+  // Establish the cash anchor before deriving anything from it.
+  migrateCashModel(db)
+  // Carry the existing dates forward so a rebuild keeps the daily granularity the 30-day delta
+  // and the KPI sparkline read from; only the values are recomputed.
+  const keepDates = (db.netWorthHistory ?? []).map(e => e.date)
+  const history = await computeHistory(db, today, keepDates)
+
+  db.netWorthHistory = history
+  db.settings.netWorthHistoryVersion = HISTORY_VERSION
+  writeDb(db)
+  res.json({ rebuilt: history.length, skipped: false, version: HISTORY_VERSION })
 })
 
 // --- Shutdown ---

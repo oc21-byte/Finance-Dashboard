@@ -1,6 +1,53 @@
 import { useState } from 'react'
 import dayjs from 'dayjs'
 
+// Optional, and stated as optional: a user importing three old statements at once should not be
+// blocked because they only have the newest one to hand. Entering it buys the check and an anchor;
+// skipping it leaves the import exactly as it behaved before.
+function ClosingBalance({ closing, check, onChange }) {
+  const off = check && Math.abs(check.discrepancy) >= 0.5
+  return (
+    <div className="ml-6 mt-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-gray-400">Statement ended</span>
+        <input
+          type="date"
+          value={closing.date ?? ''}
+          onChange={e => onChange({ date: e.target.value })}
+          className="rounded-lg border border-gray-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-violet-500"
+        />
+        <span className="text-xs text-gray-400">at</span>
+        <input
+          type="number"
+          step="0.01"
+          inputMode="decimal"
+          placeholder="closing balance"
+          value={closing.balance ?? ''}
+          onChange={e => onChange({ balance: e.target.value })}
+          className="w-36 rounded-lg border border-gray-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-violet-500"
+        />
+        <span className="text-[11px] text-gray-300">optional</span>
+      </div>
+
+      {check && (
+        off ? (
+          <p className="mt-1.5 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-800">
+            These rows come to <strong className="font-semibold">{money(check.expected)}</strong>, not{' '}
+            <strong className="font-semibold">{money(check.balance)}</strong> — a{' '}
+            {check.discrepancy < 0 ? '−' : '+'}{money(Math.abs(check.discrepancy))} gap since{' '}
+            {formatDate(check.from)}. A row may be missing from the parse, or one may be unticked
+            below as a duplicate when it is not. You can import anyway and fix it later.
+          </p>
+        ) : (
+          <p className="mt-1.5 text-[11px] text-emerald-600">
+            ✓ Reconciles with every transaction since {formatDate(check.from)}.
+          </p>
+        )
+      )}
+    </div>
+  )
+}
+
 function money(n) {
   return `$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
@@ -23,6 +70,9 @@ export default function BulkImportReviewModal({
   onCancel,
   onRemap,
   busy = false,
+  // Bank only. A credit-card statement's closing balance is what you OWE, which has nothing to do
+  // with the chequing figure `cashAsOf` derives, so the Spend Analyzer never passes this.
+  onExpectedBalance = null,
 }) {
   // Rows carry a stable id so selection survives removing other rows.
   const [groups, setGroups] = useState(() => initialGroups.map(g => ({
@@ -38,6 +88,17 @@ export default function BulkImportReviewModal({
     }
     return initial
   })
+
+  // Per group: the closing balance printed on that statement, and the date it closed. Defaulted to
+  // the newest row, which is where a statement almost always ends.
+  const [closings, setClosings] = useState(() => Object.fromEntries(initialGroups.map(g => [
+    g.id,
+    { date: g.transactions.map(t => t.date).filter(Boolean).sort().pop() ?? '', balance: '' },
+  ])))
+
+  function setClosing(id, patch) {
+    setClosings(prev => ({ ...prev, [id]: { ...prev[id], ...patch } }))
+  }
 
   const [expanded, setExpanded] = useState(() =>
     new Set(initialGroups.length === 1 ? initialGroups.map(g => g.id) : []),
@@ -91,16 +152,43 @@ export default function BulkImportReviewModal({
   const duplicateTotal = groups.reduce((s, g) => s + g.transactions.filter(tx => tx.duplicateOf).length, 0)
   const grand = totals(ready.flatMap(selectedOf))
 
+  // The check that makes an import verifiable: the previous statement's closing balance, plus every
+  // row since — imported and incoming — against what this statement says it ended at. A mismatch
+  // means a row is missing or one was wrongly dismissed as a duplicate, and here is the only moment
+  // the user can still do something about it without hunting through months of history.
+  function checkFor(group) {
+    if (!onExpectedBalance) return null
+    const closing = closings[group.id] ?? {}
+    const typed = Number(closing.balance)
+    if (!closing.date || closing.balance === '' || !Number.isFinite(typed)) return null
+    const result = onExpectedBalance(closing.date, selectedOf(group))
+    if (!result) return null
+    return { ...result, balance: typed, discrepancy: Math.round((typed - result.expected) * 100) / 100 }
+  }
+
+  const mismatched = groups.filter(g => {
+    const check = checkFor(g)
+    return check && Math.abs(check.discrepancy) >= 0.5
+  })
+
   function handleConfirm() {
     if (!ready.length || busy) return
-    onConfirm(ready.map(g => ({
-      ...g,
-      sourceName: g.sourceName.trim(),
-      transactions: selectedOf(g).map(({ _rid, duplicateOf, ...tx }) => ({
-        ...tx,
-        source: g.sourceName.trim(),
+    onConfirm(
+      ready.map(g => ({
+        ...g,
+        sourceName: g.sourceName.trim(),
+        transactions: selectedOf(g).map(({ _rid, duplicateOf, ...tx }) => ({
+          ...tx,
+          source: g.sourceName.trim(),
+        })),
       })),
-    })))
+      // Balances travel alongside so a verified import records its own anchor. Blank ones are
+      // dropped rather than stored as zero.
+      ready
+        .map(g => closings[g.id])
+        .filter(c => c?.date && c.balance !== '' && Number.isFinite(Number(c.balance)))
+        .map(c => ({ date: c.date, balance: Number(c.balance), source: 'statement' })),
+    )
   }
 
   return (
@@ -177,6 +265,14 @@ export default function BulkImportReviewModal({
                         {selected.length === group.transactions.length ? 'Untick all' : 'Tick all'}
                       </button>
                     </div>
+
+                    {onExpectedBalance && (
+                      <ClosingBalance
+                        closing={closings[group.id] ?? {}}
+                        check={checkFor(group)}
+                        onChange={patch => setClosing(group.id, patch)}
+                      />
+                    )}
                   </div>
 
                   <div className="flex items-center gap-2 shrink-0">
@@ -279,7 +375,14 @@ export default function BulkImportReviewModal({
 
         <div className="px-6 py-4 border-t border-gray-100 flex items-center justify-between gap-3 shrink-0 flex-wrap">
           <div className="text-sm text-gray-500">
-            {missingNames > 0 ? (
+            {/* Ranked above the totals, and above the source-name nudge, because a naming problem
+                is cosmetic while this one means the numbers about to land are wrong. */}
+            {mismatched.length > 0 ? (
+              <span className="text-amber-700">
+                {mismatched.length} statement{mismatched.length !== 1 ? 's' : ''} do{mismatched.length === 1 ? 'es' : ''} not
+                reconcile — importing anyway is fine, but a row is probably missing
+              </span>
+            ) : missingNames > 0 ? (
               <span className="text-amber-700">
                 {missingNames} file{missingNames !== 1 ? 's' : ''} still need{missingNames === 1 ? 's' : ''} a source name
               </span>

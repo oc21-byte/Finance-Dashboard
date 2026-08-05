@@ -344,7 +344,7 @@ The app is running and your AI key is in. Here's what to do next:
 3. **Upload a credit card statement** — same idea, but on the **Spend Analyzer** tab.
 
 4. **Check the Dashboard** — once you have some transactions in, the Dashboard will start
-   showing your net worth trend, cash flow chart, and (if you set up an AI key) some written
+   showing your liquid net worth trend, where the change came from, and (if you set up an AI key) some written
    insights about your spending.
 
 5. **Set some goals** — head to the **Goals** tab and try the Emergency Fund Calculator at

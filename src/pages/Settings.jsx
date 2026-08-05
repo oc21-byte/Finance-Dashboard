@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import StatementBalances from '../components/settings/StatementBalances.jsx'
 import { api } from '../api/client.js'
 
 const inputClass = 'w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
@@ -25,6 +26,23 @@ export default function Settings() {
   const { data: settings } = useQuery({
     queryKey: ['settings'],
     queryFn: api.settings.get,
+  })
+
+  // Cash is derived from these, so the page needs both the stored anchors and the live checks.
+  const { data: cashStatus = null } = useQuery({
+    queryKey: ['cash-status'],
+    queryFn: api.cashStatus,
+  })
+
+  const saveStatementBalances = useMutation({
+    mutationFn: (statementBalances) => api.settings.update({ statementBalances }),
+    onSuccess: async () => {
+      // Every derived view of cash moves with these, not just settings.
+      await api.netWorth.snapshot()
+      for (const key of [['settings'], ['cash-status'], ['net-worth-history']]) {
+        queryClient.invalidateQueries({ queryKey: key })
+      }
+    },
   })
 
   const { data: uploadHistory = [] } = useQuery({
@@ -405,6 +423,15 @@ export default function Settings() {
         </form>
       </div>
 
+      <div className="mt-4">
+        <StatementBalances
+          balances={settings?.statementBalances ?? []}
+          checks={cashStatus?.checks ?? []}
+          onSave={list => saveStatementBalances.mutate(list)}
+          saving={saveStatementBalances.isPending}
+        />
+      </div>
+
       {/* Row 3: Bank Upload History | Credit Card Upload History */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
         <UploadHistoryPanel
@@ -499,7 +526,7 @@ export default function Settings() {
           <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
             <h3 className="text-lg font-semibold text-gray-900">Reset all data?</h3>
             <p className="text-sm text-gray-600 mt-2 leading-relaxed">
-              This permanently deletes every transaction, holding, goal, savings account, net-worth
+              This permanently deletes every transaction, holding, goal, savings account, liquid net worth
               history, upload history, AI insights, custom categories, and saved settings —
               including your API keys. The app will reload as a blank slate. This cannot be undone.
             </p>

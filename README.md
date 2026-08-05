@@ -1,6 +1,6 @@
 # Finance Dashboard
 
-A personal finance dashboard that runs entirely on your local machine. Track bank transactions, credit card spending, investments, savings goals, and net worth — all stored locally in a single JSON file with no cloud sync or third-party accounts required.
+A personal finance dashboard that runs entirely on your local machine. Track bank transactions, credit card spending, investments, savings goals, and liquid net worth — all stored locally in a single JSON file with no cloud sync or third-party accounts required.
 
 Built with React + Vite (frontend) and Express (backend), with AI features (Claude or ChatGPT) powering PDF statement parsing, transaction categorization, spending insights, and budget generation.
 
@@ -10,7 +10,7 @@ Built with React + Vite (frontend) and Express (backend), with AI features (Clau
 
 | Tab | What it does |
 |---|---|
-| **Dashboard** | Net worth over time, cash flow chart, goal progress, AI insights |
+| **Dashboard** | Liquid net worth over time, where the change came from, composition, goal progress, AI insights |
 | **Finances** | Import bank statements (CSV or PDF), manage transactions, track income vs expenses |
 | **Spend Analyzer** | Credit card spending by category and merchant, Spend Style, Financial Pace, guided insights, exact-data chat, AI recategorization |
 | **Budget** | Per-category spending caps, savings targets, AI-powered Budget Builder |

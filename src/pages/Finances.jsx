@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client.js'
 import { FINANCE_CATEGORIES, FINANCE_CATEGORY_COLORS } from '../constants/categories.js'
@@ -6,7 +6,8 @@ import { processCSVRows } from '../utils/csvHelpers.js'
 import { runImportQueue, sourceNameFromFile } from '../utils/importQueue.js'
 import { annotateDuplicates, duplicateFlags } from '../utils/duplicates.js'
 import { errorStatus } from '../utils/diagnostics.js'
-import { resolvePeriod, filterByRange, describeScope, buildScopeKey } from '../utils/period.js'
+import { resolvePeriod, explicitRange, filterByRange, describeScope, buildScopeKey } from '../utils/period.js'
+import { expectedBalanceAt } from '../utils/liquidNetWorth.js'
 import { applyFinanceFilters, buildFinanceKpis } from '../utils/financeAggregations.js'
 import ErrorBanner from '../components/ErrorBanner.jsx'
 import CsvMappingModal from '../components/CsvMappingModal.jsx'
@@ -32,7 +33,7 @@ const DEMO_BANNER_H = 32
 const NO_FILTERS = { accounts: [], flows: [], payees: [] }
 const FILTER_LABEL = { accounts: 'Account', flows: 'Type', payees: 'Payee' }
 
-export default function Finances({ demoMode, onTabChange }) {
+export default function Finances({ demoMode, onTabChange, handoff }) {
   const fileInputRef = useRef()
   const pendingUploadMetaRef = useRef(null)
   const tableRef = useRef()
@@ -42,6 +43,10 @@ export default function Finances({ demoMode, onTabChange }) {
   const [reviewData, setReviewData] = useState(null)
   const [showAddModal, setShowAddModal] = useState(false)
   const [period, setPeriod] = useState('6M')
+  // An exact window handed over from another tab, which overrides the chips until dismissed. The
+  // Dashboard's waterfall sends the stretch between two cash reconciliations, and no chip can
+  // express that — chips are all anchored to the latest transaction.
+  const [focus, setFocus] = useState(handoff?.range ?? null)
   const [filters, setFilters] = useState(NO_FILTERS)
   const [filterType, setFilterType] = useState('all')
   const [showDuplicatesOnly, setShowDuplicatesOnly] = useState(false)
@@ -54,6 +59,11 @@ export default function Finances({ demoMode, onTabChange }) {
   // The question being awaited. Held locally only so it can be shown immediately; the stored
   // conversation is the source of truth once the reply lands.
   const [pendingQuestion, setPendingQuestion] = useState(null)
+
+  // Track the handoff rather than only seeding from it: arriving from the Dashboard remounts this
+  // page, but navigating here from the nav bar does not, and a stale focus window would then
+  // outlive the request that opened it.
+  useEffect(() => { setFocus(handoff?.range ?? null) }, [handoff])
 
   const { data: transactions = [], isLoading } = useQuery({
     queryKey: ['transactions'],
@@ -93,6 +103,12 @@ export default function Finances({ demoMode, onTabChange }) {
 
   // Persisted server-side so the analysis and its chat survive a tab change (which unmounts this
   // page) and a browser reload. Separate record from the Spend Analyzer's — one per tab.
+  // Only for the import check: it needs the opening anchor the balances hang off.
+  const { data: cashStatus = null } = useQuery({
+    queryKey: ['cash-status'],
+    queryFn: api.cashStatus,
+  })
+
   const { data: financeInsights } = useQuery({
     queryKey: ['finance-insights'],
     queryFn: api.financeInsights.get,
@@ -174,7 +190,13 @@ export default function Finances({ demoMode, onTabChange }) {
 
   const settingsMutation = useMutation({
     mutationFn: (patch) => api.settings.update(patch),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['settings'] }),
+    // A statement balance moves cash, so every derived view of it has to refetch — not just
+    // settings. Harmless for the other patches this mutation carries.
+    onSuccess: () => {
+      for (const key of [['settings'], ['cash-status'], ['net-worth-history']]) {
+        queryClient.invalidateQueries({ queryKey: key })
+      }
+    },
   })
 
   const insightsMutation = useMutation({
@@ -295,7 +317,19 @@ export default function Finances({ demoMode, onTabChange }) {
     }
   }
 
-  function handleReviewConfirm(readyGroups) {
+  // Handed to the review modal so it can check an import before it lands. The page owns this
+  // because the answer needs the stored anchors and the existing ledger, neither of which the
+  // modal has — and recomputing them there would be a second derivation of the same figure.
+  function expectedClosingAt(date, incomingRows) {
+    return expectedBalanceAt({
+      opening: cashStatus?.opening ?? null,
+      statementBalances: settings?.statementBalances ?? [],
+      bankRows: transactions,
+      incomingRows,
+    }, date)
+  }
+
+  function handleReviewConfirm(readyGroups, statementClosings = []) {
     const newSources = { ...(settings?.csvSources || {}) }
     let changed = false
     for (const g of readyGroups) {
@@ -311,6 +345,15 @@ export default function Finances({ demoMode, onTabChange }) {
       sourceName: g.sourceName,
       transactionCount: g.transactions.length,
     }))
+    // Recorded alongside the rows, so a statement that was checked at import keeps its anchor and
+    // never has to be entered a second time in Settings.
+    if (statementClosings.length) {
+      const merged = [
+        ...(settings?.statementBalances ?? []).filter(b => !statementClosings.some(c => c.date === b.date)),
+        ...statementClosings,
+      ].sort((a, b) => a.date.localeCompare(b.date))
+      settingsMutation.mutate({ statementBalances: merged })
+    }
     batchMutation.mutate(readyGroups.flatMap(g => g.transactions))
   }
 
@@ -345,7 +388,24 @@ export default function Finances({ demoMode, onTabChange }) {
   // One period control drives the whole page. The table narrows further with its own review
   // toggles, but it can no longer sit on a different month than the numbers above it — which is
   // what the old separate `filterMonth` select allowed.
-  const range = useMemo(() => resolvePeriod(period, transactions), [period, transactions])
+  // A focus window from another tab wins over the chips. It is clamped to the ledger's own bounds
+  // for the same reason `resolvePeriod` clamps: a range that claims dates the ledger does not
+  // cover reports "0 transactions" as if the money were missing rather than never imported.
+  const range = useMemo(() => {
+    const chip = resolvePeriod(period, transactions)
+    if (!focus?.from || !focus?.to) return chip
+    const ledger = resolvePeriod('All', transactions)
+    if (!ledger.from) return chip
+    const from = focus.from < ledger.from ? ledger.from : focus.from
+    const to = focus.to > ledger.to ? ledger.to : focus.to
+    return explicitRange(from, to) ?? chip
+  }, [period, transactions, focus])
+  // Touching a chip is how you leave a focus window — there is no state where both apply.
+  function selectPeriod(key) {
+    setFocus(null)
+    setPeriod(key)
+  }
+
   const periodRows = useMemo(() => filterByRange(transactions, range), [transactions, range])
   const scopedRows = useMemo(() => applyFinanceFilters(periodRows, filters), [periodRows, filters])
   const periodCredits = useMemo(() => filterByRange(cardCredits, range), [cardCredits, range])
@@ -484,11 +544,28 @@ export default function Finances({ demoMode, onTabChange }) {
         </div>
       </div>
 
+      {focus && (
+        <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3.5 py-2.5">
+          <span className="text-[13px] text-blue-900">
+            Inspecting <strong className="font-semibold">{range.label}</strong>
+            {focus.reason ? ` — ${focus.reason}` : ''}
+          </span>
+          <button
+            onClick={() => setFocus(null)}
+            className="text-[12px] font-semibold text-blue-700 underline underline-offset-2 hover:text-blue-900"
+          >
+            Clear
+          </button>
+        </div>
+      )}
+
       {hasChartData && (
         <div className="mb-5 space-y-3">
           <PeriodChips
-            value={period}
-            onChange={setPeriod}
+            // No chip is active while a focus window is on: showing 6M lit up beside a range that
+            // reads "Jun 7 – Jun 29" would be a straightforward contradiction.
+            value={focus ? null : period}
+            onChange={selectPeriod}
             range={range}
             txCount={periodRows.length}
             monthsAvailable={monthsAvailable}
@@ -510,7 +587,7 @@ export default function Finances({ demoMode, onTabChange }) {
           // the review list would silently hide the pairs outside the current period. Every other
           // narrowing goes with it, for the same reason — a review that hides matches is worse
           // than no review.
-          setPeriod('All')
+          selectPeriod('All')
           setFilterType('all')
           setFilters(NO_FILTERS)
           setTableSearch('')
@@ -549,8 +626,8 @@ export default function Finances({ demoMode, onTabChange }) {
           {/* Sits directly after the KPI row so the range and the headline numbers stay reachable
               while you scroll the charts — the same bar the Spend Analyzer pins. */}
           <FinanceScopeBar
-            period={period}
-            onPeriodChange={setPeriod}
+            period={focus ? null : period}
+            onPeriodChange={selectPeriod}
             range={range}
             txCount={periodRows.length}
             monthsAvailable={monthsAvailable}
@@ -670,6 +747,7 @@ export default function Finances({ demoMode, onTabChange }) {
           skipped={reviewData.skipped}
           busy={batchMutation.isPending}
           onConfirm={handleReviewConfirm}
+          onExpectedBalance={expectedClosingAt}
           onRemap={handleRemap}
           onCancel={() => {
             pendingUploadMetaRef.current = null

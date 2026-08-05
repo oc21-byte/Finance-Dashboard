@@ -92,7 +92,7 @@ real cost depends on how much data you have — but they're in the right ballpar
 
 | What you're doing | Roughly costs | Notes |
 |---|---|---|
-| **AI Insights** (Dashboard & Spend Analyzer) | a fraction of a cent | Spend Analyzer uses AI only to word already-calculated results |
+| **AI Insights** (Dashboard, Finances & Spend Analyzer) | a fraction of a cent | All three calculate the numbers themselves and use AI only to word the result |
 | **Asking a follow-up in chat** | a fraction of a cent | Guided choices are calculated directly; typed questions may use AI to understand what you asked |
 | **Goal analysis & goal chat** | a fraction of a cent | |
 | **Re-categorize uncategorized** (AI) | a fraction of a cent | |
@@ -194,32 +194,105 @@ amount, pick a category, and save. Quick and easy.
 **What it's for:** This is your home base — a single glance that answers "how am I doing?"
 You don't *do* much here; you just *see* a lot.
 
-Here's what you'll find:
+### The four numbers at the top
 
-- **Net Worth** — your total wealth (everything you own, like cash, savings, and
-  investments). Green is good.
-- **Cash Balance** — money on hand. See a little ✏️ pencil next to it? Click it, type your
-  current cash, and save to keep it accurate.
-- **Portfolio Value** — what your investments are worth right now, using live stock prices.
-  (It may say *"Fetching…"* for a moment while it looks up prices.)
-- **Net Worth Over Time** — a chart showing whether your wealth is trending up or down. Use
-  the period buttons to zoom in: **3M / 6M / 1Y / YTD / All**. It fills in as you use the
-  app, so it may look empty at first — that's normal.
-- **Net Worth Breakdown** — a colorful donut showing how your money is split between cash,
-  savings, and different investment types.
-- **Monthly Net Cash Flow** — a bar chart showing months where you earned more than you
-  spent (green) versus months where spending exceeded income (red). Use the period buttons
-  (**3M / 6M / 1Y / YTD / All**) to zoom in or see your full history at once.
-- **Goal Progress** — a quick look at how close you are on each savings goal.
+- **Liquid net worth** — your cash, savings, and investment accounts added together. It's
+  called *liquid* because it only counts money you could actually get at: property, vehicles,
+  private or corporate shares, and debts are not included. Hover the ⓘ for that definition
+  any time.
+- **Cash** — money in your chequing account. You can't type this one in, and that's deliberate:
+  it's the closing balance from your most recent statement plus every transaction since. The card
+  tells you which statement it's good to and how many days are still pending. If you add a
+  transaction by hand it moves straight away; otherwise it changes when you import your next
+  statement.
+- **Savings** and **Portfolio** — your savings accounts, and what your investments are worth
+  right now at live prices. (Portfolio may say *"Fetching…"* for a moment.)
+
+Each one shows how it's moved over the last 30 days.
+
+### Where the change came from
+
+This is the card worth slowing down for. It takes your liquid net worth at the start of a
+period and walks you to where it is now, one step at a time:
+
+**Start → Money in → Money out → Market → Today.**
+
+The point is the split between the last two. **Money in / money out** is what *you* did.
+**Market** is what stock prices did — and only that. If you paid $500 into an investment
+account, that shows up as money you moved, never as investment performance.
+
+Sometimes a sixth **Unaccounted** bar appears. That means your real bank balance and your
+uploaded statements disagree. Click it and the card names each gap: the date, what the
+statements expected, what your balance actually was, and how much is simply spending that
+hasn't been imported yet. Click **Inspect in Finances** on any of them and you'll land on
+the Finances tab already filtered to exactly those weeks.
+
+The period buttons (**1M / 3M / 6M / 1Y / YTD / All**) scope *this card only* — the four
+numbers above are always today's, and the chart below has its own range.
+
+### Liquid net worth over time
+
+A stacked chart: cash on the bottom, then savings, then investments, with the dark line
+along the top being your total. Switch to **Total** if you'd rather see just the headline.
+
+Its range buttons are **6M / 1Y / All** in ordinary calendar months, so it always runs up to
+today — unlike the card above, which follows your statements. Hover anywhere to see all
+three numbers on that date.
+
+### What it's made of
+
+A donut of where your money is sitting right now, with the total in the middle. Click any
+slice and the chart beside it dims to just that part — click **Show all** to go back. It
+fills in as you use the app, so both may look sparse at first. That's normal.
+
+### Goal progress
+
+Your next few goals by deadline, each with the rate it's *actually* being funded at — worked
+out from your real transfers where it can, or from the monthly amount you set if there's
+nothing to go on yet. It tells you when each one lands at that rate, and flags in amber
+anything landing after the date you were aiming for. **View all →** takes you to the Goals
+tab.
+
+### Where the cash figure comes from
+
+Every dollar of it traces back to something your bank printed. When you import a statement you'll
+see two small optional fields — **the date it ended and its closing balance**. Fill them in and the
+app immediately checks its own work: it adds up the previous statement's closing balance plus every
+transaction since, and tells you whether it lands on the number you typed.
+
+> ✓ *Reconciles with every transaction since Jun 13.*
+
+If it doesn't, you'll see how far off it is before anything is saved:
+
+> ⚠ *These rows come to $6,488.91, not $6,833.91 — a −$345.00 gap since Jun 13. A row may be
+> missing from the parse, or one may be unticked below as a duplicate when it is not.*
+
+That's worth taking seriously. It's the only check the app can make on whether an import was
+complete — every other total just adds up the rows it has, so nothing else would ever notice a
+missing one. You can still import anyway and sort it out later.
+
+The balances you enter are listed under **Settings → Statement closing balances**, where you can
+add older ones, correct a typo, or delete one. Each row says whether it reconciles.
 
 ### Get AI insights (and ask questions)
 
-If you set up your AI key, scroll to the **AI Insights** card and click **Generate
-Insights**. In a few seconds you'll get a few plain-English observations about your money
-(like "You spent 35% of your budget on groceries this month").
+If you set up your AI key, click **Generate** on the **Dashboard Insights** card. In a few
+seconds you'll get a plain-English summary and up to three observations about your balances —
+what moved them, how long your cash would last, and anything that doesn't add up.
 
-Below that, there's a chat box. Type a real question — *"Where am I overspending?"* — and
-press **Send** to get an answer. Want fresh insights later? Just click **Refresh**.
+Every number in there is worked out by the app, not written by the AI. The AI only writes the
+sentences around them, so what you read will always match the cards above it.
+
+Below that you can ask a follow-up. There are three suggested questions to click, or type
+your own — *"How long would my cash last?"*, *"What is unaccounted for?"* Questions about
+individual transactions or shops belong on the Finances and Spend Analyzer tabs, and it'll
+say so rather than guess.
+
+Change the period on the card above and you'll see a note saying your insights cover a
+different stretch, with a button to redo them. Follow-up answers stay with the period they
+were generated for, so an answer never quietly switches out from under a question.
+
+**Clear** throws the insights and the conversation away; **Refresh** replaces them.
 
 > No key set up yet? You'll see a note inviting you to add one in Settings. Everything
 > else on the Dashboard still works.

@@ -67,15 +67,23 @@ read them when present, but they are not in a fresh clone.
 | Shared period/scope model | `src/utils/period.js` |
 | Finances math/UI | `src/utils/finance*.js`, `src/components/finance/*` |
 | Spend math/UI | `src/utils/spend*.js`, `src/utils/recurring.js`, `src/components/spend/*` |
+| Dashboard math/UI | `src/utils/liquidNetWorth.js`, `src/utils/{waterfall,netWorthChart}Model.js`, `src/components/dashboard/*` |
+| Liquid-net-worth history | `server/netWorthHistory.js` |
 | Shared UI | `src/components/shared/*` |
 | Spend insight triad | `server/spend{Analysis,InsightGeneration,Chat}.js` |
 | Finance insight triad | `server/finance{Analysis,InsightGeneration,Chat}.js` |
+| Dashboard insight triad | `server/dashboard{Analysis,InsightGeneration,Chat}.js` |
 | Shared insight safeguards | `server/chatBinding.js`, `server/modelText.js` |
 | Tests | `test/*.test.js` |
 
 Pages orchestrate queries, mutations, import flow, and derivation chains. Put visual math in
 `src/utils`, deterministic insight math in `server/*Analysis.js`, and new UI in the relevant
 component directory rather than growing a page.
+
+No tab uses a chart library. Every chart is hand-built SVG or divs, with the geometry in a
+`*Model.js` under `src/utils` and only positioning in the component — `financeChartModel.js`,
+`waterfallModel.js`, `netWorthChartModel.js`. Reintroducing one would make a chart on one tab read
+as a different product from the chart above it.
 
 ## Import and duplicate contracts
 
@@ -134,6 +142,56 @@ visible. Exposure counts only extra copies (`N - 1`).
   `xl:grid-cols-[minmax(0,1fr)_320px]` grid, capped to the viewport and scrollable only where it is
   sticky. Both offset `top` by the demo banner plus `PINNED_BAR_H`.
 
+## Dashboard behavior
+
+- **Liquid net worth = cash + savings + investment accounts.** It excludes property, vehicles,
+  private or corporate shares, and debts, none of which the app tracks. Never label it "net worth"
+  in UI copy or a model prompt. The `netWorthHistory` key, the `netWorth` field, the
+  `/api/net-worth-*` routes, and the `['net-worth-history']` query key keep the old spelling; they
+  are persisted contracts and are renamed nowhere.
+- **Cash is not editable anywhere, by design.** It is anchored to the newest STATEMENT closing
+  balance at or before the date asked for, plus every bank row since:
+  `cash(d) = closingBalance(newest statement ≤ d) + Σ rows since`. Users supply
+  `settings.statementBalances` — `{ date, balance, source }` — and nothing else.
+  `settings.cashBalance` is a derived cache; a client that PUTs one is ignored, not obeyed.
+- **Discrepancies are derived on read by `statementChecks`, never stored.** Two earlier designs
+  failed here: reconstructing backwards from a typed balance made all of history a function of the
+  current value, and storing the gap as a frozen `adjustment` meant a later ledger fix could not
+  recompute it — a $5,361 phantom outlived the missing transaction that caused it. Never persist a
+  computed discrepancy.
+- `statementChecks` measures each balance against the previous one, so a gap is bounded by two
+  bank-issued figures and names which statement's import is short. It is the app's ONLY external
+  proof of ledger completeness: every other total is self-consistent by construction, so nothing
+  else can detect a dropped row.
+- `server/netWorthHistory.js` owns the stored series. `POST /api/net-worth-rebuild` is guarded by
+  `settings.netWorthHistoryVersion` against `HISTORY_VERSION` so it runs once per shape change, and
+  is idempotent. The mount effect in `Dashboard.jsx` calls rebuild → snapshot → backfill
+  **sequentially**; they read-modify-write the same file and racing them loses a write.
+- Investments are stored at **market** value with `portfolioCost` alongside, so
+  `market = Δ(portfolio − portfolioCost)` is unrealised gain and a contribution can never be
+  mistaken for performance. `basis` is `'market'` or `'cost'`; a `'cost'` endpoint makes the market
+  figure partial and must be disclosed rather than quoted plainly.
+- The change decomposition closes exactly, by construction:
+  `end − start = (moneyIn − moneyOut) + market + reconciliation + other`. `reconciliation` splits
+  into `lag` (dated past ledger coverage — expected, not a problem) and `unexplained` (inside
+  coverage — the number worth chasing). Never fold either into `market`, and never merge them into
+  one anonymous "Other" bar.
+- Flows are summed over the window the **balances** describe — the pair of history points — not the
+  requested range. History rarely has a point on the boundary, and a row in that gap would count as
+  a flow while its effect sat outside `end`.
+- Two anchors, on purpose. The waterfall uses `PERIOD_KEYS` from `period.js`, anchored to the latest
+  transaction, because flows lag by a statement cycle. The trend uses its own `TREND_PERIODS`
+  (`6M`/`1Y`/`All`) in calendar time, because a balance is current today whether or not a statement
+  landed. Comment this at any new call site.
+- The trend's stack is **zero-based and always will be**: a stacked area encodes quantity as
+  thickness, so a truncated axis makes the bands lie about their own proportions. The waterfall may
+  truncate — it encodes change as an offset, which survives the cut.
+- Donut slices filter the trend by **parent bucket**. History has three bands and no memory of
+  account types, so every investment account type maps to `portfolio`.
+- Dashboard chart colours come from `src/components/dashboard/palette.js`. Card chrome stays on
+  stock Tailwind classes; only data ink is tokenised. `TOTAL_FILL` exists so Total mode never
+  borrows a bucket's colour.
+
 ## Insight contracts
 
 - Deterministic analysis owns totals, facts, classifications, rankings, statuses, and selections.
@@ -142,7 +200,22 @@ visible. Exposure counts only extra copies (`N - 1`).
   that logic.
 - Spend Style uses the latest six calendar months of unfiltered card activity. Financial Pace uses
   up to six complete bank months. Exploration uses the active range and filters.
-- Spend and finance insight records are independent. Refreshing one must not invalidate the other.
+- Spend, finance, and dashboard insight records are independent keys. Refreshing one must not
+  invalidate another's conversation.
+- The three observation catalogues are **disjoint by subject**: spend is the card ledger, finance is
+  the bank ledger, dashboard is the balance. A user reading two tabs must not meet the same finding
+  under two headings.
+- `buildDashboardAnalysis` imports from `src/utils/liquidNetWorth.js` — the same module the cards
+  render from — so an insight agreeing with the KPI strip is structural, not a coincidence that
+  holds until one side gains a rounding rule. It is pure: `asOf`, `prices`, and `cash` are passed
+  in, never read from a clock or the network.
+- Dashboard chat's fact tier is a **lookup over computed figures, not a filter engine**. There are
+  no rows to slice on that tab, and a second aggregation layer could only drift from the cards.
+  Per-transaction, merchant, and category questions are turned away toward Finances or Spend.
+- Any threshold or benchmark a catalogue knows about must reach the model **as evidence, with the
+  comparison already made in JS**. Given a hole, a generation will fill it: one wrote that 1.1
+  months of runway "aligns with a conventional emergency fund target" when the constant said
+  otherwise. See `RUNWAY_COMFORTABLE` in `dashboardAnalysis.js`.
 - Finance scope matching is bank-only (`accounts`, `flows`, `payees`); do not use card-side scope
   helpers for it.
 - Insight routes accept `{ period, from, to, filters, periodLabel }`. The stored `period` is the
@@ -167,12 +240,20 @@ credit_card_transactions[]  card rows; positive rows include creditKind
 holdings[]                  purchase lots with weighted-average cost basis
 savings_accounts[]
 goals[]
-netWorthHistory[]
+netWorthHistory[]           { date, netWorth, breakdown{cash,savings,portfolio}, portfolioCost, basis }
 financeInsights             current finance generation + chat, or null
 spendInsights               v2 current generation + chat; v1 remains readable, or null
+dashboardInsights           current dashboard generation + chat, or null
 uploadHistory[]             filename, source, ledger, transactionIds, importedAt
 settings                    provider flags/config, budgets, mappings, vision model, credit policy
+                            plus cashOpeningBalance, statementBalances[], netWorthHistoryVersion
 ```
 
 Allocation links are `linkedSavingsAccountId` for Savings and the account-type label in
 `linkedHoldingAccountType` for Investments. Missing or dangling links resolve to `Unassigned`.
+
+In `netWorthHistory[]`, `breakdown.portfolio` is **market** value and `portfolioCost` is the cost
+basis at that date; the difference is unrealised gain, which is what makes the saved-versus-markets
+split honest. `basis` records whether prices were actually available. `settings.statementBalances`
+holds bank-issued closing balances only; `source: 'typed'` marks pre-migration entries the UI
+labels unverified.

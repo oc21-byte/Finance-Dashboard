@@ -24,7 +24,17 @@ const PAGES = {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard')
+  // What one tab asked the next one to open on — currently only the Dashboard waterfall handing
+  // Finances a date window to inspect. Kept here rather than in a store because it is a one-shot
+  // message, not state: it is cleared the moment the user navigates anywhere else, so a tab never
+  // reopens on a window the user has moved on from.
+  const [handoff, setHandoff] = useState(null)
   const Page = PAGES[activeTab]
+
+  function navigate(tab, payload = null) {
+    setHandoff(payload)
+    setActiveTab(tab)
+  }
 
   const { data: demoStatus } = useQuery({
     queryKey: ['demo-mode'],
@@ -49,9 +59,9 @@ export default function App() {
   }, [settings])
 
   return (
-    <Layout activeTab={activeTab} onTabChange={setActiveTab} demoMode={demoMode}>
+    <Layout activeTab={activeTab} onTabChange={navigate} demoMode={demoMode}>
       <ErrorBoundary key={activeTab}>
-        <Page onTabChange={setActiveTab} demoMode={demoMode} />
+        <Page onTabChange={navigate} demoMode={demoMode} handoff={handoff} />
       </ErrorBoundary>
     </Layout>
   )

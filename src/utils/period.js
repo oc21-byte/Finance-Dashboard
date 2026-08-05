@@ -100,6 +100,31 @@ export function resolvePeriod(key, transactions = []) {
 }
 
 /**
+ * A range for an arbitrary window, in exactly the shape `resolvePeriod` returns.
+ *
+ * The chips can only express windows anchored to the latest transaction, which is right for
+ * browsing and useless for "show me the three weeks where the ledger and the bank disagreed". The
+ * Dashboard's waterfall drill-down hands one of those windows to Finances.
+ *
+ * `key` is 'Custom', which makes the scope key it produces — `Custom|from|to|…` — distinct from
+ * every chip-derived one. That is deliberate: insights stored against a chip must NOT be treated
+ * as describing a hand-picked window, and string inequality is what enforces it.
+ */
+export function explicitRange(from, to) {
+  if (!from || !to || from > to) return null
+  const months = monthsBetween(from, to)
+  return {
+    key: 'Custom',
+    from,
+    to,
+    months,
+    monthCount: months.length,
+    monthAligned: false,
+    label: `${formatDay(from)} – ${formatDay(to)}`,
+  }
+}
+
+/**
  * The window immediately before `range`, same length — the basis for "vs prior 6M" deltas.
  *
  * Returns null when the range is empty, or when `earliestDate` shows the ledger doesn't reach far

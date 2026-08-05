@@ -99,11 +99,18 @@ export const api = {
   monthlyFinancials: {
     get: () => request('GET', '/monthly-financials'),
   },
+  // Route paths keep the `net-worth` spelling even though the UI calls the metric "liquid net
+  // worth" — they are persisted contracts, renamed nowhere. `rebuild` is version-guarded server
+  // side, so calling it on every mount is safe and runs at most once per shape change.
   netWorth: {
     snapshot: () => request('POST', '/net-worth-snapshot'),
     history:  () => request('GET',  '/net-worth-history'),
     backfill: () => request('POST', '/net-worth-backfill'),
+    rebuild:  () => request('POST', '/net-worth-rebuild'),
   },
+  // Chequing is derived from the ledger, so the UI has to say how fresh the figure is: statements
+  // lag by weeks, and the balance is only knowable to the last one plus any reconciliation since.
+  cashStatus: () => request('GET', '/cash-status'),
   demoMode: {
     get: () => request('GET', '/demo-mode'),
   },
@@ -122,9 +129,12 @@ export const api = {
     get:   () => request('GET',    '/finance-insights'),
     clear: () => request('DELETE', '/finance-insights'),
   },
+  dashboardInsights: {
+    get:   () => request('GET',    '/dashboard-insights'),
+    clear: () => request('DELETE', '/dashboard-insights'),
+  },
   shutdown: () => request('POST', '/shutdown'),
   llm: {
-    insights: (payload) => request('POST', '/llm/insights', payload),
     goalAnalysis: (payload) => request('POST', '/llm/goal-analysis', payload),
     categorize: (transactions) => request('POST', '/llm/categorize', { transactions }),
     // `scope` is either a bare period string ('all' | 'YYYY-MM') or a page scope,
@@ -134,7 +144,8 @@ export const api = {
     spendChat: (scope, messages) => request('POST', '/llm/spend-chat', { ...scopeBody(scope), messages }),
     financeInsights: (scope) => request('POST', '/llm/finance-insights', scopeBody(scope)),
     financeChat: (scope, messages) => request('POST', '/llm/finance-chat', { ...scopeBody(scope), messages }),
-    dashboardChat: (messages) => request('POST', '/llm/dashboard-chat', { messages }),
+    dashboardInsights: (scope) => request('POST', '/llm/dashboard-insights', scopeBody(scope)),
+    dashboardChat: (scope, messages) => request('POST', '/llm/dashboard-chat', { ...scopeBody(scope), messages }),
     goalChat: (goalId, messages) => request('POST', '/llm/goal-chat', { goalId, messages }),
     budgetBuilder: (payload) => request('POST', '/llm/budget-builder', payload),
     detectColumns: (headers, samples) => request('POST', '/llm/detect-columns', { headers, samples }),
