@@ -1,22 +1,32 @@
 import { useEffect, useRef } from 'react'
 import dayjs from 'dayjs'
 import ExploreChoices from '../shared/ExploreChoices.jsx'
-import FinancialPaceCard from './FinancialPaceCard.jsx'
-import SpendStyleProfile from './SpendStyleProfile.jsx'
+import SavingsRateCard from './SavingsRateCard.jsx'
+
+// Observation status is deterministic (`server/financeAnalysis.js`), so the tint is a lookup, never
+// a judgement made at render time.
+const STATUS_STYLES = {
+  good: { card: 'border-emerald-100 bg-emerald-50/40', dot: 'bg-emerald-500' },
+  steady: { card: 'border-gray-100 bg-gray-50/60', dot: 'bg-gray-400' },
+  watch: { card: 'border-amber-100 bg-amber-50/40', dot: 'bg-amber-500' },
+}
+const statusStyle = status => STATUS_STYLES[status] ?? STATUS_STYLES.steady
 
 /**
- * Version-two records show a deterministic Spend Style and Financial Pace. Version-one records
- * keep their original three-card presentation so a stored result remains readable after upgrade.
+ * Presentational only, exactly as `AiInsightsPanel` is: every piece of state lives in `Finances.jsx`
+ * so a tab change cannot strand a half-sent question. The record it renders is written entirely by
+ * `server/financeInsightGeneration.js` — titles, evidence, ordering and numbers are deterministic and
+ * only `body` and `pace.summary` are model wording.
  */
-export default function AiInsightsPanel({
-  hasAiKey, storedInsights, insights, insightsPeriod, chatMessages,
+export default function FinanceInsightsPanel({
+  hasAiKey, record, insightsPeriod, chatMessages,
   scopeKey, scopeLabel,
   insightsError, chatError, chatInput, chatLoading, pendingQuestion,
   generating, clearing,
   onGenerate, onClear, onSendChat, onExplore, onChatInput, onOpenSettings,
 }) {
-  const isProfileRecord = Number(storedInsights?.analysisVersion) >= 2 && !!storedInsights?.profile
-  const hasResult = isProfileRecord || insights.length > 0
+  const observations = record?.observations ?? []
+  const hasResult = !!record?.pace
   const stale = hasResult && insightsPeriod !== scopeKey
   const chatRef = useRef(null)
 
@@ -25,18 +35,11 @@ export default function AiInsightsPanel({
     if (el) el.scrollTop = el.scrollHeight
   }, [chatMessages.length, pendingQuestion, chatLoading])
 
-  function chooseExploreOption(option) {
-    // Buttons and typed 1/2/3 deliberately enter the same server path.
-    onExplore(option)
-  }
-
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
       <div className="mb-3 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <h2 className="text-[15px] font-semibold text-gray-900">
-            {isProfileRecord ? 'Spend Style' : 'AI Insights'}
-          </h2>
+          <h2 className="text-[15px] font-semibold text-gray-900">Finance Insights</h2>
           <span className="rounded bg-violet-100 px-1.5 py-0.5 text-[10.5px] font-semibold text-violet-700">AI</span>
         </div>
         {hasAiKey && (
@@ -68,10 +71,10 @@ export default function AiInsightsPanel({
       </div>
 
       <p className="mb-3 text-xs leading-relaxed text-gray-400">
-        {isProfileRecord ? 'Built from your available spending and financial history.' : `Based on ${scopeLabel}.`}
-        {storedInsights?.generatedAt && hasResult && (
+        Based on {record?.periodLabel ?? scopeLabel}.
+        {record?.generatedAt && hasResult && (
           <span className="mt-0.5 block text-gray-300">
-            Saved {dayjs(storedInsights.generatedAt).format('MMM D, h:mm A')}
+            Saved {dayjs(record.generatedAt).format('MMM D, h:mm A')}
           </span>
         )}
       </p>
@@ -98,25 +101,26 @@ export default function AiInsightsPanel({
 
       {hasAiKey && generating && !hasResult && (
         <div className="flex flex-col gap-2.5" aria-hidden>
-          <div className="animate-pulse rounded-xl border border-violet-100 bg-violet-50/50 p-4">
-            <div className="mb-2.5 h-2.5 w-2/5 rounded bg-violet-100" />
-            <div className="mb-2 h-4 w-3/4 rounded bg-violet-200" />
-            <div className="h-2.5 w-full rounded bg-violet-100" />
-          </div>
           <div className="animate-pulse rounded-xl border border-gray-100 bg-gray-50/60 p-4">
-            <div className="mb-2.5 h-3 w-1/2 rounded bg-gray-200" />
-            <div className="grid grid-cols-2 gap-1.5">
-              {[0, 1, 2, 3].map(item => <div key={item} className="h-10 rounded bg-gray-100" />)}
-            </div>
+            <div className="mb-2.5 h-2.5 w-2/5 rounded bg-gray-200" />
+            <div className="mb-2.5 h-7 w-1/3 rounded bg-gray-200" />
+            <div className="h-2 w-full rounded-full bg-gray-100" />
           </div>
+          {[0, 1, 2].map(item => (
+            <div key={item} className="animate-pulse rounded-lg border border-gray-100 bg-gray-50/60 p-3.5">
+              <div className="mb-2 h-3 w-3/5 rounded bg-gray-200" />
+              <div className="h-2.5 w-full rounded bg-gray-100" />
+            </div>
+          ))}
         </div>
       )}
 
       {hasAiKey && !hasResult && !generating && !insightsError && (
         <div className="py-5 text-center">
-          <p className="text-sm text-gray-500">Discover your Spend Style.</p>
+          <p className="text-sm text-gray-500">Check your Financial Pace.</p>
           <p className="mt-1 text-xs leading-relaxed text-gray-300">
-            Generate creates a profile from your recent card activity and checks your financial pace against income and your savings target.
+            Generate compares income, expenses and what you set aside against your savings target, then
+            calls out what stands out in this period.
           </p>
         </div>
       )}
@@ -125,17 +129,8 @@ export default function AiInsightsPanel({
         <>
           {stale && (
             <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-800">
-              {isProfileRecord ? (
-                <>
-                  Exploration and follow-ups cover <strong className="font-semibold">{storedInsights?.periodLabel ?? 'a different scope'}</strong>,
-                  not what you are viewing now. Spend Style and Financial Pace keep their own analysis periods.
-                </>
-              ) : (
-                <>
-                  These cover <strong className="font-semibold">{storedInsights?.periodLabel ?? 'a different scope'}</strong>,
-                  not what you are viewing now. Follow-ups still answer against the older scope.
-                </>
-              )}
+              These cover <strong className="font-semibold">{record?.periodLabel ?? 'a different scope'}</strong>,
+              not what you are viewing now. Follow-ups still answer against the older scope.
               <button
                 onClick={onGenerate}
                 disabled={generating}
@@ -147,27 +142,34 @@ export default function AiInsightsPanel({
           )}
 
           <div className={`flex flex-col gap-3 transition-opacity ${generating ? 'opacity-50' : ''}`}>
-            {isProfileRecord ? (
-              <>
-                <SpendStyleProfile profile={storedInsights.profile} scope={storedInsights.profileScope} />
-                <FinancialPaceCard pace={storedInsights.financialPace} scope={storedInsights.financialScope} />
-                <ExploreChoices
-                  prompt={storedInsights.explorePrompt}
-                  options={storedInsights.exploreOptions}
-                  disabled={!hasAiKey || chatLoading || generating}
-                  onChoose={chooseExploreOption}
-                />
-              </>
-            ) : (
+            <SavingsRateCard pace={record.pace} scope={record.financialScope} />
+
+            {observations.length > 0 && (
               <div className="flex flex-col gap-2.5">
-                {insights.map((insight, index) => (
-                  <div key={index} className="rounded-lg border border-gray-100 bg-gray-50/60 p-3.5">
-                    <p className="mb-1.5 text-[13px] font-semibold text-gray-900">{insight.title}</p>
-                    <p className="text-[12.5px] leading-relaxed text-gray-600">{insight.body}</p>
-                  </div>
-                ))}
+                {observations.map(observation => {
+                  const styles = statusStyle(observation.status)
+                  return (
+                    <div key={observation.key} className={`rounded-lg border p-3.5 ${styles.card}`}>
+                      <div className="mb-1.5 flex items-start gap-2">
+                        <span className={`mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full ${styles.dot}`} />
+                        <p className="text-[13px] font-semibold leading-snug text-gray-900">{observation.title}</p>
+                      </div>
+                      <p className="text-[12.5px] leading-relaxed text-gray-600">{observation.body}</p>
+                      {observation.evidence && (
+                        <p className="mt-1.5 text-[11px] leading-relaxed text-gray-400">{observation.evidence}</p>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             )}
+
+            <ExploreChoices
+              prompt={record.explorePrompt}
+              options={record.exploreOptions}
+              disabled={!hasAiKey || chatLoading || generating}
+              onChoose={onExplore}
+            />
           </div>
 
           <div className="mt-4 border-t border-gray-100 pt-3.5">
@@ -213,9 +215,9 @@ export default function AiInsightsPanel({
                 value={chatInput}
                 onChange={event => onChatInput(event.target.value)}
                 maxLength={2000}
-                placeholder="Ask about your spending…"
+                placeholder="Ask about your accounts…"
                 disabled={!hasAiKey || chatLoading}
-                aria-label="Ask a follow-up about your spending"
+                aria-label="Ask a follow-up about your finances"
                 className="min-w-0 flex-1 rounded-lg border border-gray-300 px-3 py-2 text-[12.5px] focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500 disabled:opacity-60"
               />
               <button

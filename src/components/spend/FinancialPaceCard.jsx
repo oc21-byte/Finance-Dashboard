@@ -1,25 +1,4 @@
-const PACE_STYLES = {
-  on_track: {
-    badge: 'border-emerald-200 bg-emerald-50 text-emerald-700',
-    dot: 'bg-emerald-500',
-    card: 'border-emerald-100 bg-emerald-50/35',
-  },
-  little_room: {
-    badge: 'border-amber-200 bg-amber-50 text-amber-800',
-    dot: 'bg-amber-500',
-    card: 'border-amber-100 bg-amber-50/35',
-  },
-  over_pace: {
-    badge: 'border-rose-200 bg-rose-50 text-rose-700',
-    dot: 'bg-rose-500',
-    card: 'border-rose-100 bg-rose-50/35',
-  },
-  not_enough_data: {
-    badge: 'border-gray-200 bg-gray-50 text-gray-600',
-    dot: 'bg-gray-400',
-    card: 'border-gray-200 bg-gray-50/50',
-  },
-}
+import { paceStyle } from '../shared/paceStyles.js'
 
 const money = new Intl.NumberFormat('en-US', {
   style: 'currency',
@@ -41,7 +20,7 @@ function PaceMetric({ label, value, tone }) {
 }
 
 export default function FinancialPaceCard({ pace, scope }) {
-  const styles = PACE_STYLES[pace?.status] ?? PACE_STYLES.not_enough_data
+  const styles = paceStyle(pace?.status)
   const showMetrics = pace?.income != null || pace?.expenses != null
   const headroomTone = pace?.headroom == null
     ? undefined

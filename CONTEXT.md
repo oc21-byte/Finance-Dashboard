@@ -36,9 +36,31 @@ _Avoid_: Personality type, financial identity
 How much card-purchase history supports a Spend Style, expressed as High, Medium, or Early Read.
 _Avoid_: Accuracy score, certainty
 
+**Bank Payee**:
+The counterparty a bank transaction was with, grouped from its description rather than from a
+category. Venmo activity groups by the person's name, not by the acquirer location that varies per
+row.
+_Avoid_: Merchant, vendor, category
+
+**Outflow**:
+Money leaving a bank account, whether it was spent or set aside. Expenses, savings transfers and
+investment contributions are all outflows.
+_Avoid_: Spending, expenses (when transfers are included)
+
+**Allocation**:
+An outflow the person deliberately set aside — a savings transfer or an investment contribution. It
+is money moved, never money spent or lost.
+_Avoid_: Expense, spending, cost
+
 **Financial Pace**:
 A current comparison of average monthly income, bank expenses, headroom, and a savings target.
+Computed once, from complete bank months only, and shown on both the Spend Analyzer and Finances.
 _Avoid_: Financial health, money score
+
+**Savings Rate**:
+The share of monthly income that reached savings. The *achieved* rate is what actually went across;
+the *target* rate is the benchmark from Settings. Always say which one is meant.
+_Avoid_: Savings rate (unqualified), savings percentage
 
 **Headroom**:
 Average monthly income remaining after bank expenses and before comparison with the savings target.

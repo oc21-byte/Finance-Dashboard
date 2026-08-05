@@ -1,4 +1,5 @@
 import { formatUsd, normalizeUsdText } from './currencyFormatting.js'
+import { stripJsonFence, validateSummary } from './modelText.js'
 
 const EXPLORE_OPTIONS = [
   {
@@ -28,27 +29,6 @@ const EXPLORE_PROMPT = {
   title: 'Explore your spending',
   body: 'Choose a deeper look, or ask your own question.',
   footer: 'Reply with 1, 2, or 3—or ask anything about your spending.',
-}
-
-const MAX_SUMMARY_CHARS = 600
-const sentenceSegmenter = new Intl.Segmenter('en', { granularity: 'sentence' })
-
-function stripJsonFence(text) {
-  return String(text ?? '').trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
-}
-
-function validateSummary(value, field) {
-  const summary = typeof value === 'string' ? value.trim() : ''
-  if (!summary) throw new Error(`AI response must include a non-empty ${field} string`)
-  if (summary.length > MAX_SUMMARY_CHARS) throw new Error(`${field} exceeds ${MAX_SUMMARY_CHARS} characters`)
-  if (/[\r\n`]/.test(summary) || /<\/?[a-z][^>]*>/i.test(summary)) {
-    throw new Error(`${field} must be plain text on one line`)
-  }
-  const sentenceCount = [...sentenceSegmenter.segment(summary)]
-    .filter(segment => segment.segment.trim())
-    .length
-  if (sentenceCount > 2) throw new Error(`${field} must contain no more than 2 sentences`)
-  return summary
 }
 
 function parseCopy(text) {

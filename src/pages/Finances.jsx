@@ -1,114 +1,38 @@
 import { useMemo, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import dayjs from 'dayjs'
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  ResponsiveContainer,
-} from 'recharts'
 import { api } from '../api/client.js'
-import { CREDIT_KIND_LABELS, FINANCE_CATEGORIES, FINANCE_CATEGORY_COLORS } from '../constants/categories.js'
+import { FINANCE_CATEGORIES, FINANCE_CATEGORY_COLORS } from '../constants/categories.js'
 import { processCSVRows } from '../utils/csvHelpers.js'
 import { runImportQueue, sourceNameFromFile } from '../utils/importQueue.js'
 import { annotateDuplicates, duplicateFlags } from '../utils/duplicates.js'
 import { errorStatus } from '../utils/diagnostics.js'
+import { resolvePeriod, filterByRange, describeScope, buildScopeKey } from '../utils/period.js'
+import { applyFinanceFilters, buildFinanceKpis } from '../utils/financeAggregations.js'
 import ErrorBanner from '../components/ErrorBanner.jsx'
 import CsvMappingModal from '../components/CsvMappingModal.jsx'
 import BulkImportReviewModal from '../components/BulkImportReviewModal.jsx'
 import AddTransactionModal from '../components/AddTransactionModal.jsx'
+import PeriodChips from '../components/shared/PeriodChips.jsx'
+import FilterBar from '../components/shared/FilterBar.jsx'
+import { PINNED_BAR_H } from '../components/shared/PinnedScopeBar.jsx'
+import FinanceKpiRow from '../components/finance/FinanceKpiRow.jsx'
+import FinanceScopeBar from '../components/finance/FinanceScopeBar.jsx'
+import DuplicateBanner from '../components/finance/DuplicateBanner.jsx'
+import InOutChart from '../components/finance/InOutChart.jsx'
+import InflowsCard from '../components/finance/InflowsCard.jsx'
+import OutflowsCard from '../components/finance/OutflowsCard.jsx'
+import AllocationCard from '../components/finance/AllocationCard.jsx'
+import FinanceTransactionTable from '../components/finance/FinanceTransactionTable.jsx'
+import FinanceInsightsPanel from '../components/finance/FinanceInsightsPanel.jsx'
 
-const FINANCE_CAT_SET = new Set(FINANCE_CATEGORIES)
 const SOURCE_NAME_KEY = 'visionSource_finances'
 
-const SUMMARY_PERIODS = [
-  { key: '7D',  label: '7D' },
-  { key: '1M',  label: '1M' },
-  { key: '3M',  label: '3M' },
-  { key: '6M',  label: '6M' },
-  { key: '1Y',  label: '1Y' },
-  { key: 'YTD', label: 'YTD' },
-  { key: 'All', label: 'All' },
-]
+const DEMO_BANNER_H = 32
 
-function buildPeriodData(transactions, cardCredits, period) {
-  function sumBucket(txs, credits) {
-    const income = txs
-      .filter(t => t.category === 'Income' || (t.type === 'income' && !FINANCE_CAT_SET.has(t.category)))
-      .reduce((s, t) => s + Math.abs(t.amount), 0)
-    const savings = txs
-      .filter(t => t.category === 'Savings')
-      .reduce((s, t) => s + Math.abs(t.amount), 0)
-    const expenses = txs
-      .filter(t => t.category === 'Expense' || (t.type === 'expense' && !FINANCE_CAT_SET.has(t.category)))
-      .reduce((s, t) => s + Math.abs(t.amount), 0)
-    const investments = txs
-      .filter(t => t.category === 'Investments')
-      .reduce((s, t) => s + Math.abs(t.amount), 0)
-    return {
-      Income: Math.round(income * 100) / 100,
-      Savings: Math.round(savings * 100) / 100,
-      Expenses: Math.round(expenses * 100) / 100,
-      Investments: Math.round(investments * 100) / 100,
-      Credits: Math.round(credits.reduce((s, t) => s + Math.abs(t.amount), 0) * 100) / 100,
-    }
-  }
+const NO_FILTERS = { accounts: [], flows: [], payees: [] }
+const FILTER_LABEL = { accounts: 'Account', flows: 'Type', payees: 'Payee' }
 
-  const today = dayjs()
-
-  if (period === '7D') {
-    return Array.from({ length: 7 }, (_, i) => {
-      const date = today.subtract(6 - i, 'day').format('YYYY-MM-DD')
-      const match = t => t.date === date
-      return {
-        period: dayjs(date).format('MMM D'),
-        ...sumBucket(transactions.filter(match), cardCredits.filter(match)),
-      }
-    })
-  }
-
-  if (period === '1M') {
-    return Array.from({ length: 4 }, (_, i) => {
-      const weekEnd = today.subtract((3 - i) * 7, 'day')
-      const weekStart = weekEnd.subtract(6, 'day')
-      const match = t => {
-        const d = dayjs(t.date)
-        return d.isAfter(weekStart.subtract(1, 'day')) && d.isBefore(weekEnd.add(1, 'day'))
-      }
-      return {
-        period: weekStart.format('MMM D'),
-        ...sumBucket(transactions.filter(match), cardCredits.filter(match)),
-      }
-    })
-  }
-
-  let months
-  if (period === '3M') {
-    months = Array.from({ length: 3 }, (_, i) => today.subtract(2 - i, 'month').format('YYYY-MM'))
-  } else if (period === '6M') {
-    months = Array.from({ length: 6 }, (_, i) => today.subtract(5 - i, 'month').format('YYYY-MM'))
-  } else if (period === '1Y') {
-    months = Array.from({ length: 12 }, (_, i) => today.subtract(11 - i, 'month').format('YYYY-MM'))
-  } else if (period === 'YTD') {
-    const startMonth = today.startOf('year')
-    const count = today.diff(startMonth, 'month') + 1
-    months = Array.from({ length: count }, (_, i) => startMonth.add(i, 'month').format('YYYY-MM'))
-  } else {
-    // Card credits can fall in a month with no bank activity; without the union they'd vanish.
-    months = [...new Set(
-      [...transactions, ...cardCredits].map(t => t.date?.slice(0, 7)).filter(Boolean),
-    )].sort()
-  }
-
-  return months.map(month => {
-    const match = t => t.date?.startsWith(month)
-    return {
-      period: dayjs(month + '-01').format('MMM YY'),
-      ...sumBucket(transactions.filter(match), cardCredits.filter(match)),
-    }
-  })
-}
-
-
-export default function Finances({ demoMode }) {
+export default function Finances({ demoMode, onTabChange }) {
   const fileInputRef = useRef()
   const pendingUploadMetaRef = useRef(null)
   const tableRef = useRef()
@@ -117,13 +41,19 @@ export default function Finances({ demoMode }) {
   const [csvModalData, setCsvModalData] = useState(null)
   const [reviewData, setReviewData] = useState(null)
   const [showAddModal, setShowAddModal] = useState(false)
-  const [summaryPeriod, setSummaryPeriod] = useState('6M')
-  const [filterMonth, setFilterMonth] = useState('all')
+  const [period, setPeriod] = useState('6M')
+  const [filters, setFilters] = useState(NO_FILTERS)
   const [filterType, setFilterType] = useState('all')
   const [showDuplicatesOnly, setShowDuplicatesOnly] = useState(false)
+  const [tableSearch, setTableSearch] = useState('')
   const [importStatus, setImportStatus] = useState(null)
-  const [editingCategoryId, setEditingCategoryId] = useState(null)
-  const [linkingTxId, setLinkingTxId] = useState(null)
+  const [insightsError, setInsightsError] = useState(null)
+  const [chatError, setChatError] = useState(null)
+  const [chatInput, setChatInput] = useState('')
+  const [chatLoading, setChatLoading] = useState(false)
+  // The question being awaited. Held locally only so it can be shown immediately; the stored
+  // conversation is the source of truth once the reply lands.
+  const [pendingQuestion, setPendingQuestion] = useState(null)
 
   const { data: transactions = [], isLoading } = useQuery({
     queryKey: ['transactions'],
@@ -140,12 +70,36 @@ export default function Finances({ demoMode }) {
     queryFn: api.savingsAccounts.list,
   })
 
+  // Investment transfers link to a holding *account type*, not to a holding — there is no account
+  // entity to point at, and the server already treats `accountType` as a link target. The menu is
+  // built from the types that actually exist rather than a fixed list, so it can't offer a
+  // destination the portfolio doesn't have.
+  const { data: holdings = [] } = useQuery({
+    queryKey: ['holdings'],
+    queryFn: api.holdings.list,
+  })
+
+  const holdingAccountTypes = useMemo(
+    () => [...new Set(holdings.map(h => h.accountType || 'Other'))].sort(),
+    [holdings],
+  )
+
   // Card credits are read-only here. They live only in the card ledger — copying them into
   // db.transactions would leave two rows for one event and no way to keep them in step.
   const { data: cardTransactions = [] } = useQuery({
     queryKey: ['credit_card_transactions'],
     queryFn: api.creditCardTransactions.list,
   })
+
+  // Persisted server-side so the analysis and its chat survive a tab change (which unmounts this
+  // page) and a browser reload. Separate record from the Spend Analyzer's — one per tab.
+  const { data: financeInsights } = useQuery({
+    queryKey: ['finance-insights'],
+    queryFn: api.financeInsights.get,
+  })
+
+  const insightsPeriod = financeInsights?.period ?? null
+  const chatMessages = financeInsights?.messages ?? []
 
   const cardCredits = useMemo(
     () => cardTransactions.filter(t => Number(t.amount) > 0),
@@ -222,6 +176,57 @@ export default function Finances({ demoMode }) {
     mutationFn: (patch) => api.settings.update(patch),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['settings'] }),
   })
+
+  const insightsMutation = useMutation({
+    mutationFn: (scope) => api.llm.financeInsights(scope),
+    onSuccess: () => {
+      setInsightsError(null)
+      queryClient.invalidateQueries({ queryKey: ['finance-insights'] })
+    },
+    onError: (err) => setInsightsError(err.message || 'Failed to generate insights. Please try again.'),
+  })
+
+  const clearInsightsMutation = useMutation({
+    mutationFn: api.financeInsights.clear,
+    onSuccess: () => {
+      setInsightsError(null)
+      setChatError(null)
+      queryClient.invalidateQueries({ queryKey: ['finance-insights'] })
+    },
+  })
+
+  // A plain async function rather than a mutation: the reply is written into the stored record
+  // server-side, so there is nothing to hold in mutation state, and the pending question has to
+  // appear before the request resolves.
+  async function sendChatMessage(rawMessage) {
+    const message = String(rawMessage ?? '').trim()
+    if (!message || chatLoading) return
+    setChatInput('')
+    setChatError(null)
+    setPendingQuestion(message)
+    setChatLoading(true)
+    try {
+      // Sent against the STORED scope, not the one on screen: the answer has to describe the same
+      // data the cards above it describe, or the server refuses to record the exchange.
+      await api.llm.financeChat(
+        insightsPeriod ? { ...scopePayload, period: insightsPeriod } : scopePayload,
+        [...chatMessages, { role: 'user', content: message }],
+      )
+      await queryClient.invalidateQueries({ queryKey: ['finance-insights'] })
+    } catch (err) {
+      // Kept out of the stored conversation: a failed exchange isn't history worth replaying.
+      setChatError(err.message || 'Something went wrong. Please try again.')
+      setChatInput(message)
+    } finally {
+      setPendingQuestion(null)
+      setChatLoading(false)
+    }
+  }
+
+  function handleSendChat(e) {
+    e.preventDefault()
+    sendChatMessage(chatInput)
+  }
 
   function downloadCsvTemplate() {
     const rows = [
@@ -332,21 +337,39 @@ export default function Finances({ demoMode }) {
     batchMutation.mutate(txs)
   }
 
-  const availableMonths = [
-    ...new Set(transactions.map(t => t.date?.slice(0, 7)).filter(Boolean)),
-  ].sort().reverse()
+  // --- The derivation chain -------------------------------------------------------------------
+  //
+  //   transactions → periodRows → scopedRows → KPIs + chart
+  //     (useQuery)   (date range)  (+ filters)
+  //
+  // One period control drives the whole page. The table narrows further with its own review
+  // toggles, but it can no longer sit on a different month than the numbers above it — which is
+  // what the old separate `filterMonth` select allowed.
+  const range = useMemo(() => resolvePeriod(period, transactions), [period, transactions])
+  const periodRows = useMemo(() => filterByRange(transactions, range), [transactions, range])
+  const scopedRows = useMemo(() => applyFinanceFilters(periodRows, filters), [periodRows, filters])
+  const periodCredits = useMemo(() => filterByRange(cardCredits, range), [cardCredits, range])
 
-  // Compared across the whole ledger, not the visible month, so a duplicate that straddles a
-  // month boundary still surfaces.
-  const { groupCount: duplicateSetCount, byId: duplicateById } = useMemo(
+  const kpis = useMemo(
+    () => buildFinanceKpis(scopedRows, range, periodCredits, countCreditsAsIncome),
+    [scopedRows, range, periodCredits, countCreditsAsIncome],
+  )
+
+  const monthsAvailable = useMemo(
+    () => new Set(transactions.map(t => t.date?.slice(0, 7)).filter(Boolean)).size,
+    [transactions],
+  )
+
+  // Compared across the WHOLE ledger, never periodRows, so a duplicate straddling a period
+  // boundary still surfaces instead of hiding until the range happens to cover both copies.
+  const { groupCount: duplicateSetCount, byId: duplicateById, dollarExposure } = useMemo(
     () => duplicateFlags(transactions),
     [transactions],
   )
 
-  const inFilterMonth = t => filterMonth === 'all' || t.date?.startsWith(filterMonth)
-
-  const bankRows = transactions
-    .filter(inFilterMonth)
+  // The table reads the same `scopedRows` the charts do, so clicking a payee narrows the list too
+  // — one scope for the whole page.
+  const bankRows = scopedRows
     .filter(t => !showDuplicatesOnly || duplicateById.has(t.id))
     .filter(t => {
       if (filterType === 'all') return true
@@ -358,35 +381,75 @@ export default function Finances({ demoMode }) {
     })
 
   // Card credits are shown inline for context but belong to the card ledger, so they are not
-  // editable here and are left out of the duplicate view, which only spans bank rows.
-  const creditRows = (showDuplicatesOnly || (filterType !== 'all' && filterType !== 'income'))
-    ? []
-    : cardCredits.filter(inFilterMonth).map(t => ({ ...t, _cardCredit: true }))
+  // editable here and are left out of the duplicate view, which only spans bank rows. They appear
+  // under Income only when the setting actually counts them as income — otherwise the list would
+  // claim an income row the KPIs deliberately exclude.
+  const showCredits = !showDuplicatesOnly
+    && (filterType === 'all' || (filterType === 'income' && countCreditsAsIncome))
+  const creditRows = showCredits ? periodCredits.map(t => ({ ...t, _cardCredit: true })) : []
 
+  const tableSearchTerm = tableSearch.trim().toLowerCase()
   const filtered = [...bankRows, ...creditRows]
+    .filter(t => !tableSearchTerm || [t.description, t.category, t.source].some(
+      field => String(field ?? '').toLowerCase().includes(tableSearchTerm),
+    ))
     .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
 
-  const periodData = buildPeriodData(transactions, cardCredits, summaryPeriod)
-  const sumOf = key => Math.round(periodData.reduce((s, m) => s + m[key], 0) * 100) / 100
-  const totalIncome = sumOf('Income')
-  const totalSavings = sumOf('Savings')
-  const totalExpenses = sumOf('Expenses')
-  const totalInvestments = sumOf('Investments')
-  const totalCredits = sumOf('Credits')
-  // A statement credit shrinks the card bill, and that bill is already an expense here, so the
-  // saving is baked into the expense total. Adding credits to income too would count it twice —
-  // hence off by default.
-  const netCash = Math.round(
-    (totalIncome - totalExpenses + (countCreditsAsIncome ? totalCredits : 0)) * 100,
-  ) / 100
-  const barMax = Math.max(totalIncome, totalSavings, totalInvestments, totalExpenses, 1)
+  // What the table would show with no type filter, no search and no review toggle — the denominator
+  // in "N of M in scope".
+  const tableScopeCount = scopedRows.length + periodCredits.length
+
+  const { credits: totalCredits } = kpis
   const hasChartData = transactions.length > 0
-  const periodLabel = summaryPeriod === 'YTD' ? 'YTD' : summaryPeriod === 'All' ? 'All Time' : `Last ${summaryPeriod}`
+
+  // What the AI is being asked about: the range plus the filter chips, as one opaque key the server
+  // stores and compares by string equality. The table's own search and review toggles are excluded —
+  // they narrow the list on screen but not the financial context.
+  const scopeKey = buildScopeKey(range, filters)
+  const scopeLabel = describeScope(range, filters)
+  const scopePayload = {
+    period: scopeKey,
+    from: range.from,
+    to: range.to,
+    filters,
+    periodLabel: scopeLabel,
+  }
+
+  // Everything that has to clear the pinned bar measures from here. A constant, not a measurement:
+  // the rail only ever sticks once the bar is already showing, so this is correct in every state
+  // and costs no re-render mid-scroll.
+  const pinnedTop = demoMode ? DEMO_BANNER_H : 0
+  const railTop = pinnedTop + PINNED_BAR_H + 16
+
+  function toggleFilter(kind, value) {
+    setFilters(f => ({
+      ...f,
+      [kind]: f[kind].includes(value) ? f[kind].filter(v => v !== value) : [...f[kind], value],
+    }))
+  }
+
+  const filterChips = Object.entries(filters).flatMap(([kind, values]) =>
+    values.map(value => ({
+      key: `${kind}:${value}`,
+      // Flow values are the lowercase strings rows are matched on (`income`/`expense`); a chip is
+      // read by a person, so it gets the capitalized form.
+      label: `${FILTER_LABEL[kind]}: ${kind === 'flows' ? value[0].toUpperCase() + value.slice(1) : value}`,
+      onRemove: () => toggleFilter(kind, value),
+    })),
+  )
+  const hasFilters = filterChips.length > 0
 
   return (
     <div className="p-3 sm:p-6">
-      <div className="flex items-center justify-between mb-6 gap-3 flex-wrap">
-        <h1 className="text-2xl font-semibold text-gray-900">Finances</h1>
+      <div className="flex items-start justify-between mb-5 gap-3 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-semibold text-gray-900">Finances</h1>
+          <p className="mt-1 text-sm text-gray-400">
+            {range.monthCount > 0
+              ? `${range.label} · ${periodRows.length} bank transaction${periodRows.length === 1 ? '' : 's'} · ${kpis.accountCount} source${kpis.accountCount === 1 ? '' : 's'}`
+              : 'No bank transactions yet'}
+          </p>
+        </div>
         <div className="flex items-center gap-3 flex-wrap">
           <button
             onClick={() => !demoMode && setShowAddModal(true)}
@@ -421,25 +484,39 @@ export default function Finances({ demoMode }) {
         </div>
       </div>
 
-      {duplicateSetCount > 0 && (
-        <div className="mb-4 px-4 py-3 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-900 flex items-center justify-between gap-3">
-          <span>
-            You have <strong>{duplicateSetCount}</strong> set{duplicateSetCount !== 1 ? 's' : ''} of possible duplicate
-            transaction{duplicateSetCount !== 1 ? 's' : ''}. Delete the extra copy, or mark it as not a duplicate.
-          </span>
-          <button
-            onClick={() => {
-              setShowDuplicatesOnly(true)
-              setFilterMonth('all')
-              setFilterType('all')
-              setTimeout(() => tableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
-            }}
-            className="shrink-0 px-3 py-1 text-xs font-medium bg-amber-100 hover:bg-amber-200 border border-amber-300 rounded-md transition-colors"
-          >
-            Review Now
-          </button>
+      {hasChartData && (
+        <div className="mb-5 space-y-3">
+          <PeriodChips
+            value={period}
+            onChange={setPeriod}
+            range={range}
+            txCount={periodRows.length}
+            monthsAvailable={monthsAvailable}
+          />
+          <FilterBar
+            chips={filterChips}
+            summary={describeScope(range, filters)}
+            onClearAll={() => setFilters(NO_FILTERS)}
+          />
         </div>
       )}
+
+      <DuplicateBanner
+        setCount={duplicateSetCount}
+        dollarExposure={dollarExposure}
+        onReview={() => {
+          setShowDuplicatesOnly(true)
+          // Duplicates are found across the whole ledger, so the range has to open up to All or
+          // the review list would silently hide the pairs outside the current period. Every other
+          // narrowing goes with it, for the same reason — a review that hides matches is worse
+          // than no review.
+          setPeriod('All')
+          setFilterType('all')
+          setFilters(NO_FILTERS)
+          setTableSearch('')
+          setTimeout(() => tableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
+        }}
+      />
 
       {importStatus?.type === 'error' ? (
         <ErrorBanner
@@ -464,391 +541,127 @@ export default function Finances({ demoMode }) {
       )}
 
       {hasChartData && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-6">
-          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-            <h2 className="text-sm font-medium text-gray-500 mb-4">Income vs Expenses — {periodLabel}</h2>
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={periodData} barCategoryGap="35%">
-                <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
-                <XAxis dataKey="period" tick={{ fontSize: 12, fill: '#6b7280' }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 12, fill: '#6b7280' }} tickFormatter={v => `$${v}`} axisLine={false} tickLine={false} />
-                <Tooltip
-                  formatter={(v, name) => [`$${v.toLocaleString(undefined, { minimumFractionDigits: 2 })}`, name]}
-                  contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 12 }}
-                />
-                <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Bar dataKey="Income" fill="#22c55e" radius={[4, 4, 0, 0]} maxBarSize={24} />
-                <Bar dataKey="Savings" fill="#14b8a6" radius={[4, 4, 0, 0]} maxBarSize={24} />
-                <Bar dataKey="Investments" fill="#6366f1" radius={[4, 4, 0, 0]} maxBarSize={24} />
-                <Bar dataKey="Expenses" fill="#f87171" radius={[4, 4, 0, 0]} maxBarSize={24} />
-                {totalCredits > 0 && (
-                  <Bar dataKey="Credits" name="Card Credits" fill="#a3e635" radius={[4, 4, 0, 0]} maxBarSize={24} />
-                )}
-              </BarChart>
-            </ResponsiveContainer>
+        <>
+          <div className="mb-5">
+            <FinanceKpiRow kpis={kpis} countCreditsAsIncome={countCreditsAsIncome} />
           </div>
 
-          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 flex flex-col justify-between">
-            <div className="flex items-center justify-between mb-5">
-              <h2 className="text-sm font-medium text-gray-500">Total Income, Savings &amp; Expenses</h2>
-              <div className="flex gap-1">
-                {SUMMARY_PERIODS.map(p => (
-                  <button
-                    key={p.key}
-                    onClick={() => setSummaryPeriod(p.key)}
-                    className={`px-2 py-1 text-xs font-medium rounded-md transition-colors ${
-                      summaryPeriod === p.key
-                        ? 'bg-blue-600 text-white'
-                        : 'text-gray-400 hover:text-gray-700 hover:bg-gray-100'
-                    }`}
-                  >
-                    {p.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className={`grid grid-cols-2 gap-3 mb-6 ${totalCredits > 0 ? 'sm:grid-cols-5' : 'sm:grid-cols-4'}`}>
-              <div>
-                <p className="text-xl font-semibold text-green-600">
-                  ${totalIncome.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                </p>
-                <p className="text-xs text-gray-400 mt-1">Income</p>
-              </div>
-              <div>
-                <p className="text-xl font-semibold text-teal-500">
-                  ${totalSavings.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                </p>
-                <p className="text-xs text-gray-400 mt-1">Savings</p>
-              </div>
-              <div>
-                <p className="text-xl font-semibold text-indigo-500">
-                  ${totalInvestments.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                </p>
-                <p className="text-xs text-gray-400 mt-1">Investments</p>
-              </div>
-              <div>
-                <p className="text-xl font-semibold text-red-500">
-                  ${totalExpenses.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                </p>
-                <p className="text-xs text-gray-400 mt-1">Expenses</p>
-              </div>
-              {totalCredits > 0 && (
-                <div>
-                  <p className="text-xl font-semibold text-lime-600">
-                    ${totalCredits.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                  </p>
-                  <p className="text-xs text-gray-400 mt-1">Card Credits</p>
-                </div>
-              )}
-            </div>
-
-            <div className="space-y-3">
-              <div>
-                <div className="flex justify-between text-xs text-gray-500 mb-1">
-                  <span>Income</span>
-                  <span className="text-green-600 font-medium">${totalIncome.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                </div>
-                <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-green-400 rounded-full transition-all duration-500"
-                    style={{ width: `${(totalIncome / barMax) * 100}%` }}
-                  />
-                </div>
-              </div>
-              <div>
-                <div className="flex justify-between text-xs text-gray-500 mb-1">
-                  <span>Savings</span>
-                  <span className="text-teal-500 font-medium">${totalSavings.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                </div>
-                <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-teal-400 rounded-full transition-all duration-500"
-                    style={{ width: `${(totalSavings / barMax) * 100}%` }}
-                  />
-                </div>
-              </div>
-              <div>
-                <div className="flex justify-between text-xs text-gray-500 mb-1">
-                  <span>Investments</span>
-                  <span className="text-indigo-500 font-medium">${totalInvestments.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                </div>
-                <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-indigo-400 rounded-full transition-all duration-500"
-                    style={{ width: `${(totalInvestments / barMax) * 100}%` }}
-                  />
-                </div>
-              </div>
-              <div>
-                <div className="flex justify-between text-xs text-gray-500 mb-1">
-                  <span>Expenses</span>
-                  <span className="text-red-500 font-medium">${totalExpenses.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                </div>
-                <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-red-400 rounded-full transition-all duration-500"
-                    style={{ width: `${(totalExpenses / barMax) * 100}%` }}
-                  />
-                </div>
-              </div>
-
-              {totalCredits > 0 && (
-                <div>
-                  <div className="flex justify-between text-xs text-gray-500 mb-1">
-                    <span>Card Credits</span>
-                    <span className="text-lime-600 font-medium">${totalCredits.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                  </div>
-                  <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-lime-400 rounded-full transition-all duration-500"
-                      style={{ width: `${(totalCredits / barMax) * 100}%` }}
-                    />
-                  </div>
-                </div>
-              )}
-
-              <div className="pt-3 border-t border-gray-100 space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-500">
-                    Net Cash{' '}
-                    <span className="text-gray-300">
-                      (Income − Expenses{countCreditsAsIncome && totalCredits > 0 ? ' + Card Credits' : ''})
-                    </span>
-                  </span>
-                  <span className={`text-sm font-semibold ${netCash >= 0 ? 'text-green-600' : 'text-red-500'}`}>
-                    {netCash >= 0 ? '+' : '−'}${Math.abs(netCash).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-500">Savings</span>
-                  <span className="text-sm font-semibold text-teal-500">
-                    +${totalSavings.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                  </span>
-                </div>
-              </div>
-
-              {totalCredits > 0 && (
-                <label className="flex items-start gap-2 pt-3 border-t border-gray-100 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={countCreditsAsIncome}
-                    disabled={demoMode || settingsMutation.isPending}
-                    onChange={e => settingsMutation.mutate({ countCardCreditsAsIncome: e.target.checked })}
-                    className="mt-0.5 rounded border-gray-300 text-lime-600 focus:ring-lime-500 disabled:opacity-50"
-                  />
-                  <span className="text-xs text-gray-400 leading-relaxed">
-                    Count card credits toward income and Net Cash. Off by default: a statement credit
-                    makes your card bill smaller, and that bill is already counted as an expense here,
-                    so adding it to income as well counts the same money twice.
-                  </span>
-                </label>
-              )}
-            </div>
-          </div>
-        </div>
+          {/* Sits directly after the KPI row so the range and the headline numbers stay reachable
+              while you scroll the charts — the same bar the Spend Analyzer pins. */}
+          <FinanceScopeBar
+            period={period}
+            onPeriodChange={setPeriod}
+            range={range}
+            txCount={periodRows.length}
+            monthsAvailable={monthsAvailable}
+            kpis={kpis}
+            chips={filterChips}
+            onClearAll={() => setFilters(NO_FILTERS)}
+            offsetTop={pinnedTop}
+          />
+        </>
       )}
 
-      <div ref={tableRef} className="bg-white rounded-xl border border-gray-200 shadow-sm">
-        <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3 flex-wrap">
-          <span className="text-sm font-medium text-gray-500">Filter:</span>
-          <select
-            value={filterMonth}
-            onChange={e => setFilterMonth(e.target.value)}
-            className="text-sm border border-gray-200 rounded-md px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="all">All months</option>
-            {availableMonths.map(m => (
-              <option key={m} value={m}>{dayjs(m + '-01').format('MMM YYYY')}</option>
-            ))}
-          </select>
-          <select
-            value={filterType}
-            onChange={e => setFilterType(e.target.value)}
-            className="text-sm border border-gray-200 rounded-md px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="all">All types</option>
-            <option value="income">Income</option>
-            <option value="expense">Expenses</option>
-            <option value="savings">Savings</option>
-            <option value="investments">Investments</option>
-          </select>
-          {showDuplicatesOnly && (
-            <button
-              onClick={() => setShowDuplicatesOnly(false)}
-              className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium bg-amber-100 text-amber-800 border border-amber-300 rounded-full hover:bg-amber-200 transition-colors"
-            >
-              Possible duplicates only ✕
-            </button>
-          )}
-          <span className="ml-auto text-sm text-gray-400">
-            {filtered.length} transaction{filtered.length !== 1 ? 's' : ''}
-          </span>
-        </div>
+      {/* Main column + sticky Financial Pace rail, starting level with the In/Out chart. The rail
+          drops below the content under xl, where 320px of it would leave the chart too narrow to
+          read a month at a time. */}
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-6 items-start">
+      <div className="min-w-0">
 
-        {isLoading ? (
-          <div className="py-12 text-center text-sm text-gray-400">Loading…</div>
-        ) : filtered.length === 0 ? (
-          <div className="py-16 text-center">
-            {showDuplicatesOnly ? (
-              <p className="text-gray-400 text-sm">No possible duplicates left.</p>
-            ) : (
-              <>
-                <p className="text-gray-400 text-sm">No transactions yet.</p>
-                <p className="text-gray-300 text-xs mt-1">Upload a bank statement or add one manually.</p>
-              </>
-            )}
+      {hasChartData && (
+        <div className="space-y-5 mb-6">
+          <InOutChart
+            bankRows={scopedRows}
+            cardCredits={periodCredits}
+            countCredits={countCreditsAsIncome}
+            range={range}
+            subtitle={hasFilters ? 'Filtered to the current scope.' : ''}
+            filters={filters}
+            onFilter={toggleFilter}
+          />
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+            <InflowsCard
+              rows={scopedRows}
+              cardCredits={totalCredits}
+              countCredits={countCreditsAsIncome}
+              creditsDisabled={demoMode || settingsMutation.isPending}
+              onToggleCredits={checked => settingsMutation.mutate({ countCardCreditsAsIncome: checked })}
+              filters={filters}
+              onFilter={toggleFilter}
+            />
+            <OutflowsCard rows={scopedRows} filters={filters} onFilter={toggleFilter} />
           </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="text-left text-xs font-medium text-gray-400 uppercase tracking-wide border-b border-gray-100">
-                  <th className="px-4 py-3">Date</th>
-                  <th className="px-4 py-3">Description</th>
-                  <th className="px-4 py-3">Category</th>
-                  <th className="px-4 py-3 hidden sm:table-cell">Source</th>
-                  <th className="px-4 py-3 text-right">Amount</th>
-                  <th className="px-4 py-3 w-8"></th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {filtered.map(tx => {
-                  if (tx._cardCredit) {
-                    return (
-                      <tr key={`cc-${tx.id}`} className="bg-lime-50/40 hover:bg-lime-50 transition-colors">
-                        <td className="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">
-                          {tx.date ? dayjs(tx.date).format('MMM D, YYYY') : '—'}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-900 max-w-xs">
-                          <div className="truncate">{tx.description}</div>
-                          <div className="text-xs text-gray-400 mt-0.5">
-                            Card credit — edit on the Spend Analyzer
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <span className="inline-block px-2.5 py-0.5 rounded-full text-xs font-medium bg-lime-100 text-lime-700">
-                            {CREDIT_KIND_LABELS[tx.creditKind || 'credit'] ?? 'Credit'}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-xs text-gray-400 hidden sm:table-cell">{tx.source || '—'}</td>
-                        <td className="px-4 py-3 text-sm font-medium text-right whitespace-nowrap text-lime-600">
-                          +${Math.abs(tx.amount).toFixed(2)}
-                        </td>
-                        <td className="px-4 py-3"></td>
-                      </tr>
-                    )
-                  }
-                  const dup = duplicateById.get(tx.id)
-                  return (
-                  <tr key={tx.id} className={`transition-colors ${dup ? 'bg-amber-50/60 hover:bg-amber-50' : 'hover:bg-gray-50'}`}>
-                    <td className="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">
-                      {tx.date ? dayjs(tx.date).format('MMM D, YYYY') : '—'}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-gray-900 max-w-xs">
-                      <div className="truncate">
-                        {tx.description || <span className="text-gray-300 italic">No description</span>}
-                      </div>
-                      {dup && (
-                        <div className="flex items-center gap-2 mt-1 text-xs">
-                          <span className="text-amber-700">
-                            Possible duplicate{dup.otherDate ? ` of ${dayjs(dup.otherDate).format('MMM D')}` : ''}
-                          </span>
-                          {!demoMode && (
-                            <button
-                              onClick={() => updateMutation.mutate({ id: tx.id, dupDismissed: true })}
-                              className="text-gray-400 hover:text-gray-700 underline"
-                            >
-                              Not a duplicate
-                            </button>
-                          )}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      {editingCategoryId === tx.id ? (
-                        <select
-                          autoFocus
-                          defaultValue={tx.category || 'Other'}
-                          onChange={e => {
-                            updateMutation.mutate({ id: tx.id, category: e.target.value })
-                            setEditingCategoryId(null)
-                          }}
-                          onBlur={() => setEditingCategoryId(null)}
-                          className="text-xs border border-gray-300 rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        >
-                          {allCategories.map(cat => (
-                            <option key={cat} value={cat}>{cat}</option>
-                          ))}
-                        </select>
-                      ) : (
-                        <span
-                          onClick={() => !demoMode && setEditingCategoryId(tx.id)}
-                          title={demoMode ? undefined : 'Click to edit category'}
-                          className="inline-block px-2.5 py-0.5 rounded-full text-xs font-medium cursor-pointer hover:opacity-75 transition-opacity"
-                          style={{
-                            backgroundColor: (allCategoryColors[tx.category] || '#94a3b8') + '1a',
-                            color: allCategoryColors[tx.category] || '#94a3b8',
-                          }}
-                        >
-                          {tx.category || 'Other'}
-                        </span>
-                      )}
-                      {tx.category === 'Savings' && savingsAccounts.length > 0 && (
-                        <div className="mt-1">
-                          {linkingTxId === tx.id ? (
-                            <select
-                              autoFocus
-                              defaultValue={tx.linkedSavingsAccountId || ''}
-                              onChange={e => {
-                                updateMutation.mutate({ id: tx.id, linkedSavingsAccountId: e.target.value || null })
-                                setLinkingTxId(null)
-                              }}
-                              onBlur={() => setLinkingTxId(null)}
-                              className="text-xs border border-gray-300 rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-teal-500"
-                            >
-                              <option value="">— No account —</option>
-                              {savingsAccounts.map(a => (
-                                <option key={a.id} value={a.id}>{a.name}</option>
-                              ))}
-                            </select>
-                          ) : (
-                            <span
-                              onClick={() => !demoMode && setLinkingTxId(tx.id)}
-                              className="text-xs text-teal-600 cursor-pointer hover:underline"
-                              title="Click to link savings account"
-                            >
-                              {tx.linkedSavingsAccountId
-                                ? (savingsAccounts.find(a => a.id === tx.linkedSavingsAccountId)?.name ?? 'Unknown account')
-                                : '+ Link account'}
-                            </span>
-                          )}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-xs text-gray-400 hidden sm:table-cell">{tx.source || '—'}</td>
-                    <td className={`px-4 py-3 text-sm font-medium text-right whitespace-nowrap ${
-                      tx.type === 'income' ? 'text-green-600' : 'text-red-500'
-                    }`}>
-                      {tx.type === 'income' ? '+' : '−'}${Math.abs(tx.amount).toFixed(2)}
-                    </td>
-                    <td className="px-4 py-3">
-                      <button
-                        onClick={() => !demoMode && deleteMutation.mutate(tx.id)}
-                        disabled={deleteMutation.isPending || demoMode}
-                        className="text-gray-300 hover:text-red-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors text-lg leading-none"
-                        title={demoMode ? 'Unavailable in Demo Mode' : 'Delete'}
-                      >
-                        ×
-                      </button>
-                    </td>
-                  </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+
+          <AllocationCard
+            rows={scopedRows}
+            months={range.monthCount}
+            savingsAccounts={savingsAccounts}
+            income={kpis.countedIncome}
+            hasHoldings={holdingAccountTypes.length > 0}
+            onLinkAccounts={() => onTabChange?.('investments')}
+          />
+        </div>
+      )}
+      <FinanceTransactionTable
+        rows={filtered}
+        scopeCount={tableScopeCount}
+        isLoading={isLoading}
+        rangeLabel={range.label}
+        duplicateById={duplicateById}
+        categories={allCategories}
+        categoryColors={allCategoryColors}
+        searchQuery={tableSearch}
+        onSearchChange={setTableSearch}
+        typeFilter={filterType}
+        onTypeFilterChange={setFilterType}
+        showDuplicatesOnly={showDuplicatesOnly}
+        onClearDuplicates={() => setShowDuplicatesOnly(false)}
+        savingsAccounts={savingsAccounts}
+        holdingAccountTypes={holdingAccountTypes}
+        onUpdate={patch => updateMutation.mutate(patch)}
+        onDelete={id => deleteMutation.mutate(id)}
+        deleting={deleteMutation.isPending}
+        readOnly={demoMode}
+        containerRef={tableRef}
+        resetKey={`${period}|${filterType}|${showDuplicatesOnly}|${tableSearch}|${filterChips.length}`}
+      />
+
+      </div>
+
+      {/* Capped to the viewport and scrollable *only* where it's sticky: the pace card, three
+          observations, exploration choices and conversation run taller than the screen, and a sticky
+          element taller than its viewport leaves its own bottom permanently out of reach. Below xl
+          it's in normal flow, where a cap would be wrong. */}
+      {hasChartData && (
+        <aside
+          className="xl:sticky xl:overflow-y-auto xl:max-h-[var(--rail-max-h)] min-w-0"
+          style={{ top: railTop, '--rail-max-h': `calc(100vh - ${railTop + 16}px)` }}
+        >
+          <FinanceInsightsPanel
+            hasAiKey={hasAiKey}
+            record={financeInsights}
+            insightsPeriod={insightsPeriod}
+            chatMessages={chatMessages}
+            scopeKey={scopeKey}
+            scopeLabel={scopeLabel}
+            insightsError={insightsError}
+            chatError={chatError}
+            chatInput={chatInput}
+            chatLoading={chatLoading}
+            pendingQuestion={pendingQuestion}
+            generating={insightsMutation.isPending}
+            clearing={clearInsightsMutation.isPending}
+            onGenerate={() => insightsMutation.mutate(scopePayload)}
+            onClear={() => clearInsightsMutation.mutate()}
+            onSendChat={handleSendChat}
+            onExplore={option => sendChatMessage(option.id)}
+            onChatInput={setChatInput}
+            onOpenSettings={onTabChange ? () => onTabChange('settings') : undefined}
+          />
+        </aside>
+      )}
+
       </div>
 
       {reviewData && (

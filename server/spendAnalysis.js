@@ -2,11 +2,11 @@ import dayjs from 'dayjs'
 import { normalizeDescription } from '../src/utils/duplicates.js'
 import { detectRecurring } from '../src/utils/recurring.js'
 import { formatUsd } from './currencyFormatting.js'
+import { isBankIncome, isBankExpense } from '../src/constants/financeRules.js'
 
 const PROFILE_MONTHS = 6
 const FINANCIAL_MONTHS = 6
 const DEFAULT_SAVINGS_RATE = 15
-const FINANCE_CATEGORIES = new Set(['Income', 'Expense', 'Savings', 'Investments'])
 
 const ARCHETYPES = {
   'loyal|focused|steady': {
@@ -377,7 +377,15 @@ function buildProfile(profileFacts, recurring) {
   }
 }
 
-function fullMonthsWithData(transactions) {
+/**
+ * Calendar months the data FULLY spans — the overall date range covers the 1st through the last
+ * day. Excludes leading/trailing partial months and the current incomplete one, so a monthly
+ * average is never dragged down by a half-month of statements.
+ *
+ * Exported because the Finances rail reports the same pace over the same window; two
+ * implementations of "complete month" would eventually disagree by a day.
+ */
+export function fullMonthsWithData(transactions) {
   const dates = transactions.map(tx => tx.date).filter(validDate).sort()
   if (!dates.length) return []
   const min = dates[0]
@@ -390,19 +398,15 @@ function fullMonthsWithData(transactions) {
   })
 }
 
-function isBankIncome(tx) {
-  const category = tx.category
-  return Number(tx.amount) > 0
-    && (category === 'Income' || (tx.type === 'income' && !FINANCE_CATEGORIES.has(category)))
-}
-
-function isBankExpense(tx) {
-  const category = tx.category
-  return Number(tx.amount) < 0
-    && (category === 'Expense' || (tx.type === 'expense' && !FINANCE_CATEGORIES.has(category)))
-}
-
-function buildFinancialPace(bankTransactions, settings) {
+/**
+ * Financial Pace: average monthly income, bank expenses, headroom, and the savings target,
+ * over the latest complete bank months. Card rows can never influence it — bank expenses
+ * already include the card bill, so adding card spending would count the same money twice.
+ *
+ * Exported because the Finances rail surfaces this same computation. Reusing it is what makes
+ * the two tabs show one number rather than two that happen to agree today.
+ */
+export function buildFinancialPace(bankTransactions, settings) {
   const months = fullMonthsWithData(bankTransactions).slice(-FINANCIAL_MONTHS)
   const monthSet = new Set(months)
   const inWindow = tx => validDate(tx.date) && monthSet.has(tx.date.slice(0, 7))

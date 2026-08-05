@@ -2,8 +2,8 @@
 @tailwind components;
 @tailwind utilities;
 
-/* The Spend Analyzer's scope header swaps to a condensed bar when it pins. The two forms are
-   different element trees, so this softens the swap rather than animating a height. */
+/* Both tabs' scope blocks swap to a condensed bar when they pin (`shared/PinnedScopeBar.jsx`). The
+   two forms are different element trees, so this softens the swap rather than animating a height. */
 @keyframes scope-condense {
   from { opacity: 0; transform: translateY(-4px); }
   to   { opacity: 1; transform: none; }

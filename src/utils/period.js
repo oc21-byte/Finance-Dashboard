@@ -5,7 +5,12 @@ import dayjs from 'dayjs'
 // life by a statement cycle, so anchoring to today would open every view on a half-empty
 // trailing month.
 
-export const PERIOD_KEYS = ['7D', '1M', '3M', '6M', '1Y', 'YTD', 'All']
+// One month is the floor on both tabs. Data arrives one statement at a time, so a sub-monthly
+// window can only ever show a fragment of whichever cycle happened to land last — it reads as a
+// collapse in spending rather than as a partial import. `resolvePeriod` still understands '7D'
+// (below) so a scope key stored back when the chip existed still resolves to its real range
+// instead of silently widening to All.
+export const PERIOD_KEYS = ['1M', '3M', '6M', '1Y', 'YTD', 'All']
 
 // Whole-calendar-month windows. 7D / YTD / All are anchored differently and handled below.
 const MONTH_SPANS = { '1M': 1, '3M': 3, '6M': 6, '1Y': 12 }
@@ -138,9 +143,23 @@ export function filterByRange(transactions, range) {
 // merchant chips. The AI routes need it in two forms — a stable key for equality checks, and a
 // sentence for display.
 
-const FILTER_ORDER = ['categories', 'cards', 'merchants']
-const FILTER_PREFIX = { categories: 'cat', cards: 'card', merchants: 'merch' }
-const FILTER_NOUN = { categories: 'category', cards: 'card', merchants: 'merchant' }
+// APPEND-ONLY. Scope keys built from these tables are persisted in db.json (spendInsights.period,
+// financeInsights.period) and compared by STRING EQUALITY — by `createChatBinding` before a reply
+// is appended, and by the insight rails to decide whether what is on screen is stale. Appending a
+// key is safe: a scope carrying none of the new kinds emits no new part, so every stored key stays
+// byte-identical. REORDERING or renaming a prefix silently strands every existing record — the
+// insights go permanently stale and chat replies are refused, with no error anywhere.
+//
+// First three are card-side (Spend Analyzer), last three bank-side (Finances).
+const FILTER_ORDER = ['categories', 'cards', 'merchants', 'accounts', 'flows', 'payees']
+const FILTER_PREFIX = {
+  categories: 'cat', cards: 'card', merchants: 'merch',
+  accounts: 'acct', flows: 'flow', payees: 'payee',
+}
+const FILTER_NOUN = {
+  categories: 'category', cards: 'card', merchants: 'merchant',
+  accounts: 'account', flows: 'type', payees: 'payee',
+}
 
 function normalizeFilters(filters = {}) {
   const out = {}

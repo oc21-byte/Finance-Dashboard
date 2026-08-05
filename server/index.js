@@ -11,6 +11,10 @@ import { DEMO_MODE } from './config.js'
 import { buildSpendAnalysis } from './spendAnalysis.js'
 import { createSpendChatBinding, createSpendChatTurn } from './spendChat.js'
 import { createSpendInsightGeneration, normalizeSpendInsightRecord } from './spendInsightGeneration.js'
+import { buildFinanceAnalysis } from './financeAnalysis.js'
+import { createFinanceChatBinding, createFinanceChatTurn } from './financeChat.js'
+import { createFinanceInsightGeneration, normalizeFinanceInsightRecord } from './financeInsightGeneration.js'
+import { bankFlowOf } from '../src/constants/financeRules.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DB_PATH = path.join(__dirname, '../data/db.json')
@@ -27,6 +31,9 @@ const DEFAULT_DB = {
   // Last generated Spend Analyzer insights and their follow-up chat. Stored server-side because
   // switching tabs unmounts the page, and a reload would lose them either way.
   spendInsights: null,
+  // The same, for the Finances tab. `ensureDb()` back-fills any key missing from an existing
+  // db.json, so adding this needs no migration.
+  financeInsights: null,
   settings: {
     claudeApiKey: '',
     openaiApiKey: '',
@@ -698,10 +705,6 @@ function monthLabel(yyyymm) {
   return `${MONTH_NAMES[m - 1]} ${y}`
 }
 
-// Matches FINANCE_CATEGORIES in src/constants/categories.js — the reserved bank-side
-// category tags. Used to fall back to a transaction's type only for non-finance categories.
-const FINANCE_CAT_SET = new Set(['Income', 'Expense', 'Savings', 'Investments'])
-
 // Calendar months that the bank data FULLY spans — the overall date range covers the 1st
 // through the last day of the month. Excludes leading/trailing partial months (e.g. data
 // starting Nov 14 or ending May 24) and the current incomplete month, so monthly averages
@@ -748,11 +751,14 @@ function buildMonthlyFinancials(db, maxMonths = 6) {
   for (const t of bank) {
     if (!inWindow(t.date)) continue
     const amt = Math.abs(Number(t.amount))
-    const cat = t.category
-    if (cat === 'Savings') savingsContrib += amt
-    else if (cat === 'Investments') investContrib += amt
-    else if (cat === 'Income' || (t.type === 'income' && !FINANCE_CAT_SET.has(cat))) income += amt
-    else if (cat === 'Expense' || (t.type === 'expense' && !FINANCE_CAT_SET.has(cat))) expenses += amt
+    // bankFlowOf applies the same Savings/Investments-first ordering this chain used to spell
+    // out, so an allocation row can't fall through to expenses on its type: 'expense'.
+    switch (bankFlowOf(t)) {
+      case 'savings': savingsContrib += amt; break
+      case 'investments': investContrib += amt; break
+      case 'income': income += amt; break
+      case 'expense': expenses += amt; break
+    }
   }
 
   // Credit-card category breakdown over the same full-month window (advice only). Positive card
@@ -785,7 +791,7 @@ function buildMonthlyFinancials(db, maxMonths = 6) {
     if (!inWindow(t.date)) continue
     const cat = t.category
     if (!cat || cat === 'Income' || cat === 'Transfer') continue
-    if (t.type === 'income' && !FINANCE_CAT_SET.has(cat)) continue
+    if (bankFlowOf(t) === 'income') continue
     const amt = Math.abs(Number(t.amount))
     bankByCat[cat] = (bankByCat[cat] || 0) + amt
   }
@@ -1203,9 +1209,10 @@ function saveSpendInsights(record) {
   return db.spendInsights
 }
 
-// Both spend routes take the same body: a `period` scope key plus, optionally, the range and
-// filters it stands for. Without the range this is the old prefix-match behaviour.
-function readSpendScope(body = {}) {
+// Every insight route takes the same body: a `period` scope key plus, optionally, the range and
+// filters it stands for. Without the range this is the old prefix-match behaviour. Shared by both
+// triads — the filter vocabularies differ, but they are opaque here.
+function readScopeBody(body = {}) {
   const { period = 'all', from, to, filters, periodLabel } = body
   const scope = (from || to || filters) ? { from, to, filters, label: periodLabel } : period
   return { period, scope, periodLabel: periodLabel ?? null }
@@ -1229,7 +1236,7 @@ app.post('/api/llm/spend-insights', async (req, res) => {
   const hasKey = aiProvider === 'openai' ? !!openaiApiKey : !!claudeApiKey
   if (!hasKey) return res.status(400).json({ error: 'No AI API key configured. Add one in Settings.' })
 
-  const { period, scope, periodLabel } = readSpendScope(req.body)
+  const { period, scope, periodLabel } = readScopeBody(req.body)
   const analysis = buildSpendAnalysis({
     bankTransactions: db.transactions || [],
     cardTransactions: db.credit_card_transactions || [],
@@ -1266,7 +1273,7 @@ app.post('/api/llm/spend-chat', async (req, res) => {
     return res.status(400).json({ error: 'No user message provided' })
   }
 
-  const { period, scope: requestScope } = readSpendScope(req.body)
+  const { period, scope: requestScope } = readScopeBody(req.body)
 
   // The stored record owns the conversational scope. If it no longer matches the request, use the
   // client's scope but do not borrow profile or Financial Pace facts from a different analysis.
@@ -1328,6 +1335,139 @@ app.post('/api/llm/spend-chat', async (req, res) => {
     res.json({ reply })
   } catch (err) {
     failure(res, 'LLM spend-chat error', err, {
+      detail: rawAdvice ?? rawIntent,
+    })
+  }
+})
+
+// The Finances triad. Structurally identical to the spend routes above — same replace-wholesale
+// storage, same re-read before appending a chat reply — over the bank ledger instead of the card
+// one. The two records are separate keys on purpose: they answer different questions over different
+// scopes, and one refresh must not invalidate the other's conversation.
+function saveFinanceInsights(record) {
+  const db = readDb()
+  db.financeInsights = record
+  writeDb(db)
+  return db.financeInsights
+}
+
+app.get('/api/finance-insights', (req, res) => {
+  const db = readDb()
+  res.json(normalizeFinanceInsightRecord(db.financeInsights ?? null))
+})
+
+app.delete('/api/finance-insights', (req, res) => {
+  const db = readDb()
+  db.financeInsights = null
+  writeDb(db)
+  res.json(null)
+})
+
+app.post('/api/llm/finance-insights', async (req, res) => {
+  const db = readDb()
+  const { aiProvider = 'claude', claudeApiKey, openaiApiKey } = db.settings
+  const hasKey = aiProvider === 'openai' ? !!openaiApiKey : !!claudeApiKey
+  if (!hasKey) return res.status(400).json({ error: 'No AI API key configured. Add one in Settings.' })
+
+  const { period, scope, periodLabel } = readScopeBody(req.body)
+  const analysis = buildFinanceAnalysis({
+    bankTransactions: db.transactions || [],
+    cardTransactions: db.credit_card_transactions || [],
+    savingsAccounts: db.savings_accounts || [],
+    settings: db.settings || {},
+    insightScope: scope,
+  })
+  const generation = createFinanceInsightGeneration({ analysis, period, periodLabel, scope })
+
+  let raw = null
+  try {
+    const text = await callLLM({
+      system: generation.prompt.system,
+      userMessages: [{ role: 'user', content: generation.prompt.user }],
+      maxTokens: generation.prompt.maxTokens,
+    })
+    raw = text
+    const result = generation.complete(text, new Date().toISOString())
+    saveFinanceInsights(result)
+    res.json(result)
+  } catch (err) {
+    failure(res, 'LLM finance-insights error', err, { detail: raw })
+  }
+})
+
+app.post('/api/llm/finance-chat', async (req, res) => {
+  const db = readDb()
+  const { aiProvider = 'claude', claudeApiKey, openaiApiKey } = db.settings
+  const hasKey = aiProvider === 'openai' ? !!openaiApiKey : !!claudeApiKey
+  if (!hasKey) return res.status(400).json({ error: 'No AI API key configured. Add one in Settings.' })
+
+  const { messages = [] } = req.body
+  if (!messages.length) return res.status(400).json({ error: 'No messages provided' })
+  if (![...messages].reverse().some(message => message.role === 'user' && message.content?.trim())) {
+    return res.status(400).json({ error: 'No user message provided' })
+  }
+
+  const { period, scope: requestScope } = readScopeBody(req.body)
+
+  // The stored record owns the conversational scope. If it no longer matches the request, use the
+  // client's scope but do not borrow Financial Pace facts from a different analysis.
+  const binding = createFinanceChatBinding({ record: db.financeInsights, period, requestScope })
+  const { storedInsights, scope } = binding
+  const analysis = buildFinanceAnalysis({
+    bankTransactions: db.transactions || [],
+    cardTransactions: db.credit_card_transactions || [],
+    savingsAccounts: db.savings_accounts || [],
+    settings: db.settings || {},
+    insightScope: scope,
+  })
+  const turn = createFinanceChatTurn({
+    analysis,
+    storedInsights,
+    bankTransactions: db.transactions || [],
+    settings: db.settings || {},
+    messages,
+  })
+
+  let rawIntent = null
+  let rawAdvice = null
+  try {
+    let reply = turn.directReply
+    if (!reply) {
+      const intentText = await callLLM({
+        system: turn.intentPrompt.system,
+        userMessages: [{ role: 'user', content: turn.intentPrompt.user }],
+        maxTokens: turn.intentPrompt.maxTokens,
+      })
+      rawIntent = intentText
+      const outcome = turn.completeIntent(intentText)
+      if (outcome.type === 'advice') {
+        const adviceText = await callLLM({
+          system: outcome.prompt.system,
+          userMessages: outcome.prompt.messages,
+          maxTokens: outcome.prompt.maxTokens,
+        })
+        rawAdvice = adviceText
+        reply = turn.completeAdvice(adviceText)
+      } else {
+        reply = outcome.reply
+      }
+    }
+
+    // Appended only when the stored insights still describe the scope being discussed. Otherwise
+    // this exchange belongs to a generation that has since been replaced or re-scoped.
+    const fresh = readDb()
+    if (binding.canAppend(fresh.financeInsights)) {
+      fresh.financeInsights.messages = [
+        ...(fresh.financeInsights.messages ?? []),
+        turn.userMessage,
+        { role: 'assistant', content: reply },
+      ]
+      writeDb(fresh)
+    }
+
+    res.json({ reply })
+  } catch (err) {
+    failure(res, 'LLM finance-chat error', err, {
       detail: rawAdvice ?? rawIntent,
     })
   }

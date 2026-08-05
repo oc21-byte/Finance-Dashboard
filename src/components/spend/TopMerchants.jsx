@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { buildMerchantTotals } from '../../utils/spendAggregations.js'
 import { MERCHANT_BAR } from './palette.js'
-import BarList from './BarList.jsx'
+import BarList from '../shared/BarList.jsx'
 
 const TOP_N = 6
 const EXPANDED_N = 20

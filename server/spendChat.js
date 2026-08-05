@@ -1,6 +1,8 @@
 import { normalizeDescription } from '../src/utils/duplicates.js'
 import { detectRecurring } from '../src/utils/recurring.js'
 import { formatUsd, normalizeUsdText } from './currencyFormatting.js'
+import { createChatBinding } from './chatBinding.js'
+import { stripJsonFence, validatePlainText } from './modelText.js'
 
 const FACT_METRICS = new Set([
   'spend', 'credits', 'transactions', 'recurring', 'income', 'expenses', 'headroom',
@@ -26,18 +28,6 @@ function formatMoney(value) {
 
 function plural(count, singular, pluralForm = `${singular}s`) {
   return count === 1 ? singular : pluralForm
-}
-
-function stripJsonFence(text) {
-  return String(text ?? '').trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
-}
-
-function validateModelPlainText(value, label, maxChars) {
-  const text = String(value ?? '').trim()
-  if (!text) throw new Error(`AI ${label} response was empty`)
-  if (text.length > maxChars) throw new Error(`AI ${label} response exceeds ${maxChars} characters`)
-  if (/`/.test(text) || /<\/?[a-z][^>]*>/i.test(text)) throw new Error(`AI ${label} response must be plain text`)
-  return text
 }
 
 function validateMessages(messages) {
@@ -155,7 +145,7 @@ function parseIntent(rawText) {
   const parsed = JSON.parse(stripJsonFence(rawText))
   if (parsed?.mode === 'advice') return { mode: 'advice' }
   if (parsed?.mode === 'clarify') {
-    const question = validateModelPlainText(parsed.question, 'clarification', MAX_CLARIFICATION_CHARS)
+    const question = validatePlainText(parsed.question, 'clarification', MAX_CLARIFICATION_CHARS)
     return { mode: 'clarify', question }
   }
   if (parsed?.mode !== 'fact' || !parsed.query || typeof parsed.query !== 'object') {
@@ -533,25 +523,8 @@ Use only the supplied facts. Do not perform arithmetic or invent causes, intenti
  * current scope, and a reply may only be appended if that same generation still exists after the
  * model call finishes.
  */
-export function createSpendChatBinding({ record = null, period, requestScope }) {
-  const storedInsights = record?.period === period ? record : null
-  const identity = storedInsights
-    ? {
-        period: storedInsights.period,
-        generatedAt: storedInsights.generatedAt ?? null,
-        analysisVersion: storedInsights.analysisVersion ?? 1,
-      }
-    : null
-
-  return {
-    storedInsights,
-    scope: storedInsights ? (storedInsights.scope ?? storedInsights.period) : requestScope,
-    canAppend(currentRecord) {
-      if (!identity || currentRecord?.period !== identity.period) return false
-      return (currentRecord.generatedAt ?? null) === identity.generatedAt
-        && (currentRecord.analysisVersion ?? 1) === identity.analysisVersion
-    },
-  }
+export function createSpendChatBinding(options) {
+  return createChatBinding(options)
 }
 
 /**
@@ -604,7 +577,7 @@ export function createSpendChatTurn({
       return { type: 'reply', reply: executeFactQuery(intent.query, context) }
     },
     completeAdvice(rawText) {
-      return normalizeUsdText(validateModelPlainText(rawText, 'advisory', MAX_ADVICE_CHARS))
+      return normalizeUsdText(validatePlainText(rawText, 'advisory', MAX_ADVICE_CHARS))
     },
   }
 }

@@ -43,7 +43,7 @@ async function request(method, path, body) {
   return res.json()
 }
 
-function spendScopeBody(scope) {
+function scopeBody(scope) {
   return typeof scope === 'string' || !scope ? { period: scope || 'all' } : scope
 }
 
@@ -112,21 +112,28 @@ export const api = {
     create: (data) => request('POST',   '/upload-history', data),
     remove: (id)   => request('DELETE', `/upload-history/${id}`),
   },
-  // The last generated Spend Analyzer insights and their chat. Written by the LLM routes, so
+  // The last generated insights and their chat, one record per tab. Written by the LLM routes, so
   // there is no create here — only read and clear.
   spendInsights: {
     get:   () => request('GET',    '/spend-insights'),
     clear: () => request('DELETE', '/spend-insights'),
+  },
+  financeInsights: {
+    get:   () => request('GET',    '/finance-insights'),
+    clear: () => request('DELETE', '/finance-insights'),
   },
   shutdown: () => request('POST', '/shutdown'),
   llm: {
     insights: (payload) => request('POST', '/llm/insights', payload),
     goalAnalysis: (payload) => request('POST', '/llm/goal-analysis', payload),
     categorize: (transactions) => request('POST', '/llm/categorize', { transactions }),
-    // `scope` is either a bare period string ('all' | 'YYYY-MM') or the Spend Analyzer's
+    // `scope` is either a bare period string ('all' | 'YYYY-MM') or a page scope,
     // { period, from, to, filters, periodLabel } — a rolling range can't be a date prefix.
-    spendInsights: (scope) => request('POST', '/llm/spend-insights', spendScopeBody(scope)),
-    spendChat: (scope, messages) => request('POST', '/llm/spend-chat', { ...spendScopeBody(scope), messages }),
+    // The filter vocabularies differ per tab; the server treats them as opaque.
+    spendInsights: (scope) => request('POST', '/llm/spend-insights', scopeBody(scope)),
+    spendChat: (scope, messages) => request('POST', '/llm/spend-chat', { ...scopeBody(scope), messages }),
+    financeInsights: (scope) => request('POST', '/llm/finance-insights', scopeBody(scope)),
+    financeChat: (scope, messages) => request('POST', '/llm/finance-chat', { ...scopeBody(scope), messages }),
     dashboardChat: (messages) => request('POST', '/llm/dashboard-chat', { messages }),
     goalChat: (goalId, messages) => request('POST', '/llm/goal-chat', { goalId, messages }),
     budgetBuilder: (payload) => request('POST', '/llm/budget-builder', payload),

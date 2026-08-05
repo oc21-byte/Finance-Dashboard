@@ -6,11 +6,9 @@ import {
   CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell, PieChart, Pie,
 } from 'recharts'
 import { api } from '../api/client.js'
-import { FINANCE_CATEGORIES } from '../constants/categories.js'
+import { bankFlowOf } from '../constants/financeRules.js'
 
 // ── Utilities ────────────────────────────────────────────────────────────────
-
-const FINANCE_CAT_SET = new Set(FINANCE_CATEGORIES)
 
 function buildNetCashFlowData(transactions, periodKey) {
   let months
@@ -41,10 +39,10 @@ function buildNetCashFlowData(transactions, periodKey) {
   return months.map(month => {
     const txs = transactions.filter(t => t.date?.startsWith(month))
     const income = txs
-      .filter(t => t.category === 'Income' || (t.type === 'income' && !FINANCE_CAT_SET.has(t.category)))
+      .filter(t => bankFlowOf(t) === 'income')
       .reduce((s, t) => s + Math.abs(t.amount), 0)
     const expenses = txs
-      .filter(t => t.category === 'Expense' || (t.type === 'expense' && !FINANCE_CAT_SET.has(t.category)))
+      .filter(t => bankFlowOf(t) === 'expense')
       .reduce((s, t) => s + Math.abs(t.amount), 0)
     const net = Math.round((income - expenses) * 100) / 100
     return { month: dayjs(month + '-01').format('MMM YY'), net }
@@ -295,10 +293,10 @@ export default function Dashboard() {
   const thisMonth = dayjs().format('YYYY-MM')
   const thisMonthTxs = transactions.filter(t => t.date?.startsWith(thisMonth))
   const monthIncome = thisMonthTxs
-    .filter(t => t.category === 'Income' || (t.type === 'income' && !FINANCE_CAT_SET.has(t.category)))
+    .filter(t => bankFlowOf(t) === 'income')
     .reduce((s, t) => s + Math.abs(t.amount), 0)
   const monthExpenses = thisMonthTxs
-    .filter(t => t.category === 'Expense' || (t.type === 'expense' && !FINANCE_CAT_SET.has(t.category)))
+    .filter(t => bankFlowOf(t) === 'expense')
     .reduce((s, t) => s + Math.abs(t.amount), 0)
   const monthNet = Math.round((monthIncome - monthExpenses) * 100) / 100
 

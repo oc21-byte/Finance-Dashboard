@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { buildCategoryTotals } from '../../utils/spendAggregations.js'
-import BarList from './BarList.jsx'
+import BarList from '../shared/BarList.jsx'
 
 const TOP_N = 6
 const money = n => '$' + Math.round(n).toLocaleString()

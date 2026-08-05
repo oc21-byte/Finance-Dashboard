@@ -143,14 +143,21 @@ export function findDuplicateGroups(transactions) {
 }
 
 // Both the per-row badge and the "duplicates only" filter read from this.
+//
+// `dollarExposure` is what is double-counted if every set is left alone: one set of N rows means
+// N−1 extra copies of the same charge. Members of a set always share an amount to the cent —
+// `bucketByAmount` is what groups them in the first place — so the first member's amount is the
+// set's amount, and no averaging is needed.
 export function duplicateFlags(transactions) {
   const groups = findDuplicateGroups(transactions)
   const byId = new Map()
+  let dollarExposure = 0
   for (const members of groups) {
+    dollarExposure += Math.abs(Number(members[0].amount) || 0) * (members.length - 1)
     for (const tx of members) {
       const other = members.find(m => m.id !== tx.id)
       byId.set(tx.id, { otherDate: other?.date ?? null, setSize: members.length })
     }
   }
-  return { groupCount: groups.length, byId }
+  return { groupCount: groups.length, byId, dollarExposure: Math.round(dollarExposure * 100) / 100 }
 }
