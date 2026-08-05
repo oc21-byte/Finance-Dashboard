@@ -67,11 +67,11 @@ Verified on 2026-08-05:
 - `npm run build` — passed. Vite reports its existing large-chunk warning for the main and XLSX
   bundles; this is a performance follow-up, not a build failure.
 - Finance insight generation and follow-up chat run live against a real key.
+- PDF Vision import and the AI import fallbacks (`/api/llm/detect-columns`, `/api/llm/extract-rows`)
+  run live against a real key.
 
-Record failures here rather than weakening golden values or architecture rules to make tests pass.
-
-Still unexercised with a live key: PDF Vision import (`parsePdfVision`) and the two AI import
-fallbacks, `/api/llm/detect-columns` and `/api/llm/extract-rows`.
+Every AI-dependent path has now been exercised at least once. Record failures here rather than
+weakening golden values or architecture rules to make tests pass.
 
 ## Deferred direction
 
