@@ -10,8 +10,9 @@ npm test         # deterministic unit/integration tests
 npm run build    # production frontend build
 ```
 
-`project-plan.md` is the original, partly outdated design. Trust the code and this guide for current
-behavior. See `PROGRESS.md` for current work and verification status.
+Trust the code and this guide for current behavior. `project-plan.md` (the original, partly outdated
+design) and `PROGRESS.md` (current work and verification status) are git-ignored working notes —
+read them when present, but they are not in a fresh clone.
 
 ## Non-negotiable architecture
 
