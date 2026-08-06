@@ -95,6 +95,11 @@ export const api = {
     get: () => request('GET', '/settings'),
     update: (data) => request('PUT', '/settings', data),
   },
+  // The extraction-model dropdown's options, resolved server-side from the current provider's own
+  // catalogue so the list can never offer a model the API would reject.
+  models: {
+    list: () => request('GET', '/models'),
+  },
   factoryReset: () => request('POST', '/factory-reset'),
   categories: {
     list: () => request('GET', '/categories'),

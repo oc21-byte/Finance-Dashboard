@@ -52,8 +52,16 @@ rules encode) and `project-plan.md` (original, partly outdated concept). Never m
 ## AI models
 
 - Fast (`claude-haiku-4-5-20251001` / `gpt-4o-mini`): insights, categorization, chat, Budget Builder.
-- Smart/vision (`claude-sonnet-4-6` / `gpt-4o`): column detection, row extraction, PDF Vision.
-- PDF Vision uses editable `settings.visionModel`; `callLLM({ model })` overrides the tier.
+- Smart (`claude-sonnet-4-6` / `gpt-4o`): column detection, row extraction.
+- Vision defaults to the same pair but is editable per provider: `settings.visionModel` for Claude,
+  `settings.openaiVisionModel` for OpenAI. Two keys, not one — the ids are not interchangeable, so a
+  shared field would hand Anthropic a `gpt-` id the moment the provider changed.
+- `callLLM({ model })` overrides the tier outright.
+- `GET /api/models` lists what the current provider will actually serve, for the Settings dropdown.
+  Keys stay server-side; the response is cached ~10 min per provider and dropped when a key is
+  saved. No key, an unreachable provider or a rejected key all return `source: 'fallback'` with a
+  short built-in list — never an empty list, and never an error. Filtering and labelling live in the
+  pure `src/utils/modelCatalog.js`, so the dropdown can never offer a model the API would reject.
 
 ## Code map
 
@@ -74,6 +82,7 @@ rules encode) and `project-plan.md` (original, partly outdated concept). Never m
 | Liquid-net-worth history | `server/netWorthHistory.js` |
 | Budget math/UI | `src/utils/budgetModel.js`, `src/components/budget/*` |
 | Investments math/UI | `src/utils/investmentsModel.js`, `statementReconcile.js`, `src/components/investments/*` |
+| Settings UI, model catalog | `src/pages/Settings.jsx`, `src/components/settings/*`, `src/utils/modelCatalog.js` |
 | Insight triads (one per tab) | `server/{spend,finance,dashboard,budget}{Analysis,InsightGeneration,Chat}.js` |
 | Shared insight safeguards | `server/chatBinding.js`, `server/modelText.js` |
 | Tests | `test/*.test.js` |
@@ -300,7 +309,8 @@ dashboardInsights           current dashboard generation + chat, or null
 budgetInsights              current budget generation + chat, plus its plan fingerprint, or null
 uploadHistory[]             filename, source, ledger, importedAt; transactionIds for bank/card,
                             target + recordIds for investment
-settings                    provider flags/config, budgets, mappings, vision model, credit policy
+settings                    provider flags/config, budgets, mappings, per-provider vision models
+                            (visionModel + openaiVisionModel), credit policy
                             plus cashOpeningBalance, statementBalances[], netWorthHistoryVersion,
                             categoryBudgets{}, confirmedMonthlyIncome, budgetSavingsTarget/Rate
 ```

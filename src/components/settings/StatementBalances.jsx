@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import dayjs from 'dayjs'
+import InfoTip from '../dashboard/InfoTip.jsx'
 
 const money = n => '$' + Math.abs(n ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const signed = n => (n < 0 ? '−' : '+') + money(n)
@@ -46,15 +47,23 @@ export default function StatementBalances({ balances = [], checks = [], onSave, 
   }
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-      <h2 className="text-[15px] font-semibold text-gray-900">Statement closing balances</h2>
-      <p className="mt-1 text-[12.5px] leading-relaxed text-gray-400">
-        The ending balance printed on each bank statement. Your cash figure is the newest of these
-        plus every transaction since, which is why cash cannot be typed in directly — every dollar
-        of it traces back to something your bank issued.
+    // Header and form stay put; only the list of balances scrolls, so the card can sit in a fixed
+    // share of the column without the "Add" control drifting out of reach.
+    <div className="flex min-h-[240px] max-h-[480px] flex-col rounded-xl border border-gray-200 bg-white shadow-sm lg:max-h-none lg:flex-1 lg:basis-0">
+      <div className="flex-none border-b border-dashed border-gray-200 px-5 pb-4 pt-4">
+      <div className="flex items-center gap-1.5">
+        <h2 className="text-sm font-semibold text-gray-700">Statement closing balances</h2>
+        <InfoTip label="Statement closing balances">
+          The ending balance printed on each bank statement. Your cash figure is the newest of these
+          plus every transaction since, which is why cash cannot be typed in directly — every dollar
+          of it traces back to something your bank issued.
+        </InfoTip>
+      </div>
+      <p className="mt-0.5 text-xs text-gray-400">
+        Anchor balances used to reconcile cash between statement imports
       </p>
 
-      <form onSubmit={add} className="mt-4 flex flex-wrap items-end gap-2">
+      <form onSubmit={add} className="mt-3 flex flex-wrap items-end gap-2">
         <label className="min-w-[9rem] flex-1">
           <span className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-gray-400">
             Statement ends
@@ -79,14 +88,16 @@ export default function StatementBalances({ balances = [], checks = [], onSave, 
         </button>
       </form>
       {error && <p className="mt-1.5 text-xs text-red-500">{error}</p>}
+      </div>
 
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-1">
       {rows.length === 0 ? (
-        <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-800">
+        <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-800">
           None on file, so your cash balance is a reconstruction rather than a known figure. Add the
           closing balance from your most recent statement and it becomes exact.
         </p>
       ) : (
-        <ul className="mt-4 divide-y divide-gray-100 border-t border-gray-100">
+        <ul className="divide-y divide-gray-100">
           {rows.map(entry => {
             const check = checkFor(entry.date)
             const gap = check?.discrepancy ?? 0
@@ -136,6 +147,7 @@ export default function StatementBalances({ balances = [], checks = [], onSave, 
           })}
         </ul>
       )}
+      </div>
     </div>
   )
 }

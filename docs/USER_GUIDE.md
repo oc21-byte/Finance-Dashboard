@@ -532,7 +532,7 @@ uploading the same statement twice is completely safe — the second time, every
 Savings statements work the same way, matched by account name. If your statement doesn't print
 an interest rate, the app keeps the APY you already entered rather than wiping it to zero.
 
-Every import is logged under **Settings → Investment Upload History**, where you can delete it.
+Every import is logged under **Settings → Upload History → Invest.**, where you can delete it.
 Deleting removes what that import *wrote* — but be aware it can't bring back a position the
 import replaced or removed at the time.
 
@@ -626,14 +626,28 @@ tell them apart. You can change the assumed investment return percentage in Sett
 
 **What it's for:** A small control panel for the handful of things you set once and forget.
 
+The page has two columns: **AI & Automation** on the left — provider, key, and extraction
+model — and **Data & Imports** on the right, where your statement balances and upload history
+live. Each of those two right-hand cards scrolls inside itself, so the page stays the same
+length no matter how many statements you've imported. Anywhere you see a small **ⓘ**, hover
+or tab to it for the longer explanation.
+
 - **AI Provider** — choose between **Claude** (Anthropic) and **ChatGPT** (OpenAI). Switching
   here changes which AI service the app uses for all features — insights, categorization, PDF
   parsing, and the Budget Builder.
-- **Claude API Key / OpenAI API Key** — add or replace your key for the selected provider
+- **API Key** — add or replace your key for the selected provider
   (see [Step 1](#step-1-set-up-your-ai-key-do-this-once)). A green **Configured ✓** badge
   means you're good to go.
+- **Statement Extraction Model** — which model reads your scanned PDF statements. The list is
+  pulled from your provider using your own key, so it only ever shows models your account can
+  actually use, and it picks up new ones on its own. Your choice saves as soon as you pick it,
+  and **Reset** puts back the default. Each provider remembers its own choice, so switching
+  between Claude and ChatGPT doesn't lose it. The default is the right answer almost always —
+  reach for a stronger model only if one particular statement keeps coming out wrong. (No key
+  saved yet, or the app can't reach your provider? You'll see a short built-in list instead.)
 - **Monthly Income Baseline** — your usual take-home pay. The Budget Builder uses this to
-  make smarter suggestions. Type it in and click **Save**.
+  make smarter suggestions. Type it in and click **Save**; leave it blank and save to go back
+  to the average worked out from your CSVs.
 - **Assumed Annual Investment Return** — the return rate used for the optimistic growth
   projection on linked goals. Defaults to **6%**. If your holdings are mostly conservative
   (bonds, cash-equivalent ETFs) you might lower it; if you're in aggressive growth funds
@@ -645,12 +659,13 @@ tell them apart. You can change the assumed investment return percentage in Sett
   default to $750. You can override the dollar amount directly in the Budget table for a
   specific month without touching this setting — this just controls the starting default.
   Type a new percentage (0–100) and click **Save**.
-- **Upload History** — three logs, one per place statements land: **Bank** (Finances),
-  **Credit Card** (Spend Analyzer), and **Investment** (account summaries). If you want to
-  re-import a statement or just keep things tidy, delete individual entries here. Deleting a
-  bank or card entry also removes the transactions it brought in. Deleting an investment entry
-  removes the holdings or savings accounts that import wrote — but it can't restore a position
-  the import replaced, because that reconciled the account to the statement.
+- **Upload History** — one log with three tabs, one per place statements land: **Bank**
+  (Finances), **Card** (Spend Analyzer), and **Invest.** (account summaries). The number beside
+  each tab is how many imports it holds. If you want to re-import a statement or just keep
+  things tidy, delete individual entries here. Deleting a bank or card entry also removes the
+  transactions it brought in. Deleting an investment entry removes the holdings or savings
+  accounts that import wrote — but it can't restore a position the import replaced, because
+  that reconciled the account to the statement.
 - **Saved CSV Sources** — a list of the bank and card accounts you've taught the app about.
   If an account's downloads change format and imports start looking off, delete it here and
   the app will re-learn it the next time you upload. You can remove them one at a time or

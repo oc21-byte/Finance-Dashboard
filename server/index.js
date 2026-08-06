@@ -26,6 +26,10 @@ import {
   normalizeSavings, reconcileSavings, applySavingsReconcile,
 } from '../src/utils/statementReconcile.js'
 import {
+  DEFAULT_VISION_MODEL, FALLBACK_MODELS,
+  normalizeAnthropicModels, normalizeOpenAiModels,
+} from '../src/utils/modelCatalog.js'
+import {
   HISTORY_VERSION, rebuildHistory, valueHoldingsAsOf, buildEntry,
   cashAsOf, statementChecks, sortedBalances, deriveOpeningBalance, ledgerCoverageEnd,
 } from './netWorthHistory.js'
@@ -67,7 +71,11 @@ const DEFAULT_DB = {
     // conjured by the blind merge in `PUT /api/settings` — without a default, `ensureDb()`'s
     // back-fill never creates the key and every reader has to defend against its absence.
     categoryBudgets: {},
+    // One editable extraction model per provider. Two keys rather than one shared: the ids are not
+    // interchangeable, so a single field would hand Anthropic a `gpt-` id the moment someone
+    // switched providers. `visionModel` keeps its name — it is already persisted in db.json.
     visionModel: 'claude-sonnet-4-6',
+    openaiVisionModel: 'gpt-4o',
     // Off by default: a card credit already shows up as a smaller card bill on the bank side,
     // so counting it as income too would double-count it. See Finances for the full note.
     countCardCreditsAsIncome: false,
@@ -662,6 +670,12 @@ app.put('/api/settings', (req, res) => {
   const previousCash = db.settings?.cashBalance ?? 0
   db.settings = { ...db.settings, ...req.body }
 
+  // Saving a key is the one moment the cached model list is certainly wrong: it was built without
+  // a key, or with the one just replaced. Drop it so the dropdown refills on the next read rather
+  // than showing the fallback for another ten minutes.
+  if ('claudeApiKey' in (req.body ?? {})) modelsCache.delete('claude')
+  if ('openaiApiKey' in (req.body ?? {})) modelsCache.delete('openai')
+
   // `cashBalance` is a cache of a derivation, never an input. A client that PUTs one is ignored
   // rather than obeyed — there is no field for it in the UI, and honouring a stray value would
   // reintroduce exactly the typed-balance drift this model exists to remove.
@@ -675,6 +689,57 @@ app.put('/api/settings', (req, res) => {
   writeDb(db)
   const { claudeApiKey, openaiApiKey, ...rest } = db.settings
   res.json({ ...rest, hasClaudeApiKey: !!(claudeApiKey), hasOpenaiApiKey: !!(openaiApiKey) })
+})
+
+// --- Model catalog ---
+
+// Settings mounts on every visit but a provider's catalogue changes a couple of times a year, so
+// the list is held briefly rather than re-fetched per page view. Keyed by provider, not by key:
+// swapping a key for one with different model access is rare enough to wait out the TTL.
+const MODELS_TTL_MS = 10 * 60 * 1000
+const modelsCache = new Map()
+
+/**
+ * The models the current provider will actually serve, for the extraction-model dropdown.
+ *
+ * Always answers with a usable list. No key, an unreachable provider or a rejected key all fall
+ * back to a short built-in list and say so via `source`, because an empty dropdown is a worse
+ * failure than a slightly stale one — it leaves no way to see or change what is configured.
+ */
+app.get('/api/models', async (req, res) => {
+  const db = readDb()
+  const { aiProvider = 'claude', claudeApiKey, openaiApiKey } = db.settings
+  const provider = aiProvider === 'openai' ? 'openai' : 'claude'
+  const apiKey = provider === 'openai' ? openaiApiKey : claudeApiKey
+
+  if (!apiKey) {
+    return res.json({ provider, models: FALLBACK_MODELS[provider], source: 'fallback' })
+  }
+
+  const cached = modelsCache.get(provider)
+  if (cached && Date.now() - cached.at < MODELS_TTL_MS) {
+    return res.json({ provider, models: cached.models, source: cached.source })
+  }
+
+  try {
+    let models
+    if (provider === 'openai') {
+      const payload = await new OpenAI({ apiKey }).models.list()
+      // The SDK paginates; `data` on the first page is plenty for a dropdown.
+      models = normalizeOpenAiModels({ data: payload?.data ?? [] })
+    } else {
+      const payload = await new Anthropic({ apiKey }).models.list({ limit: 100 })
+      models = normalizeAnthropicModels({ data: payload?.data ?? [] })
+    }
+    modelsCache.set(provider, { models, source: 'live', at: Date.now() })
+    res.json({ provider, models, source: 'live' })
+  } catch {
+    // A bad key or no network is not an error the user needs a stack trace for — they need a
+    // dropdown that still works. The failure is cached too, so a dead key is not retried per mount.
+    const models = FALLBACK_MODELS[provider]
+    modelsCache.set(provider, { models, source: 'fallback', at: Date.now() })
+    res.json({ provider, models, source: 'fallback' })
+  }
 })
 
 // Where cash comes from, in one place: the opening anchor, the reconciliations, and the rows.
@@ -1282,8 +1347,8 @@ function investContribForGoal(db, goal, fin) {
   return Math.round((fin.investContrib * holdingsPct / 100) * 100) / 100
 }
 
-// `model` overrides the tier choice outright; otherwise vision uses the configurable
-// settings.visionModel, `smart` gets Sonnet, and everything else gets Haiku.
+// `model` overrides the tier choice outright; otherwise vision uses the provider's configurable
+// extraction model, `smart` gets Sonnet/gpt-4o, and everything else gets Haiku/gpt-4o-mini.
 async function callLLM({ system, userMessages, maxTokens, vision = false, smart = false, model }) {
   const db = readDb()
   const { aiProvider = 'claude', claudeApiKey, openaiApiKey } = db.settings
@@ -1306,7 +1371,9 @@ async function callLLM({ system, userMessages, maxTokens, vision = false, smart 
       }
     }
     const result = await client.chat.completions.create({
-      model: model || (vision || smart ? 'gpt-4o' : 'gpt-4o-mini'),
+      model: model || (vision
+        ? (db.settings.openaiVisionModel || 'gpt-4o')
+        : smart ? 'gpt-4o' : 'gpt-4o-mini'),
       max_tokens: maxTokens,
       messages,
     })
