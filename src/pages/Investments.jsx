@@ -286,7 +286,7 @@ export default function Investments({ demoMode }) {
         onChange={setAccountFilter}
       />
 
-      <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="grid grid-cols-1 items-stretch gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="min-w-0">
           <HoldingsTable
             rows={visibleRows}
@@ -310,7 +310,7 @@ export default function Investments({ demoMode }) {
           />
         </div>
         <div className="min-w-0">
-          <AllocationDonut rollup={model.rollup} totalValue={model.totalValue} />
+          <AllocationDonut rollup={model.rollup} totalValue={model.totalValue} rows={model.rows} />
         </div>
       </div>
 

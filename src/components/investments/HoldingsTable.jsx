@@ -104,9 +104,8 @@ function HoldingDetail({ row, colSpan, onDeletePurchase, onDeleteHolding, deleti
 /**
  * Holdings ranked by value, in a box that scrolls on its own.
  *
- * Capping the body is what keeps this card level with the allocation donut beside it — an
- * uncapped table of sixteen holdings ran hundreds of pixels past the donut and left a void there.
- * So the height cap and the internal scroll are one change, not two.
+ * The body is height-capped so sixteen rows don't blow past the viewport; `h-full` lets the card
+ * chrome stretch with the allocation column beside it when that column is taller (two donuts).
  */
 export default function HoldingsTable({
   rows,
@@ -129,7 +128,7 @@ export default function HoldingsTable({
   const colSpan = showAccount ? 6 : 5
 
   return (
-    <div className="flex flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+    <div className="flex h-full flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
       <div className="shrink-0 border-b border-gray-100 px-5 py-3.5">
         <h2 className="text-[15px] font-semibold text-gray-900">Holdings ranked by value</h2>
         <p className="text-[12.5px] text-gray-400">
