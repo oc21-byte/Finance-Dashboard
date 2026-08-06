@@ -61,6 +61,10 @@ export const api = {
     update: (id, data) => request('PUT', `/holdings/${id}`, data),
     remove: (id) => request('DELETE', `/holdings/${id}`),
     removePurchase: (holdingId, purchaseId) => request('DELETE', `/holdings/${holdingId}/purchases/${purchaseId}`),
+    // Make one account match an uploaded statement, in a single write. The server re-derives the
+    // add/update/remove plan against the live holdings, so what goes up is the statement and the
+    // removals the user approved — never a plan computed in the browser.
+    reconcile: (data) => request('POST', '/holdings/reconcile', data),
   },
   goals: {
     list: () => request('GET', '/goals'),
@@ -82,6 +86,7 @@ export const api = {
     create: (data)     => request('POST',   '/savings-accounts', data),
     update: (id, data) => request('PUT',    `/savings-accounts/${id}`, data),
     remove: (id)       => request('DELETE', `/savings-accounts/${id}`),
+    reconcile: (data)  => request('POST',   '/savings-accounts/reconcile', data),
   },
   prices: {
     get: (tickers) => request('GET', `/prices?tickers=${tickers.join(',')}`),

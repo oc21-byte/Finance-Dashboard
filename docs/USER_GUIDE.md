@@ -498,6 +498,44 @@ type, current balance, and its **APY** (the yearly interest rate it pays — you
 this). The app then shows you how much interest you're earning each month and each year.
 Need to update a balance later? Click the ✏️ pencil to edit it in place.
 
+### Uploading a statement instead of typing it all in
+
+If you hold fifteen positions, typing fifteen holdings is a bad afternoon. Click
+**Upload Statement** and give it the PDF summary from your brokerage or bank.
+
+1. Choose whether you're uploading **Investment holdings** or a **Savings account**.
+2. Pick the PDF. The AI reads the page that lists what you *hold* — it deliberately ignores
+   the buys, sells, dividends and fees in the activity section further down.
+3. **Name the account.** Type whatever you call it — `TFSA`, `Roth IRA`, `401(k)`, `HSA`.
+   Suggestions drop down as you type, and the name is remembered for next time. This matters:
+   only holdings filed under that name are touched, so a statement for one account can never
+   disturb another.
+4. **Review what it found.** Every row is tagged **Add**, **Update**, **No change**, or
+   **Remove**, and shows what's changing — `35 → 40` shares, say. Untick anything you don't want.
+5. Click **Import**.
+
+**Your statement is a snapshot, not a shopping list.** It says what you hold *today*, so
+importing it makes the account *match* it rather than piling more shares on top. That means
+uploading the same statement twice is completely safe — the second time, everything says
+"No change" and nothing is written.
+
+> **Positions the statement doesn't mention** are proposed for removal, but the tick box starts
+> **off**. If your statement only covers part of an account, just leave them unticked and they
+> stay put.
+
+> **A missing cost basis turns the row amber.** Some statements (especially US ones) print what
+> a position is worth but not what you paid for it. The app won't guess — a made-up cost would
+> record the position as having made no gain, and that error would spread to your Dashboard.
+> Type what you paid, or click **Use $X** to accept the market value. **Import** stays greyed
+> out until every amber row is settled.
+
+Savings statements work the same way, matched by account name. If your statement doesn't print
+an interest rate, the app keeps the APY you already entered rather than wiping it to zero.
+
+Every import is logged under **Settings → Investment Upload History**, where you can delete it.
+Deleting removes what that import *wrote* — but be aware it can't bring back a position the
+import replaced or removed at the time.
+
 ---
 
 ## Goals — what you're saving toward
@@ -607,8 +645,12 @@ tell them apart. You can change the assumed investment return percentage in Sett
   default to $750. You can override the dollar amount directly in the Budget table for a
   specific month without touching this setting — this just controls the starting default.
   Type a new percentage (0–100) and click **Save**.
-- **PDF Upload History** — a log of every PDF statement you've imported. If you want to
-  re-import a statement or just keep things tidy, you can delete individual entries here.
+- **Upload History** — three logs, one per place statements land: **Bank** (Finances),
+  **Credit Card** (Spend Analyzer), and **Investment** (account summaries). If you want to
+  re-import a statement or just keep things tidy, delete individual entries here. Deleting a
+  bank or card entry also removes the transactions it brought in. Deleting an investment entry
+  removes the holdings or savings accounts that import wrote — but it can't restore a position
+  the import replaced, because that reconciled the account to the statement.
 - **Saved CSV Sources** — a list of the bank and card accounts you've taught the app about.
   If an account's downloads change format and imports start looking off, delete it here and
   the app will re-learn it the next time you upload. You can remove them one at a time or

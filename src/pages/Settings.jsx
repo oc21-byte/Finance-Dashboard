@@ -50,16 +50,22 @@ export default function Settings() {
     queryFn: api.uploadHistory.list,
   })
 
-  const bankHistory = uploadHistory.filter(e => e.ledger !== 'credit_card')
+  const bankHistory = uploadHistory.filter(e => e.ledger !== 'credit_card' && e.ledger !== 'investment')
   const cardHistory = uploadHistory.filter(e => e.ledger === 'credit_card')
+  const investmentHistory = uploadHistory.filter(e => e.ledger === 'investment')
 
   const deleteHistoryEntry = useMutation({
     mutationFn: api.uploadHistory.remove,
     onSuccess: () => {
       setPendingDelete(null)
-      queryClient.invalidateQueries({ queryKey: ['upload-history'] })
-      queryClient.invalidateQueries({ queryKey: ['transactions'] })
-      queryClient.invalidateQueries({ queryKey: ['credit_card_transactions'] })
+      for (const key of [
+        ['upload-history'], ['transactions'], ['credit_card_transactions'],
+        // An investment entry cascades into holdings or savings accounts, either of which moves
+        // liquid net worth.
+        ['holdings'], ['savings-accounts'], ['net-worth-history'],
+      ]) {
+        queryClient.invalidateQueries({ queryKey: key })
+      }
     },
   })
 
@@ -74,12 +80,22 @@ export default function Settings() {
     },
   })
 
+  // An investment import records the lots or accounts it wrote under `recordIds`; the two ledgers
+  // record transaction ids. Both answer "what would deleting this entry take with it".
   function linkedTxCount(entry) {
-    return Array.isArray(entry.transactionIds) ? entry.transactionIds.length : 0
+    const ids = entry.ledger === 'investment' ? entry.recordIds : entry.transactionIds
+    return Array.isArray(ids) ? ids.length : 0
   }
 
   function ledgerLabel(entry) {
-    return entry.ledger === 'credit_card' ? 'Spend Analyzer' : 'Finances'
+    if (entry.ledger === 'credit_card') return 'Spend Analyzer'
+    if (entry.ledger === 'investment') return 'Investments'
+    return 'Finances'
+  }
+
+  function linkedNoun(entry) {
+    if (entry.ledger !== 'investment') return 'transaction'
+    return entry.target === 'savings' ? 'savings account' : 'purchase lot'
   }
 
   useEffect(() => {
@@ -454,6 +470,19 @@ export default function Settings() {
         />
       </div>
 
+      <div className="mt-4">
+        <UploadHistoryPanel
+          title="Investment Upload History"
+          description="Investments account summaries read by AI vision. An import reconciles an account to its statement, so deleting an entry removes the purchase lots or savings accounts that import wrote — it cannot restore positions the import replaced or removed."
+          emptyLabel="No account statements imported yet."
+          entries={investmentHistory}
+          linkedTxCount={linkedTxCount}
+          onDelete={setPendingDelete}
+          deletePending={deleteHistoryEntry.isPending}
+          unitLabel="position"
+        />
+      </div>
+
       <div className="mt-4 bg-white border border-red-200 rounded-xl p-5 shadow-sm">
         <h2 className="text-sm font-semibold text-red-700 mb-1">Factory Reset</h2>
         <p className="text-xs text-gray-400 mb-4">
@@ -480,7 +509,7 @@ export default function Settings() {
                   This will permanently remove <span className="font-medium">{pendingDelete.filename}</span>
                   {' '}and{' '}
                   <span className="font-medium">
-                    {linkedTxCount(pendingDelete)} linked {ledgerLabel(pendingDelete)} transaction
+                    {linkedTxCount(pendingDelete)} linked {ledgerLabel(pendingDelete)} {linkedNoun(pendingDelete)}
                     {linkedTxCount(pendingDelete) !== 1 ? 's' : ''}
                   </span>
                   . This cannot be undone.
@@ -488,11 +517,18 @@ export default function Settings() {
               ) : (
                 <>
                   This will remove the history entry for{' '}
-                  <span className="font-medium">{pendingDelete.filename}</span>. Linked transactions
+                  <span className="font-medium">{pendingDelete.filename}</span>. Linked records
                   cannot be found for older uploads and will not be removed.
                 </>
               )}
             </p>
+            {pendingDelete.ledger === 'investment' && (
+              <p className="text-sm text-gray-500 mt-2 leading-relaxed">
+                This import reconciled <span className="font-medium">{pendingDelete.sourceName}</span> to
+                its statement. Deleting it removes what the import wrote, but cannot bring back any
+                position it replaced or removed at the time.
+              </p>
+            )}
             {deleteHistoryEntry.isError && (
               <p className="text-sm text-red-500 mt-3">
                 {deleteHistoryEntry.error?.message || 'Delete failed. Please try again.'}
@@ -561,7 +597,7 @@ export default function Settings() {
   )
 }
 
-function UploadHistoryPanel({ title, description, emptyLabel, entries, linkedTxCount, onDelete, deletePending }) {
+function UploadHistoryPanel({ title, description, emptyLabel, entries, linkedTxCount, onDelete, deletePending, unitLabel = 'transaction' }) {
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
       <h2 className="text-sm font-semibold text-gray-700 mb-1">{title}</h2>
@@ -578,7 +614,7 @@ function UploadHistoryPanel({ title, description, emptyLabel, entries, linkedTxC
                   <p className="text-sm text-gray-800 truncate">{entry.filename}</p>
                   <p className="text-xs text-gray-400 mt-0.5">
                     {entry.sourceName && <span className="text-gray-500 mr-2">{entry.sourceName}</span>}
-                    {entry.transactionCount} transaction{entry.transactionCount !== 1 ? 's' : ''}
+                    {entry.transactionCount} {unitLabel}{entry.transactionCount !== 1 ? 's' : ''}
                     {linked > 0 ? ` · ${linked} linked` : ' · history only'}
                     {' · '}
                     {new Date(entry.importedAt).toLocaleDateString(undefined, {

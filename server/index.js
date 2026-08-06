@@ -22,6 +22,10 @@ import { createBudgetChatBinding, createBudgetChatTurn } from './budgetChat.js'
 import { createBudgetInsightGeneration, normalizeBudgetInsightRecord } from './budgetInsightGeneration.js'
 import { bankFlowOf } from '../src/constants/financeRules.js'
 import {
+  normalizePositions, reconcileHoldings, applyReconcile,
+  normalizeSavings, reconcileSavings, applySavingsReconcile,
+} from '../src/utils/statementReconcile.js'
+import {
   HISTORY_VERSION, rebuildHistory, valueHoldingsAsOf, buildEntry,
   cashAsOf, statementChecks, sortedBalances, deriveOpeningBalance, ledgerCoverageEnd,
 } from './netWorthHistory.js'
@@ -254,6 +258,62 @@ app.post('/api/holdings', (req, res) => {
   recalculateHoldingTotals(existing)
   writeDb(db)
   res.json(existing)
+})
+
+/**
+ * Make one account's holdings match an uploaded statement.
+ *
+ * The client sends the statement's positions and the removals the user approved — never a
+ * pre-computed plan. Classification is re-derived here against the LIVE holdings, so a position
+ * added by hand between opening the review modal and pressing Import is seen, and a stale preview
+ * cannot write a decision the data no longer supports.
+ *
+ * One read, one write. Not a loop of `POST /api/holdings` from the browser: those read-modify-write
+ * this same flat file, and firing a dozen in parallel loses whichever landed first.
+ */
+app.post('/api/holdings/reconcile', (req, res) => {
+  const db = readDb()
+  const { accountType, statementDate = null, positions = [], removeTickers = [] } = req.body ?? {}
+
+  if (typeof accountType !== 'string' || !accountType.trim()) {
+    return res.status(400).json({ error: 'An account name is required.' })
+  }
+  const parsed = normalizePositions(positions)
+  if (!parsed.length) {
+    return res.status(400).json({ error: 'No usable positions in this statement.' })
+  }
+
+  const approvedRemovals = new Set(
+    (Array.isArray(removeTickers) ? removeTickers : [])
+      .map(t => String(t ?? '').trim().toUpperCase())
+      .filter(Boolean),
+  )
+
+  try {
+    const plan = reconcileHoldings({
+      holdings: db.holdings ?? [],
+      accountType,
+      statementDate,
+      positions: parsed,
+    })
+    // An unticked removal means "leave it alone", not "delete it anyway".
+    const rows = plan.rows.filter(r => r.action !== 'remove' || approvedRemovals.has(r.ticker))
+    const { holdings, purchaseIds } = applyReconcile(db.holdings ?? [], rows, { newId: uuidv4 })
+
+    const counts = { added: 0, updated: 0, unchanged: 0, removed: 0 }
+    for (const row of rows) {
+      if (row.action === 'add') counts.added++
+      else if (row.action === 'update') counts.updated++
+      else if (row.action === 'unchanged') counts.unchanged++
+      else counts.removed++
+    }
+
+    db.holdings = holdings
+    writeDb(db)
+    res.json({ counts, purchaseIds, accountType: plan.accountType })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
 })
 
 app.put('/api/holdings/:id', (req, res) => {
@@ -680,22 +740,35 @@ app.get('/api/upload-history', (req, res) => {
   res.json((db.uploadHistory ?? []).slice().reverse())
 })
 
+const LEDGERS = new Set(['bank', 'credit_card', 'investment'])
+
 app.post('/api/upload-history', (req, res) => {
   const db = readDb()
   if (!db.uploadHistory) db.uploadHistory = []
-  const { filename, sourceName, transactionCount, transactionIds, ledger } = req.body
-  const ids = Array.isArray(transactionIds)
-    ? transactionIds.filter(id => typeof id === 'string' && id)
-    : []
+  const { filename, sourceName, transactionCount, transactionIds, ledger, target, recordIds } = req.body
+  const stringIds = value => (Array.isArray(value) ? value.filter(id => typeof id === 'string' && id) : [])
+  const ids = stringIds(transactionIds)
+  const kind = LEDGERS.has(ledger) ? ledger : 'bank'
+
   const entry = {
     id: uuidv4(),
     filename: filename || 'unknown.pdf',
     sourceName: sourceName || '',
     transactionCount: Number(transactionCount) || ids.length || 0,
     transactionIds: ids,
-    ledger: ledger === 'credit_card' ? 'credit_card' : 'bank',
+    ledger: kind,
     importedAt: new Date().toISOString(),
   }
+
+  // An investment import writes purchase lots or savings accounts, not transactions. Those get
+  // their own field rather than being stuffed into `transactionIds`: the cascade has to know which
+  // collection to look in, and one array holding two different kinds of id could not say.
+  if (kind === 'investment') {
+    entry.target = target === 'savings' ? 'savings' : 'holdings'
+    entry.recordIds = stringIds(recordIds)
+    entry.transactionCount = Number(transactionCount) || entry.recordIds.length || 0
+  }
+
   db.uploadHistory.push(entry)
   writeDb(db)
   res.status(201).json(entry)
@@ -707,6 +780,40 @@ app.delete('/api/upload-history/:id', (req, res) => {
   const idx = db.uploadHistory.findIndex(e => e.id === req.params.id)
   if (idx === -1) return res.status(404).json({ error: 'Not found' })
   const [removed] = db.uploadHistory.splice(idx, 1)
+
+  // An investment import RECONCILED an account: it wrote the lots listed here, and in doing so may
+  // have replaced or removed others. Deleting the entry removes what this import wrote — it cannot
+  // put back what it displaced, and the Settings copy says so rather than implying an undo.
+  if (removed.ledger === 'investment') {
+    const recordIds = new Set(
+      Array.isArray(removed.recordIds) ? removed.recordIds.filter(Boolean) : [],
+    )
+    let deletedRecordCount = 0
+    if (recordIds.size && removed.target === 'savings') {
+      const before = (db.savings_accounts ?? []).length
+      db.savings_accounts = (db.savings_accounts ?? []).filter(a => !recordIds.has(a.id))
+      deletedRecordCount = before - db.savings_accounts.length
+    } else if (recordIds.size) {
+      const kept = []
+      for (const holding of db.holdings ?? []) {
+        const lots = (holding.purchases ?? []).filter(p => !recordIds.has(p.id))
+        if (lots.length === (holding.purchases ?? []).length) {
+          kept.push(holding)
+          continue
+        }
+        deletedRecordCount += (holding.purchases ?? []).length - lots.length
+        // A holding whose last lot is gone is gone — the same rule the per-purchase delete route
+        // applies, rather than leaving a zero-share position behind.
+        if (!lots.length) continue
+        holding.purchases = lots
+        recalculateHoldingTotals(holding)
+        kept.push(holding)
+      }
+      db.holdings = kept
+    }
+    writeDb(db)
+    return res.json({ removed, deletedRecordCount, deletedTransactionCount: 0 })
+  }
 
   // Cascade only when this entry recorded IDs at import time (post-cascade feature).
   // Legacy rows have no transactionIds — deleting them only clears the history log.
@@ -786,6 +893,32 @@ app.post('/api/savings-accounts', (req, res) => {
   db.savings_accounts.push(account)
   writeDb(db)
   res.status(201).json(account)
+})
+
+/**
+ * Update savings balances from an uploaded statement, creating any account it names that is new.
+ *
+ * Unlike holdings, an account the statement does not mention is left completely alone: a savings
+ * statement covers the one account it is for, so silence about the others carries no information.
+ */
+app.post('/api/savings-accounts/reconcile', (req, res) => {
+  const db = readDb()
+  if (!db.savings_accounts) db.savings_accounts = []
+
+  const parsed = normalizeSavings(req.body?.accounts ?? [])
+  if (!parsed.length) {
+    return res.status(400).json({ error: 'No usable accounts in this statement.' })
+  }
+
+  try {
+    const { rows, counts } = reconcileSavings({ accounts: db.savings_accounts, parsed })
+    const { accounts, createdIds } = applySavingsReconcile(db.savings_accounts, rows, { newId: uuidv4 })
+    db.savings_accounts = accounts
+    writeDb(db)
+    res.json({ counts, createdIds })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
 })
 
 app.put('/api/savings-accounts/:id', (req, res) => {
@@ -2109,6 +2242,74 @@ ${isCard
   }
 })
 
+// An `as of` date only counts if it is unambiguous. A statement that prints "July 2026" gives no
+// day, and guessing one would date a position to a day it may not have been held.
+const isoDate = value => (/^\d{4}-\d{2}-\d{2}$/.test(String(value ?? '')) ? String(value) : null)
+
+/**
+ * Read the positions a statement says are HELD, not the trades behind them.
+ *
+ * The two ideas are printed a few inches apart on the same page and the model has to be told which
+ * one it is looking at: a statement listing three purchases of one stock still holds one position
+ * in it, and returning the purchases here would put trades into the portfolio.
+ */
+const POSITIONS_PROMPT = `Read the HOLDINGS SUMMARY from this scanned investment account statement.
+
+Return ONLY a JSON object:
+{
+  "statementDate": "<the as-of or period-end date, strictly YYYY-MM-DD, or null>",
+  "accountLabel": "<the account name or registration as printed (TFSA, Roth IRA, Individual...), or null>",
+  "positions": [
+    { "ticker": "<symbol>", "name": "<security name>", "shares": <number>,
+      "marketValue": <number>, "costBasis": <number or null> }
+  ]
+}
+
+Return ONE ROW PER POSITION HELD at the statement date — the holdings, positions, or portfolio
+table. This is a snapshot of what is owned, NOT a list of what was traded.
+
+- IGNORE the activity and transaction history sections completely. Buys, sells, dividends,
+  deposits, withdrawals, fees and interest are not positions.
+- "shares" is the quantity HELD at the statement date, never a quantity traded.
+- "costBasis" is the TOTAL book value, adjusted cost base, or total cost of the whole position, as
+  printed. If only an average cost per share is printed, multiply it by the share count.
+- If no cost figure is printed for a position, return null for "costBasis". NEVER copy the market
+  value into it and never estimate one. A null is correct and expected — the user is asked to
+  supply the figure. A guess would be stored as fact and would read as a position with no gain.
+- "marketValue" is that position's total value at the statement date.
+- "ticker" is the trading symbol. Omit a position that has no symbol or fund code printed.
+
+SKIP entirely: cash and money-market sweep balances, account totals and subtotals, total portfolio
+value rows, performance and rate-of-return summaries, asset-allocation percentage tables, and any
+pending or unsettled trades.
+
+Return valid JSON only, no markdown.`
+
+const SAVINGS_PROMPT = `Read the ACCOUNT SUMMARY from this scanned savings or deposit account statement.
+
+Return ONLY a JSON object:
+{
+  "statementDate": "<the closing or period-end date, strictly YYYY-MM-DD, or null>",
+  "accounts": [
+    { "name": "<account name as printed>",
+      "accountType": "<one of: HYSA, Regular Savings, Money Market, CD / GIC, Other>",
+      "balance": <number>, "apy": <number or null> }
+  ]
+}
+
+- One row per savings, money-market, GIC or CD account the statement covers. Most cover only one.
+- "balance" is the CLOSING balance at the statement date — not the opening balance, not an average
+  daily balance, and not a year-to-date total.
+- "apy" is the annual percentage yield as a percent number: 4.5, not 0.045. If no rate is printed,
+  return null. Never work one out from the interest paid.
+- "name" is the account name as printed. When only a masked number is shown, use the institution
+  name followed by the last four digits.
+
+SKIP entirely: chequing and current accounts, credit cards, lines of credit, loans, mortgages, and
+investment holdings.
+
+Return valid JSON only, no markdown.`
+
 app.post('/api/parse-pdf-vision', async (req, res) => {
   const db = readDb()
   const { aiProvider = 'claude', claudeApiKey, openaiApiKey } = db.settings
@@ -2118,6 +2319,47 @@ app.post('/api/parse-pdf-vision', async (req, res) => {
   const { pages, statementType = 'bank', statementPeriod = null } = req.body
   if (!Array.isArray(pages) || pages.length === 0) {
     return res.status(400).json({ error: 'No pages provided' })
+  }
+
+  // Account summaries describe a balance sheet; the bank and card paths describe a ledger. They
+  // share this route for its key check, rate limit, body cap and vision-model tier, and part ways
+  // at the prompt.
+  const isAccountSummary = statementType === 'investment' || statementType === 'savings'
+  if (isAccountSummary) {
+    let rawSummary = null
+    try {
+      const text = await callLLM({
+        userMessages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: statementType === 'investment' ? POSITIONS_PROMPT : SAVINGS_PROMPT },
+            ...pages.map(data => ({
+              type: 'image',
+              source: { type: 'base64', media_type: 'image/jpeg', data },
+            })),
+          ],
+        }],
+        maxTokens: 8192,
+        vision: true,
+      })
+
+      rawSummary = text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
+      const parsed = JSON.parse(rawSummary)
+      const statementDate = isoDate(parsed?.statementDate)
+      if (statementType === 'investment') {
+        return res.json({
+          statementDate,
+          accountLabel: typeof parsed?.accountLabel === 'string' ? parsed.accountLabel.trim() : null,
+          positions: Array.isArray(parsed?.positions) ? parsed.positions : [],
+        })
+      }
+      return res.json({
+        statementDate,
+        accounts: Array.isArray(parsed?.accounts) ? parsed.accounts : [],
+      })
+    } catch (err) {
+      return failure(res, 'Account statement vision error', err, { detail: rawSummary })
+    }
   }
 
   const isCard = statementType === 'credit_card'

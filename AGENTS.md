@@ -44,8 +44,10 @@ rules encode) and `project-plan.md` (original, partly outdated concept). Never m
 
 - Factory reset deep-copies `DEFAULT_DB`, wiping keys. The UI clears QueryClient and source-name local
   storage before reload.
-- Upload-history records carry imported transaction IDs and a `bank` or `credit_card` ledger. Deleting
-  one cascades only through those IDs; legacy records without IDs remove only the log entry.
+- Upload-history records carry a `bank`, `credit_card`, or `investment` ledger. The two transaction
+  ledgers store `transactionIds`; an investment record stores `target` (`holdings` | `savings`) and
+  `recordIds` — purchase-lot ids, or the savings accounts that import created. Deleting one cascades
+  only through its own ids; legacy records without ids remove only the log entry.
 
 ## AI models
 
@@ -71,6 +73,7 @@ rules encode) and `project-plan.md` (original, partly outdated concept). Never m
 | Dashboard math/UI | `src/utils/liquidNetWorth.js`, `{waterfall,netWorthChart}Model.js`, `src/components/dashboard/*` |
 | Liquid-net-worth history | `server/netWorthHistory.js` |
 | Budget math/UI | `src/utils/budgetModel.js`, `src/components/budget/*` |
+| Investments math/UI | `src/utils/investmentsModel.js`, `statementReconcile.js`, `src/components/investments/*` |
 | Insight triads (one per tab) | `server/{spend,finance,dashboard,budget}{Analysis,InsightGeneration,Chat}.js` |
 | Shared insight safeguards | `server/chatBinding.js`, `server/modelText.js` |
 | Tests | `test/*.test.js` |
@@ -209,6 +212,46 @@ Dashboard and Budget have no pinned bar and offset by the banner alone.
   `staleBudgetInsightReason()` own that; the record carries its fingerprint.
 - Demo mode disables every editor on this tab, not just the AI controls.
 
+## Investments behavior
+
+- **A statement is a snapshot, not a set of purchases.** It says what is HELD, not what was bought.
+  An import reconciles: `src/utils/statementReconcile.js` produces an add / update / unchanged /
+  remove plan, and re-uploading the same statement writes nothing. Never append statement positions
+  as lots — the second monthly upload would double every position, and nothing in the data
+  afterwards could tell the duplicate from a genuine second buy.
+- **The named account is the whole scope.** Only holdings whose `accountType` matches are read or
+  written, which is what makes naming the account in the review step load-bearing. The name is free
+  text with `HOLDING_ACCOUNT_TYPES` as suggestions on both paths that create a holding — the add
+  form and the import modal — so any registration is reachable by typing it. There is no region
+  setting and no closed list. It is **set at creation and never editable afterwards**; a closed
+  eight-option dropdown was why every holding ended up under the default.
+- The holdings row carries ticker, account, shares, value, weight and gain, and nothing else.
+  Purchase price, current price, dates, lot history and delete live in the expanded row — nine
+  columns in a half-width card scrolled the ticker off the left edge. The Account column and the
+  filter chips share one condition (`accountTypes.length > 1`) so they cannot disagree.
+- Share counts are summed across lots, so they must render through `shares()` in
+  `components/investments/format.js`. Raw, a holding reads `1.7135600000000002`.
+- **A reconciled position keeps its earliest existing lot date**, and only falls back to the
+  statement date when the app has never seen it. `holdingLotsAsOf()` includes a lot only when
+  `purchaseDate <= asOf`, so re-dating would erase the position from every earlier history point.
+- **A position collapses to one lot** at its average cost. The statement reports a position, not the
+  trades behind it.
+- **A missing cost basis stays null through the whole chain** — prompt, parser, and plan. The review
+  step prefills the market value but leaves the row unconfirmed, and `applyReconcile` throws rather
+  than writing a null. The disabled button is a courtesy; the throw is the guarantee. A cost copied
+  from market value records a position as having made no gain, which the Dashboard's
+  saved-versus-markets split would then inherit.
+- **A removal is a proposal, unticked by default.** One statement need not cover a whole account, an
+  unwanted removal cannot be undone by deleting the upload, and an unwanted keep costs one click.
+- Savings reconcile matches on account name only, and an account the statement omits is left alone —
+  a savings statement covers one account, so silence about the others says nothing. A statement with
+  no printed rate keeps the stored APY rather than writing zero.
+- Reconcile routes do one `readDb` → apply → `writeDb`. Never loop `POST /api/holdings` from the
+  client; parallel writes to the flat file lose whichever landed first.
+- `/api/parse-pdf-vision` branches on `statementType`: `bank`/`credit_card` read a ledger,
+  `investment`/`savings` read a balance sheet. The positions prompt must keep telling the model to
+  ignore the activity section — both tables are printed on the same page.
+
 ## Insight contracts
 
 - Deterministic analysis owns totals, facts, classifications, rankings, statuses, and selections.
@@ -255,7 +298,8 @@ financeInsights             current finance generation + chat, or null
 spendInsights               v2 current generation + chat; v1 remains readable, or null
 dashboardInsights           current dashboard generation + chat, or null
 budgetInsights              current budget generation + chat, plus its plan fingerprint, or null
-uploadHistory[]             filename, source, ledger, transactionIds, importedAt
+uploadHistory[]             filename, source, ledger, importedAt; transactionIds for bank/card,
+                            target + recordIds for investment
 settings                    provider flags/config, budgets, mappings, vision model, credit policy
                             plus cashOpeningBalance, statementBalances[], netWorthHistoryVersion,
                             categoryBudgets{}, confirmedMonthlyIncome, budgetSavingsTarget/Rate
