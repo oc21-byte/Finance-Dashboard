@@ -70,7 +70,8 @@ rules encode) and `project-plan.md` (original, partly outdated concept). Never m
 | Spend math/UI | `src/utils/spend*.js`, `recurring.js`, `src/components/spend/*` |
 | Dashboard math/UI | `src/utils/liquidNetWorth.js`, `{waterfall,netWorthChart}Model.js`, `src/components/dashboard/*` |
 | Liquid-net-worth history | `server/netWorthHistory.js` |
-| Insight triads (one per tab) | `server/{spend,finance,dashboard}{Analysis,InsightGeneration,Chat}.js` |
+| Budget math/UI | `src/utils/budgetModel.js`, `src/components/budget/*` |
+| Insight triads (one per tab) | `server/{spend,finance,dashboard,budget}{Analysis,InsightGeneration,Chat}.js` |
 | Shared insight safeguards | `server/chatBinding.js`, `server/modelText.js` |
 | Tests | `test/*.test.js` |
 
@@ -106,9 +107,13 @@ before period filtering so boundary-spanning pairs stay visible. Exposure counts
 
 ## Periods, scopes, and filters
 
-- All three AI tabs use `src/utils/period.js`. Periods `7D`/`1M`/`3M`/`6M`/`1Y`/`YTD`/`All` anchor to
+- All four AI tabs use `src/utils/period.js`. Periods `7D`/`1M`/`3M`/`6M`/`1Y`/`YTD`/`All` anchor to
   the latest transaction date, not today. `resolvePeriod()` returns an explicit month list so empty
   months still render.
+- Budget is the exception on controls: it has no period chips and no filters, because a plan is a
+  monthly statement of intent rather than something you slice by date. Its window is whatever
+  `buildMonthlyFinancials` averaged over, and its scope key is `buildScopeKey({ key: 'Budget',
+  from: fin.windowFrom, to: fin.windowTo }, {})`.
 - `FILTER_ORDER` and `FILTER_PREFIX` are append-only. `buildScopeKey()` values are persisted and
   compared as opaque strings — never reorder, rename, or parse them. Golden locks in
   `test/period.test.js`.
@@ -136,10 +141,10 @@ before period filtering so boundary-spanning pairs stay visible. Exposure counts
 **Shared layout.** Finances and Spend pin a condensed scope bar through `shared/PinnedScopeBar.jsx`,
 which owns the sentinel, the fixed positioning, and `PINNED_BAR_H`; keep it `fixed` with constant
 height, and supply only row content (`spend/ScopeHeader.jsx`, `finance/FinanceScopeBar.jsx`) after the
-KPI row. All three AI tabs dock insights in a sticky `<aside>` inside an
+KPI row. All four AI tabs dock insights in a sticky `<aside>` inside an
 `xl:grid-cols-[minmax(0,1fr)_320px]` grid with `items-start`, capped to the viewport and scrollable
 only where sticky. Finances and Spend offset `top` by the demo banner plus `PINNED_BAR_H`; the
-Dashboard has no pinned bar and offsets by the banner alone.
+Dashboard and Budget have no pinned bar and offset by the banner alone.
 
 ## Dashboard behavior
 
@@ -178,13 +183,40 @@ Dashboard has no pinned bar and offsets by the banner alone.
 - Colours come from `src/components/dashboard/palette.js`. Card chrome stays on stock Tailwind; only
   data ink is tokenised. `TOTAL_FILL` keeps Total mode from borrowing a bucket's colour.
 
+## Budget behavior
+
+- **The Budget tab's subject is the PLAN**, not a ledger and not a balance: caps against six-month
+  averages, how income divides, planned savings against target, goal funding.
+- **Planned is not achieved.** `totalSavingsPlanned / income` is the *planned* rate and lives here.
+  `savingsContributions / income` is the *achieved* rate and lives in Spend's Financial Pace. They
+  are routinely far apart. Every label, prompt line, and chat reply says "planned" or "sets aside";
+  a bare "savings rate" on this tab is a bug.
+- `src/utils/budgetModel.js` owns the whole derivation chain and is imported by
+  `server/budgetAnalysis.js`, so the rail and the KPI strip cannot disagree. `resolveSavingsTarget()`
+  is the single implementation of the target ladder (explicit → rate → default), rate clamped 0–100.
+- Savings-category caps (`Savings`, `Investments`, `Retirement`, `Emergency Fund`) are **allocation**:
+  they feed `totalSavingsPlanned`, never `totalSpendingCaps`. A cap named after an active goal is
+  funded by the goal row, not counted twice.
+- With the default rate-derived target, planned savings *are* the target plus whatever goals add, so
+  the plan cannot be short of itself. `planned_rate_below_target` only fires against an explicit
+  target below the rate benchmark.
+- `capPressure.overBy` sums **only over-cap rows**. It is not the difference between the caps total
+  and the average-spend total, and both prompts name and note it so a generation cannot present it
+  as one — a live generation did exactly that before the rename. Per-row `overBy` is supplied too,
+  so no model ever has to subtract a cap from an average.
+- The plan's staleness is a **fingerprint**, not a scope key: there are no chips here, so a stored
+  generation goes stale when a cap, the income, or the target is edited. `budgetFingerprint()` and
+  `staleBudgetInsightReason()` own that; the record carries its fingerprint.
+- Demo mode disables every editor on this tab, not just the AI controls.
+
 ## Insight contracts
 
 - Deterministic analysis owns totals, facts, classifications, rankings, statuses, and selections.
   Models write prose only, or classify a validated chat intent.
-- The three catalogues are **disjoint by subject**: spend is the card ledger, finance the bank ledger,
-  dashboard the balance. A user reading two tabs must not meet one finding under two headings.
-- The three insight records are independent keys; refreshing one must not invalidate another's chat.
+- The four catalogues are **disjoint by subject**: spend is the card ledger, finance the bank ledger,
+  dashboard the balance, budget the plan. A user reading two tabs must not meet one finding under two
+  headings.
+- The four insight records are independent keys; refreshing one must not invalidate another's chat.
 - Routes accept `{ period, from, to, filters, periodLabel }`, where `period` is the opaque scope key.
   Chat binds replies to the same `period`, `generatedAt`, and `analysisVersion` via `createChatBinding()`.
   Generation replaces the prior record and resets chat — surface stale scope, never show it as current.
@@ -204,6 +236,9 @@ Dashboard has no pinned bar and offsets by the banner alone.
   are passed in, never read from a clock or the network.
 - Dashboard chat's fact tier is a **lookup over computed figures, not a filter engine**. Per-transaction,
   merchant, and category questions are turned away toward Finances or Spend.
+- Budget chat's fact tier is the same shape over the plan. Its allowlist has no `merchant`, `payee`, or
+  `transaction` metric; balance questions go to the Dashboard, and "what did I actually save" goes to
+  Spend's Financial Pace.
 - `pace.savingsRate` is the **target** from settings, not an achievement. The achieved rate is
   `savingsContributions / income` and is the only one shown as a headline; label both where they meet.
 
@@ -219,9 +254,11 @@ netWorthHistory[]           { date, netWorth, breakdown{cash,savings,portfolio},
 financeInsights             current finance generation + chat, or null
 spendInsights               v2 current generation + chat; v1 remains readable, or null
 dashboardInsights           current dashboard generation + chat, or null
+budgetInsights              current budget generation + chat, plus its plan fingerprint, or null
 uploadHistory[]             filename, source, ledger, transactionIds, importedAt
 settings                    provider flags/config, budgets, mappings, vision model, credit policy
-                            plus cashOpeningBalance, statementBalances[], netWorthHistoryVersion
+                            plus cashOpeningBalance, statementBalances[], netWorthHistoryVersion,
+                            categoryBudgets{}, confirmedMonthlyIncome, budgetSavingsTarget/Rate
 ```
 
 Allocation links are `linkedSavingsAccountId` for Savings and the account-type label in

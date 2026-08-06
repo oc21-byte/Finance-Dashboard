@@ -394,55 +394,75 @@ and its conversation.
 by category, see how you're tracking against those limits in real time, and set savings
 targets alongside your spending — all on one screen.
 
+### The strip at the top
+
+Four figures, and everything below is a working of them:
+
+- **Monthly income** — click **Edit** to confirm your take-home pay. Until you do, it's the
+  average of your bank deposits over the last few complete months.
+- **Spending caps** — what you've budgeted, next to what you actually average.
+- **Savings planned** — goals, your general target, and any savings-category amounts.
+- **Left to allocate** — income minus both, again shown budgeted next to actual.
+
+Under the strip, a single bar shows how income divides three ways: capped spending, planned
+savings, and whatever is left. If the plan commits more than comes in, the last segment turns
+red and is labelled **Over budget**.
+
 ### Spending caps
 
-The budget table shows each spending category with:
+The caps card lists each spending category with:
 
-- **Your limit** — click any amount to edit it directly.
-- **Your average** — what you've actually been spending per month (from your credit card history).
-- **Progress bar** — fills up as you spend. Turns **yellow** as you approach your limit and
-  **red** if you go over.
-- **% of income** — a label like `$400 (8%)` next to each figure so you can gut-check
-  whether a category is taking a reasonable share of your pay.
+- **Cap** — click any amount to edit it. Categories with no cap show **Set cap**.
+- **Avg** — what you actually spend per month, from your credit card history.
+- **Cap vs avg** — a bar that turns **yellow** as you approach the cap and **red** past it.
+- **% of income** next to each figure, so you can gut-check whether a category is taking a
+  reasonable share of your pay.
 
-### Savings & goals section
+### Savings & goals
 
-Below the spending table you'll find a separate teal-shaded section for money you're
-*putting away*:
+Money you're *putting away* has its own card beside the caps:
 
-- **Savings / Investment categories** (e.g. Savings, Investments, Retirement) pull their
-  average from your *bank* transactions rather than credit card history, since those
-  contributions don't appear on a card statement.
-- **Active goal rows** show how much you've committed to each goal per month. If you
-  haven't set a monthly savings amount on a goal, the app auto-fills an estimate from
-  your bank history and marks it *auto*.
-- **General Savings Target** — a catch-all row for savings not tied to a specific goal.
-  It defaults to **15% of your income** (marked *auto*) — no setup needed. You can
-  override it by clicking the number and typing a specific dollar amount; clear the field
-  to go back to the rate-based default. The small label underneath explains what's driving
-  the current number.
+- **Savings / Investment categories** (Savings, Investments, Retirement, Emergency Fund) take
+  their detected figure from your *bank* transactions rather than card history, since those
+  contributions never appear on a card statement.
+- **Active goals** show what you've committed per month. Leave a goal's monthly amount unset
+  and the app infers it from your bank history, marked *auto*.
+- **General savings target** — the catch-all for savings not tied to a goal. It defaults to
+  **15% of income** (marked *auto*). Click it to set a dollar amount, or clear the field to
+  go back to the default rate.
 
-### Build a budget with help — the Budget Builder 🪄
+**Detected from bank data** sits below and is read-only on purpose: it's what the ledger says
+is already happening, as a check on the plan above it.
 
-**Why use it:** Not sure what your limits *should* be? The Budget Builder looks at your
-actual spending and your goals, then suggests a sensible budget for you.
+### Build a budget with help ✨
 
-> **One thing first:** you need at least one goal set up (see the [Goals](#goals--what-youre-saving-toward)
-> tab), and your uncategorized transactions should be cleaned up. The app will nudge you if
-> either isn't ready.
+Not sure what your limits *should* be? Pick a pace — **Aggressive**, **Balanced**, or
+**Comfortable** — and click **Generate with AI** in the page header.
 
-1. Click the **Budget Builder** button (look for the sparkles ✨).
-2. **Confirm your monthly income.** It'll pre-fill this from your Settings or from your
-   recent deposits — adjust it if needed.
-3. **Pick a pace:** **Aggressive 🔥** (save hard), **Balanced ⚖️**, or **Comfortable 😌**
-   (easier on yourself).
-4. **Mention any one-off expenses** to ignore, like "car repair $1,400 in March," so they
-   don't throw off the plan. (Optional.)
-5. Click **Generate My Budget** and wait a few seconds.
-6. **Review the suggestions.** You'll see a recommended limit for each category, plus a
-   short explanation of the reasoning. Tweak any number you don't like.
-7. Happy with it? Click **Accept & Save Budget**. Your new limits now show up in the budget
-   tracker above. Don't like it? Click **Start Over**.
+Suggestions arrive **staged, not saved**. A banner appears explaining the reasoning, every
+suggested figure is marked **AI**, and nothing touches your saved plan until you click
+**Save AI budget**. You can edit any suggested number first — that revises the suggestion
+rather than saving it. **Discard** throws the whole set away.
+
+Savings-category amounts are replaced with what your bank actually shows, so a suggestion
+can't contradict a transfer you already have running.
+
+### Plan health — the insights rail
+
+The rail on the right leads with your **planned savings rate**: the share of income the plan
+intends to set aside, on a 0–100% track with your target marked as a tick. It's shown whether
+or not you've generated anything.
+
+> **Planned is not achieved.** This is what your plan *intends*. What you *actually* saved
+> lives in the Spend Analyzer's Financial Pace. The two are often far apart, and the app never
+> shows them under the same name.
+
+Click **Generate** for a written read on where the plan strains, then ask follow-ups. Questions
+about individual transactions or merchants are pointed at the Spend Analyzer, and balance
+questions at the Dashboard — this tab only knows about the plan.
+
+If you edit a cap, your income, or the target after generating, the rail says so and offers to
+re-analyze. **Clear** removes the saved insight and its conversation.
 
 ---
 

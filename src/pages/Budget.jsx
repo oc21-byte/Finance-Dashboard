@@ -1,28 +1,38 @@
-import { useState } from 'react'
-import { Sparkles } from 'lucide-react'
+import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client.js'
+import { buildScopeKey } from '../utils/period.js'
+import { buildBudgetPlan, staleBudgetInsightReason, SAVINGS_CATS } from '../utils/budgetModel.js'
+import BudgetHeader from '../components/budget/BudgetHeader.jsx'
+import BudgetKpiRow from '../components/budget/BudgetKpiRow.jsx'
+import AllocationBar from '../components/budget/AllocationBar.jsx'
+import PendingAiBanner from '../components/budget/PendingAiBanner.jsx'
+import SpendingCapsTable from '../components/budget/SpendingCapsTable.jsx'
+import SavingsGoalsCard from '../components/budget/SavingsGoalsCard.jsx'
+import DetectedFromBankCard from '../components/budget/DetectedFromBankCard.jsx'
+import BudgetInsightsPanel from '../components/budget/BudgetInsightsPanel.jsx'
 
-const EXCLUDE_CATS = new Set(['Income', 'Transfer'])
-const SAVINGS_CATS = new Set(['Savings', 'Investments', 'Retirement', 'Emergency Fund'])
+// Layout's demo-mode banner is `sticky top-0 z-40`, so anything this page pins starts below it.
+// Like the Dashboard and unlike Finances and Spend, Budget has no PinnedScopeBar — its window is
+// fixed at the last <=6 full bank months and there is nothing to condense — so the banner is the
+// only offset.
+const DEMO_BANNER_H = 32
 
-function SummaryCard({ label, value, color = 'text-gray-900', description, subtext, subtextColor }) {
-  return (
-    <div className="bg-white rounded-xl border border-gray-200 px-4 py-4">
-      <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold mb-1">{label}</p>
-      <p className={`text-xl font-bold ${color}`}>{value}</p>
-      {description && <p className="text-xs text-gray-400 mt-1 leading-snug">{description}</p>}
-      {subtext && <p className={`text-xs mt-0.5 font-medium ${subtextColor || 'text-gray-400'}`}>{subtext}</p>}
-    </div>
-  )
-}
-
+/**
+ * The plan: what income is, where it is committed, and what is left.
+ *
+ * This page orchestrates queries, mutations, and the AI staging flow. Every figure it renders
+ * comes from `buildBudgetPlan` in `src/utils/budgetModel.js` — no arithmetic lives here — and each
+ * card owns one kind of commitment: caps on spending, amounts set aside, and what the bank ledger
+ * already shows happening.
+ */
 export default function Budget({ onTabChange, demoMode }) {
   const queryClient = useQueryClient()
 
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.settings.get })
   const { data: goals = [] } = useQuery({ queryKey: ['goals'], queryFn: api.goals.list })
   const { data: fin } = useQuery({ queryKey: ['monthly_financials'], queryFn: api.monthlyFinancials.get })
+  const { data: budgetInsights } = useQuery({ queryKey: ['budget-insights'], queryFn: api.budgetInsights.get })
 
   const [editingIncome, setEditingIncome] = useState(false)
   const [incomeValue, setIncomeValue] = useState('')
@@ -32,69 +42,50 @@ export default function Budget({ onTabChange, demoMode }) {
   const [editingGoal, setEditingGoal] = useState(null)
   const [pendingBudgets, setPendingBudgets] = useState(null)
   const [pendingSavingsTarget, setPendingSavingsTarget] = useState(null)
+  const [pendingRationale, setPendingRationale] = useState(null)
   const [timeline, setTimeline] = useState('balanced')
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState(null)
   const [toast, setToast] = useState('')
+  // Chat state lives here, not in the panel — the panel is presentational, like the other three.
+  const [chatInput, setChatInput] = useState('')
+  const [chatLoading, setChatLoading] = useState(false)
+  const [pendingQuestion, setPendingQuestion] = useState(null)
+  const [insightsError, setInsightsError] = useState(null)
+  const [chatError, setChatError] = useState(null)
 
-  const confirmedIncome = settings?.confirmedMonthlyIncome
-  const hasConfirmedIncome = confirmedIncome != null && confirmedIncome !== ''
-  const displayIncome = hasConfirmedIncome ? Number(confirmedIncome) : (fin?.income ?? 0)
+  // The whole derivation chain lives in `src/utils/budgetModel.js` — pure, tested, and shared
+  // with the server analysis so an insight and this page cannot quote different figures.
+  const plan = useMemo(
+    () => buildBudgetPlan({ settings, goals, fin, pendingBudgets, pendingSavingsTarget }),
+    [settings, goals, fin, pendingBudgets, pendingSavingsTarget],
+  )
 
-  const categoryBudgets = settings?.categoryBudgets || {}
-  const budgetSavingsTarget = settings?.budgetSavingsTarget ?? null  // null = not set, use rate default
-  const budgetSavingsRate = Number(settings?.budgetSavingsRate) || 15
+  const hasAiKey = settings?.aiProvider === 'openai' ? !!settings?.hasOpenaiApiKey : !!settings?.hasClaudeApiKey
+  // Where the rail freezes. A constant, not a measurement — the demo banner is the only fixed
+  // chrome above this page.
+  const railTop = (demoMode ? DEMO_BANNER_H : 0) + 16
 
-  // Build breakdown maps first — needed for auto-fill goal and savings calculations below
-  const cardBreakdownMap = {}
-  for (const c of (fin?.cardBreakdown || [])) {
-    if (!EXCLUDE_CATS.has(c.category)) cardBreakdownMap[c.category] = c.monthly
+  // What the AI is being asked about. Budget has no filter chips and no period chips — its window
+  // is whatever `buildMonthlyFinancials` averaged over — so this is that window and nothing else,
+  // which keeps the APPEND-ONLY `FILTER_ORDER` contract in period.js untouched while still
+  // producing a key distinct from the other three tabs'.
+  const scopeKey = buildScopeKey({ key: 'Budget', from: fin?.windowFrom, to: fin?.windowTo }, {})
+  const scopePayload = {
+    period: scopeKey,
+    from: fin?.windowFrom,
+    to: fin?.windowTo,
+    periodLabel: plan.income.windowLabel,
   }
-  const bankBreakdownMap = {}
-  for (const c of (fin?.bankBreakdown || [])) {
-    bankBreakdownMap[c.category] = c.monthly
-  }
-  // Fallback to pre-computed fin values in case bankBreakdown is absent (stale cache)
-  if (!bankBreakdownMap['Savings'] && fin?.savingsContrib) bankBreakdownMap['Savings'] = fin.savingsContrib
-  if (!bankBreakdownMap['Investments'] && fin?.investContrib) bankBreakdownMap['Investments'] = fin.investContrib
+  const insightsPeriod = budgetInsights?.period ?? null
+  const chatMessages = budgetInsights?.messages ?? []
 
-  const activeGoals = goals.filter(g => Number(g.currentAmount) < Number(g.targetAmount))
-  const goalNames = new Set(activeGoals.map(g => g.name))
-  const effectiveBudgets = pendingBudgets ?? categoryBudgets
-  const totalSpendingCaps = Object.entries(effectiveBudgets)
-    .filter(([cat]) => !SAVINGS_CATS.has(cat) && !goalNames.has(cat))
-    .reduce((s, [, v]) => s + v, 0)
-  const totalSavingsCaps = Object.entries(effectiveBudgets)
-    .filter(([cat]) => SAVINGS_CATS.has(cat))
-    .reduce((s, [, v]) => s + v, 0)
-
-  // Default savings target = budgetSavingsRate % of income; null means not manually overridden
-  const autoSavingsTarget = Math.round(displayIncome * budgetSavingsRate / 100)
-  const effectiveSavingsTarget = pendingSavingsTarget ?? (budgetSavingsTarget !== null ? Number(budgetSavingsTarget) : autoSavingsTarget)
-  const savingsTargetIsAuto = budgetSavingsTarget === null && pendingSavingsTarget == null
-
-  // Auto-fill goal monthlySavings from bank category avg when not manually set
-  const totalGoalSavings = activeGoals.reduce((s, g) => {
-    const manual = Number(g.monthlySavings) || 0
-    const bankAvg = bankBreakdownMap[g.name] || 0
-    return s + (manual > 0 ? manual : bankAvg)
-  }, 0)
-  const totalSavingsPlanned = totalGoalSavings + effectiveSavingsTarget + totalSavingsCaps
-  const unallocated = displayIncome - totalSpendingCaps - totalSavingsPlanned
-
-  const totalAvgSpend = Object.entries(cardBreakdownMap)
-    .filter(([cat]) => !SAVINGS_CATS.has(cat))
-    .reduce((s, [, v]) => s + v, 0)
-  const budgetedLeft = displayIncome - totalSpendingCaps - totalSavingsPlanned
-  const avgLeft = displayIncome - totalAvgSpend - totalSavingsPlanned
-  const spread = avgLeft - budgetedLeft
-  const allCategories = [...new Set([
-    ...Object.keys(cardBreakdownMap),
-    ...Object.keys(categoryBudgets).filter(k => !EXCLUDE_CATS.has(k)),
-    ...Object.keys(bankBreakdownMap).filter(k => SAVINGS_CATS.has(k)),
-  ])].sort((a, b) => (cardBreakdownMap[b] || 0) - (cardBreakdownMap[a] || 0))
-
-  const incPct = val => displayIncome > 0 && val > 0 ? Math.round(val / displayIncome * 100) : null
+  // Checked against the live plan, not just the window: unlike the other three tabs nothing here
+  // is scoped by a chip, so a stale generation is one the user has since edited out from under.
+  const staleReason = staleBudgetInsightReason({ record: budgetInsights, scopeKey, plan })
+  // Demo mode serves a shared read-only database. It used to gate only the AI button here, leaving
+  // every inline editor live — a visitor could rewrite the caps everyone else was looking at.
+  const readOnly = !!demoMode
 
   const settingsMutation = useMutation({
     mutationFn: (data) => api.settings.update(data),
@@ -106,49 +97,109 @@ export default function Budget({ onTabChange, demoMode }) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['goals'] }),
   })
 
-  function saveGoalSavings(goalId, val) {
-    const num = Number(val)
-    if (!isNaN(num) && num >= 0 && val !== '') {
-      goalsMutation.mutate({ id: goalId, data: { monthlySavings: num } })
+  const insightsMutation = useMutation({
+    mutationFn: (scope) => api.llm.budgetInsights(scope),
+    onSuccess: () => {
+      setInsightsError(null)
+      queryClient.invalidateQueries({ queryKey: ['budget-insights'] })
+    },
+    onError: (err) => setInsightsError(err.message || 'Failed to generate insights. Please try again.'),
+  })
+
+  const clearInsightsMutation = useMutation({
+    mutationFn: api.budgetInsights.clear,
+    onSuccess: () => {
+      setInsightsError(null)
+      setChatError(null)
+      queryClient.invalidateQueries({ queryKey: ['budget-insights'] })
+    },
+  })
+
+  // A plain async function rather than a mutation: the reply is written into the stored record
+  // server-side, so there is nothing to hold in mutation state, and the pending question has to
+  // appear before the request resolves.
+  async function sendChatMessage(rawMessage) {
+    const message = String(rawMessage ?? '').trim()
+    if (!message || chatLoading) return
+    setChatInput('')
+    setChatError(null)
+    setPendingQuestion(message)
+    setChatLoading(true)
+    try {
+      // Sent against the STORED period, not the window on screen: the answer has to describe the
+      // same plan the observations describe, or the server refuses to record the exchange.
+      await api.llm.budgetChat(
+        insightsPeriod ? { ...scopePayload, period: insightsPeriod } : scopePayload,
+        [...chatMessages, { role: 'user', content: message }],
+      )
+      await queryClient.invalidateQueries({ queryKey: ['budget-insights'] })
+    } catch (err) {
+      // Kept out of the stored conversation: a failed exchange isn't history worth replaying.
+      setChatError(err.message || 'Something went wrong. Please try again.')
+      setChatInput(message)
+    } finally {
+      setPendingQuestion(null)
+      setChatLoading(false)
     }
-    setEditingGoal(null)
+  }
+
+  function handleSendChat(event) {
+    event.preventDefault()
+    sendChatMessage(chatInput)
+  }
+
+  function showToast(message) {
+    setToast(message)
+    setTimeout(() => setToast(''), 3000)
   }
 
   function saveIncome() {
-    const val = Number(incomeValue)
-    if (!isNaN(val)) settingsMutation.mutate({ confirmedMonthlyIncome: val })
+    const value = Number(incomeValue)
+    if (!readOnly && Number.isFinite(value)) settingsMutation.mutate({ confirmedMonthlyIncome: value })
     setEditingIncome(false)
   }
 
-  function saveBudgetCap(cat, val) {
-    const num = Number(val)
-    if (!isNaN(num) && num >= 0 && val !== '') {
-      const updated = { ...effectiveBudgets, [cat]: num }
-      if (pendingBudgets) {
-        setPendingBudgets(updated)
-      } else {
-        settingsMutation.mutate({ categoryBudgets: updated })
+  // One handler for both cap tables: spending caps and savings-category caps are the same
+  // `settings.categoryBudgets` map, split only by which card renders them.
+  function saveBudgetCap() {
+    const edit = editingBudget
+    if (edit && !readOnly) {
+      const value = Number(edit.value)
+      if (Number.isFinite(value) && value >= 0 && edit.value !== '') {
+        const updated = { ...plan.effectiveBudgets, [edit.cat]: value }
+        // While AI suggestions are staged, an edit revises the staging rather than persisting —
+        // otherwise saving the plan later would overwrite the correction the user just made.
+        if (pendingBudgets) setPendingBudgets(updated)
+        else settingsMutation.mutate({ categoryBudgets: updated })
       }
     }
     setEditingBudget(null)
   }
 
+  function saveGoalSavings() {
+    const edit = editingGoal
+    if (edit && !readOnly) {
+      const value = Number(edit.value)
+      if (Number.isFinite(value) && value >= 0 && edit.value !== '') {
+        goalsMutation.mutate({ id: edit.goalId, data: { monthlySavings: value } })
+      }
+    }
+    setEditingGoal(null)
+  }
+
   function saveSavingsTarget() {
     const trimmed = savingsTargetValue.trim()
-    if (trimmed === '') {
-      // Blank = clear override, revert to rate-based default
-      if (pendingSavingsTarget !== null) {
-        setPendingSavingsTarget(null)
+    if (!readOnly) {
+      if (trimmed === '') {
+        // Blank clears the override back to the rate-based default. `null` is the unset sentinel;
+        // 0 is a real target of zero.
+        if (pendingSavingsTarget !== null) setPendingSavingsTarget(null)
+        else settingsMutation.mutate({ budgetSavingsTarget: null })
       } else {
-        settingsMutation.mutate({ budgetSavingsTarget: null })
-      }
-    } else {
-      const val = Number(trimmed)
-      if (!isNaN(val) && val >= 0) {
-        if (pendingSavingsTarget !== null) {
-          setPendingSavingsTarget(val)
-        } else {
-          settingsMutation.mutate({ budgetSavingsTarget: val })
+        const value = Number(trimmed)
+        if (Number.isFinite(value) && value >= 0) {
+          if (pendingSavingsTarget !== null) setPendingSavingsTarget(value)
+          else settingsMutation.mutate({ budgetSavingsTarget: value })
         }
       }
     }
@@ -159,17 +210,24 @@ export default function Budget({ onTabChange, demoMode }) {
     setAiLoading(true)
     setAiError(null)
     try {
-      const result = await api.llm.budgetBuilder({ income: displayIncome, timelinePreference: timeline })
+      const result = await api.llm.budgetBuilder({
+        income: plan.income.display,
+        timelinePreference: timeline,
+      })
       if (result.budgets) {
+        // Savings categories are overwritten with what the bank actually shows: the model is
+        // proposing spending caps, and a suggested "savings cap" that contradicts an existing
+        // automated transfer would stage a number the ledger immediately disagrees with.
         const adjusted = { ...result.budgets }
         for (const cat of Object.keys(adjusted)) {
-          if (SAVINGS_CATS.has(cat) && bankBreakdownMap[cat]) {
-            adjusted[cat] = bankBreakdownMap[cat]
+          if (SAVINGS_CATS.has(cat) && plan.bankBreakdownMap[cat]) {
+            adjusted[cat] = plan.bankBreakdownMap[cat]
           }
         }
         setPendingBudgets(adjusted)
       }
       if (result.suggestedSavingsTarget != null) setPendingSavingsTarget(result.suggestedSavingsTarget)
+      setPendingRationale(result.rationale ?? null)
     } catch (err) {
       setAiError(err.message)
     } finally {
@@ -178,15 +236,13 @@ export default function Budget({ onTabChange, demoMode }) {
   }
 
   function saveAIBudget() {
-    const toSave = {}
-    if (pendingBudgets) toSave.categoryBudgets = pendingBudgets
-    if (pendingSavingsTarget != null) toSave.budgetSavingsTarget = pendingSavingsTarget
-    settingsMutation.mutate(toSave, {
+    const payload = {}
+    if (pendingBudgets) payload.categoryBudgets = pendingBudgets
+    if (pendingSavingsTarget != null) payload.budgetSavingsTarget = pendingSavingsTarget
+    settingsMutation.mutate(payload, {
       onSuccess: () => {
-        setPendingBudgets(null)
-        setPendingSavingsTarget(null)
-        setToast('Budget saved.')
-        setTimeout(() => setToast(''), 3000)
+        discardAI()
+        showToast('Budget saved.')
       },
     })
   }
@@ -194,523 +250,137 @@ export default function Budget({ onTabChange, demoMode }) {
   function discardAI() {
     setPendingBudgets(null)
     setPendingSavingsTarget(null)
+    setPendingRationale(null)
     setAiError(null)
   }
 
   return (
-    <div className="p-3 sm:p-6">
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold text-gray-900">Budget</h1>
-        <p className="text-sm text-gray-500 mt-1">Monthly cash flow — income, spending caps, and savings targets.</p>
-      </div>
+    <div className="space-y-6 p-3 sm:p-6">
+      <BudgetHeader
+        windowLabel={plan.income.windowLabel}
+        timeline={timeline}
+        onTimelineChange={setTimeline}
+        canGenerate={hasAiKey || demoMode}
+        generating={aiLoading}
+        onGenerate={generateAIBudget}
+        demoMode={demoMode}
+      />
 
       {toast && (
-        <div className="mb-4 px-4 py-3 rounded-lg bg-green-50 border border-green-200 text-sm text-green-800 flex items-center justify-between gap-3">
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
           <span>{toast}</span>
-          <button onClick={() => setToast('')} className="text-green-400 hover:text-green-600 text-lg leading-none">✕</button>
+          <button onClick={() => setToast('')} aria-label="Dismiss" className="text-lg leading-none text-green-400 hover:text-green-600">
+            ✕
+          </button>
         </div>
       )}
 
-      {/* Summary bar */}
-      <div className="mb-2 grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <SummaryCard
-          label="Monthly Income"
-          value={`$${Math.round(displayIncome).toLocaleString()}`}
-          description={hasConfirmedIncome ? 'Your confirmed take-home pay.' : `6-month bank average. Edit to set manually.`}
-        />
-        <div className="bg-white rounded-xl border border-gray-200 px-4 py-4">
-          <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold mb-2">Spending Caps</p>
-          <div className="flex items-end gap-3">
-            <div>
-              <p className="text-[10px] text-gray-400 mb-0.5">Budgeted</p>
-              <p className="text-xl font-bold text-gray-900">${Math.round(totalSpendingCaps).toLocaleString()}</p>
-            </div>
-            <span className="text-gray-300 pb-0.5">vs</span>
-            <div>
-              <p className="text-[10px] text-gray-400 mb-0.5">Avg actual</p>
-              <p className="text-xl font-bold text-gray-700">${Math.round(totalAvgSpend).toLocaleString()}</p>
-            </div>
-          </div>
-          <p className="text-xs text-gray-400 mt-1.5 leading-snug">
-            {totalSpendingCaps === 0 ? 'No caps set yet — add them in the table below.' : 'Caps set vs avg monthly card spend.'}
-          </p>
-        </div>
-        <SummaryCard
-          label="Savings Planned"
-          value={`$${Math.round(totalSavingsPlanned).toLocaleString()}`}
-          color="text-teal-600"
-          description={[
-            `Goal payments: $${Math.round(totalGoalSavings).toLocaleString()}`,
-            `General target: $${Math.round(effectiveSavingsTarget).toLocaleString()}`,
-            ...(totalSavingsCaps > 0 ? [`Savings caps: $${Math.round(totalSavingsCaps).toLocaleString()}`] : []),
-          ].join(' · ')}
-        />
-        <div className="bg-white rounded-xl border border-gray-200 px-4 py-4">
-          <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold mb-2">Left to Allocate</p>
-          <div className="flex items-end gap-3">
-            <div>
-              <p className="text-[10px] text-gray-400 mb-0.5">Budgeted</p>
-              <p className={`text-xl font-bold ${budgetedLeft >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                {budgetedLeft >= 0 ? '+' : '−'}${Math.abs(Math.round(budgetedLeft)).toLocaleString()}
-              </p>
-            </div>
-            <span className="text-gray-300 pb-0.5">vs</span>
-            <div>
-              <p className="text-[10px] text-gray-400 mb-0.5">Avg actual</p>
-              <p className={`text-xl font-bold ${avgLeft >= 0 ? 'text-gray-700' : 'text-red-600'}`}>
-                {avgLeft >= 0 ? '+' : '−'}${Math.abs(Math.round(avgLeft)).toLocaleString()}
-              </p>
-            </div>
-          </div>
-          <p className="text-xs text-gray-400 mt-1.5 leading-snug">Income − spending caps − savings planned.</p>
-          {totalSpendingCaps > 0 && totalAvgSpend > 0 && (
-            <p className={`text-xs mt-0.5 font-medium ${spread >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-              You are spending ${Math.abs(Math.round(spread)).toLocaleString()} {spread >= 0 ? 'under' : 'over'} budget on average
-            </p>
-          )}
-        </div>
-      </div>
+      <BudgetKpiRow
+        plan={plan}
+        readOnly={readOnly}
+        editingIncome={editingIncome}
+        incomeValue={incomeValue}
+        onIncomeChange={setIncomeValue}
+        onStartEditIncome={() => { setIncomeValue(String(Math.round(plan.income.display))); setEditingIncome(true) }}
+        onCommitIncome={saveIncome}
+        onCancelIncome={() => setEditingIncome(false)}
+      />
 
-      {/* Flow bar */}
-      {displayIncome > 0 && (
-        <div className="mb-6 bg-white rounded-xl border border-gray-200 px-4 py-3">
-          <div className="flex h-3 rounded-full overflow-hidden gap-0.5">
-            {(() => {
-              const spendPct = Math.min(100, Math.max(0, totalSpendingCaps / displayIncome * 100))
-              const savePct = Math.min(100 - spendPct, Math.max(0, totalSavingsPlanned / displayIncome * 100))
-              const freePct = Math.max(0, 100 - spendPct - savePct)
-              const overBudget = unallocated < 0
-              return (
-                <>
-                  {spendPct > 0 && <div className="h-full bg-blue-300 transition-all" style={{ width: `${spendPct}%` }} />}
-                  {savePct > 0 && <div className="h-full bg-teal-400 transition-all" style={{ width: `${savePct}%` }} />}
-                  {freePct > 0 && <div className={`h-full transition-all ${overBudget ? 'bg-red-400' : 'bg-green-300'}`} style={{ width: `${freePct}%` }} />}
-                  {overBudget && <div className="h-full bg-red-500 w-1 shrink-0" title="Over budget" />}
-                </>
-              )
-            })()}
-          </div>
-          <div className="flex items-center gap-4 mt-2 flex-wrap">
-            <span className="flex items-center gap-1.5 text-xs text-gray-500">
-              <span className="inline-block w-2.5 h-2.5 rounded-sm bg-blue-300" />
-              Spending caps ({Math.round(totalSpendingCaps / displayIncome * 100)}%)
-            </span>
-            <span className="flex items-center gap-1.5 text-xs text-gray-500">
-              <span className="inline-block w-2.5 h-2.5 rounded-sm bg-teal-400" />
-              Savings planned ({Math.round(totalSavingsPlanned / displayIncome * 100)}%)
-            </span>
-            <span className={`flex items-center gap-1.5 text-xs ${unallocated < 0 ? 'text-red-600 font-medium' : 'text-gray-500'}`}>
-              <span className={`inline-block w-2.5 h-2.5 rounded-sm ${unallocated < 0 ? 'bg-red-400' : 'bg-green-300'}`} />
-              {unallocated < 0 ? 'Over budget' : 'Unallocated'} ({Math.round(Math.abs(unallocated) / displayIncome * 100)}%)
-            </span>
-          </div>
-        </div>
-      )}
+      <AllocationBar plan={plan} />
 
-      {/* AI pending banner */}
-      {(pendingBudgets || pendingSavingsTarget != null) && (
-        <div className="mb-4 px-4 py-3 rounded-lg bg-indigo-50 border border-indigo-200 text-sm text-indigo-800 flex items-center justify-between gap-3 flex-wrap">
-          <span className="flex items-center gap-2">
-            <Sparkles size={15} />
-            AI budget suggestions loaded — review below, then save or discard.
-          </span>
-          <div className="flex gap-2">
-            <button
-              onClick={saveAIBudget}
-              disabled={settingsMutation.isPending}
-              className="px-3 py-1.5 text-xs font-semibold bg-indigo-600 text-white rounded-md hover:bg-indigo-700 disabled:opacity-60"
-            >
-              Save AI Budget
-            </button>
-            <button
-              onClick={discardAI}
-              className="px-3 py-1.5 text-xs font-semibold bg-white border border-indigo-300 text-indigo-700 rounded-md hover:bg-indigo-50"
-            >
-              Discard
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Income */}
-      <div className="mb-4 bg-white rounded-xl border border-gray-200">
-        <div className="px-5 py-4 flex items-center justify-between gap-3">
-          <div>
-            <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold mb-1">Monthly Take-Home Income</p>
-            {editingIncome ? (
-              <div className="flex items-center gap-1.5 mt-1">
-                <span className="text-gray-500">$</span>
-                <input
-                  type="number"
-                  autoFocus
-                  value={incomeValue}
-                  onChange={e => setIncomeValue(e.target.value)}
-                  onBlur={saveIncome}
-                  onKeyDown={e => { if (e.key === 'Enter') saveIncome(); if (e.key === 'Escape') setEditingIncome(false) }}
-                  className="w-32 border border-indigo-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 mt-1">
-                <span className="text-xl font-bold text-gray-900">${displayIncome.toLocaleString()}</span>
-                {!hasConfirmedIncome && fin?.windowLabel && (
-                  <span className="text-xs text-gray-400">avg from {fin.windowLabel}</span>
-                )}
-              </div>
-            )}
-          </div>
-          {!editingIncome && (
-            <button
-              onClick={() => { setIncomeValue(String(displayIncome)); setEditingIncome(true) }}
-              className="text-xs text-indigo-600 hover:text-indigo-800 font-medium shrink-0"
-            >
-              Edit
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Spending caps */}
-      <div className="mb-4 bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between gap-3 flex-wrap">
-          <div>
-            <h2 className="text-base font-semibold text-gray-900">Spending Caps</h2>
-            {fin?.windowLabel && (
-              <p className="text-xs text-gray-400 mt-0.5">Avg monthly from {fin.windowLabel}</p>
-            )}
-          </div>
-          {(settings?.hasClaudeApiKey || demoMode) && (
-            <div className="flex items-center gap-2 flex-wrap">
-              <div className="flex rounded-lg border border-gray-200 overflow-hidden text-xs">
-                {['aggressive', 'balanced', 'comfortable'].map(t => (
-                  <button
-                    key={t}
-                    onClick={() => !demoMode && setTimeline(t)}
-                    disabled={demoMode}
-                    className={`px-3 py-1.5 capitalize transition-colors ${
-                      timeline === t ? 'bg-indigo-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
-                    }`}
-                  >
-                    {t}
-                  </button>
-                ))}
-              </div>
-              <button
-                onClick={generateAIBudget}
-                disabled={aiLoading || demoMode}
-                title={demoMode ? 'Unavailable in Demo Mode' : undefined}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-60 transition-colors"
-              >
-                <Sparkles size={12} />
-                {aiLoading ? 'Generating…' : 'Generate with AI'}
-              </button>
-            </div>
-          )}
-        </div>
-
-        {aiError && (
-          <div className="px-5 py-2 bg-red-50 border-b border-red-100 text-xs text-red-700">{aiError}</div>
-        )}
-
-        {allCategories.length === 0 ? (
-          <div className="px-5 py-8 text-sm text-gray-400 text-center">
-            No spending data yet. Import credit card transactions on the Spend Analyzer tab.
-          </div>
-        ) : (
-          <>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-gray-50 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                    <th className="px-5 py-3">Category</th>
-                    <th className="px-5 py-3">Budget Cap</th>
-                    <th className="px-5 py-3">Avg Monthly</th>
-                    <th className="px-5 py-3 w-36">Cap vs Avg</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {/* Spending categories */}
-                  {allCategories.filter(cat => !SAVINGS_CATS.has(cat) && !goalNames.has(cat)).map(cat => {
-                    const cap = effectiveBudgets[cat]
-                    const avgMonthly = Math.round((cardBreakdownMap[cat] || 0) * 100) / 100
-                    const pct = cap > 0 ? Math.round(avgMonthly / cap * 100) : 0
-                    const over = cap > 0 && avgMonthly > cap
-                    const near = cap > 0 && !over && pct >= 80
-                    const barColor = over ? 'bg-red-400' : near ? 'bg-yellow-400' : 'bg-green-400'
-                    const isEditing = editingBudget?.cat === cat
-                    const isPending = pendingBudgets && cat in pendingBudgets
-                    return (
-                      <tr key={cat} className={over ? 'bg-red-50' : 'bg-white'}>
-                        <td className="px-5 py-3 font-medium text-gray-800">{cat}</td>
-                        <td className="px-5 py-3 text-gray-700">
-                          {isEditing ? (
-                            <input type="number" min="0" autoFocus value={editingBudget.value}
-                              onChange={e => setEditingBudget(prev => ({ ...prev, value: e.target.value }))}
-                              onBlur={() => saveBudgetCap(cat, editingBudget.value)}
-                              onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') setEditingBudget(null) }}
-                              className="w-24 border border-indigo-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                            />
-                          ) : cap != null ? (
-                            <button onClick={() => setEditingBudget({ cat, value: String(cap) })}
-                              className={`font-medium hover:text-indigo-600 hover:underline transition-colors ${isPending ? 'text-indigo-700' : ''}`}
-                              title="Click to edit">
-                              ${cap.toLocaleString()}
-                              {incPct(cap) != null && <span className="font-normal text-gray-400 ml-1">({incPct(cap)}%)</span>}
-                              {isPending && <span className="ml-1 text-xs text-indigo-400">AI</span>}
-                            </button>
-                          ) : (
-                            <button onClick={() => setEditingBudget({ cat, value: '' })}
-                              className="text-gray-400 hover:text-indigo-600 text-xs transition-colors">
-                              Set cap
-                            </button>
-                          )}
-                        </td>
-                        <td className="px-5 py-3 text-gray-500">
-                          {avgMonthly > 0 ? <><span>${avgMonthly.toLocaleString()}</span>{incPct(avgMonthly) != null && <span className="text-gray-400 ml-1">({incPct(avgMonthly)}%)</span>}</> : '—'}
-                        </td>
-                        <td className="px-5 py-3">
-                          {cap > 0 ? (
-                            <div className="flex items-center gap-2">
-                              <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
-                                <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${Math.min(100, pct)}%` }} />
-                              </div>
-                              <span className="text-xs text-gray-400 w-8 text-right">{pct}%</span>
-                            </div>
-                          ) : <span className="text-xs text-gray-300">—</span>}
-                        </td>
-                      </tr>
-                    )
-                  })}
-
-                  {/* Savings & Goals section divider */}
-                  <tr className="bg-gray-50">
-                    <td colSpan={4} className="px-5 py-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">
-                      Savings &amp; Goals — counted in Savings Planned
-                    </td>
-                  </tr>
-
-                  {/* Savings categories — avg from bank transactions, not CC */}
-                  {allCategories.filter(cat => SAVINGS_CATS.has(cat)).map(cat => {
-                    const cap = effectiveBudgets[cat]
-                    const bankAvg = bankBreakdownMap[cat] || 0
-                    const isEditing = editingBudget?.cat === cat
-                    const isPending = pendingBudgets && cat in pendingBudgets
-                    const badgeLabel = cat === 'Investments' || cat === 'Retirement' ? 'Investment' : 'Savings'
-                    return (
-                      <tr key={cat} className="bg-teal-50">
-                        <td className="px-5 py-3 font-medium text-gray-800">
-                          <div className="flex items-center gap-2">
-                            {cat}
-                            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-700 uppercase tracking-wide">{badgeLabel}</span>
-                          </div>
-                        </td>
-                        <td className="px-5 py-3">
-                          {isEditing ? (
-                            <input type="number" min="0" autoFocus value={editingBudget.value}
-                              onChange={e => setEditingBudget(prev => ({ ...prev, value: e.target.value }))}
-                              onBlur={() => saveBudgetCap(cat, editingBudget.value)}
-                              onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') setEditingBudget(null) }}
-                              className="w-24 border border-teal-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
-                            />
-                          ) : cap != null ? (
-                            <button onClick={() => setEditingBudget({ cat, value: String(cap) })}
-                              className={`font-medium text-teal-600 hover:text-teal-800 hover:underline transition-colors ${isPending ? 'text-indigo-700' : ''}`}
-                              title="Click to edit">
-                              ${cap.toLocaleString()}
-                              {incPct(cap) != null && <span className="font-normal text-gray-400 ml-1">({incPct(cap)}%)</span>}
-                              {isPending && <span className="ml-1 text-xs text-indigo-400">AI</span>}
-                            </button>
-                          ) : (
-                            <button onClick={() => setEditingBudget({ cat, value: '' })}
-                              className="text-gray-400 hover:text-teal-600 text-xs transition-colors">
-                              Set amount
-                            </button>
-                          )}
-                        </td>
-                        <td className="px-5 py-3 text-gray-500">
-                          {bankAvg > 0 ? <><span>${bankAvg.toLocaleString()}</span>{incPct(bankAvg) != null && <span className="text-gray-400 ml-1">({incPct(bankAvg)}%)</span>}</> : '—'}
-                        </td>
-                        <td className="px-5 py-3"><span className="text-xs text-gray-300">—</span></td>
-                      </tr>
-                    )
-                  })}
-
-                  {/* Active goal rows */}
-                  {activeGoals.map(goal => {
-                    const monthlySavings = Number(goal.monthlySavings) || 0
-                    const bankAvg = bankBreakdownMap[goal.name] || 0
-                    const isAuto = monthlySavings === 0 && bankAvg > 0
-                    const displayAmount = isAuto ? bankAvg : monthlySavings
-                    const isEditing = editingGoal?.goalId === goal.id
-                    return (
-                      <tr key={goal.id} className="bg-teal-50">
-                        <td className="px-5 py-3 font-medium text-gray-800">
-                          <div className="flex items-center gap-2">
-                            <button onClick={() => onTabChange?.('goals')} className="hover:text-indigo-600 transition-colors">{goal.name}</button>
-                            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-700 uppercase tracking-wide">Goal</span>
-                          </div>
-                        </td>
-                        <td className="px-5 py-3">
-                          {isEditing ? (
-                            <input type="number" min="0" autoFocus value={editingGoal.value}
-                              onChange={e => setEditingGoal(prev => ({ ...prev, value: e.target.value }))}
-                              onBlur={() => saveGoalSavings(goal.id, editingGoal.value)}
-                              onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') setEditingGoal(null) }}
-                              className="w-24 border border-teal-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
-                            />
-                          ) : (
-                            <button onClick={() => setEditingGoal({ goalId: goal.id, value: String(monthlySavings) })}
-                              className="font-medium text-teal-600 hover:text-teal-800 hover:underline transition-colors"
-                              title="Click to edit">
-                              ${displayAmount.toLocaleString()}
-                              {incPct(displayAmount) != null && <span className="font-normal text-gray-400 ml-1">({incPct(displayAmount)}%)</span>}
-                              {isAuto && <span className="ml-1 text-xs text-gray-400">auto</span>}
-                            </button>
-                          )}
-                        </td>
-                        <td className="px-5 py-3 text-gray-500">
-                          {bankAvg > 0 ? <><span>${bankAvg.toLocaleString()}</span>{incPct(bankAvg) != null && <span className="text-gray-400 ml-1">({incPct(bankAvg)}%)</span>}</> : <span className="text-xs text-gray-400">—</span>}
-                        </td>
-                        <td className="px-5 py-3"><span className="text-xs text-gray-300">—</span></td>
-                      </tr>
-                    )
-                  })}
-
-                  {/* General savings target row */}
-                  {(() => {
-                    const isEditing = editingSavingsTarget
-                    const pctOfIncome = displayIncome > 0 ? Math.round(effectiveSavingsTarget / displayIncome * 100) : 0
-                    const explanation = pendingSavingsTarget != null
-                      ? `AI suggested ${pctOfIncome}% of income`
-                      : savingsTargetIsAuto
-                        ? `${budgetSavingsRate}% of income — default rate`
-                        : `${pctOfIncome}% of your monthly income`
-                    return (
-                      <tr className="bg-teal-50">
-                        <td className="px-5 py-3 font-medium text-gray-800">
-                          <div className="flex items-center gap-2">
-                            General Savings Target
-                            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-700 uppercase tracking-wide">Savings</span>
-                          </div>
-                        </td>
-                        <td className="px-5 py-3">
-                          {isEditing ? (
-                            <input type="number" min="0" autoFocus value={savingsTargetValue}
-                              onChange={e => setSavingsTargetValue(e.target.value)}
-                              onBlur={saveSavingsTarget}
-                              onKeyDown={e => { if (e.key === 'Enter') saveSavingsTarget(); if (e.key === 'Escape') setEditingSavingsTarget(false) }}
-                              className="w-24 border border-teal-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
-                            />
-                          ) : (
-                            <div>
-                              <button
-                                onClick={() => { setSavingsTargetValue(budgetSavingsTarget !== null ? String(budgetSavingsTarget) : ''); setEditingSavingsTarget(true) }}
-                                className={`font-medium hover:underline transition-colors ${pendingSavingsTarget != null ? 'text-indigo-700' : 'text-teal-600 hover:text-teal-800'}`}
-                                title="Click to edit">
-                                ${effectiveSavingsTarget.toLocaleString()}
-                                {incPct(effectiveSavingsTarget) != null && <span className="font-normal text-gray-400 ml-1">({incPct(effectiveSavingsTarget)}%)</span>}
-                                {pendingSavingsTarget != null && <span className="ml-1 text-xs text-indigo-400">AI</span>}
-                                {savingsTargetIsAuto && <span className="ml-1 text-xs text-gray-400">auto</span>}
-                              </button>
-                              {explanation && <p className="text-[10px] text-gray-400 mt-0.5">{explanation}</p>}
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-5 py-3 text-gray-500">
-                          {autoSavingsTarget > 0 ? <><span>${autoSavingsTarget.toLocaleString()}</span>{incPct(autoSavingsTarget) != null && <span className="text-gray-400 ml-1">({incPct(autoSavingsTarget)}%)</span>}</> : <span className="text-xs text-gray-400">—</span>}
-                        </td>
-                        <td className="px-5 py-3"><span className="text-xs text-gray-300">—</span></td>
-                      </tr>
-                    )
-                  })()}
-                </tbody>
-              </table>
-            </div>
-            <div className="px-5 py-3 border-t border-gray-100">
-              <p className="text-xs text-gray-400">
-                Click any cap to edit. Bar shows avg monthly spend vs your cap — over budget is red.
-              </p>
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* Savings */}
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <div className="px-5 py-4 border-b border-gray-100">
-          <h2 className="text-base font-semibold text-gray-900">Savings Allocation</h2>
-          <p className="text-xs text-gray-400 mt-0.5">Monthly amounts set aside toward goals and savings.</p>
-        </div>
-
-        <div className="divide-y divide-gray-100">
-          {activeGoals.length === 0 ? (
-            <div className="px-5 py-4 flex items-center justify-between">
-              <span className="text-sm text-gray-400">No active goals.</span>
-              <button
-                onClick={() => onTabChange?.('goals')}
-                className="text-xs text-indigo-600 hover:text-indigo-800 font-medium"
-              >
-                Add a goal →
-              </button>
-            </div>
-          ) : (
-            activeGoals.map(goal => (
-              <div key={goal.id} className="px-5 py-3 flex items-center justify-between gap-3">
-                <button
-                  onClick={() => onTabChange?.('goals')}
-                  className="text-sm font-medium text-gray-800 hover:text-indigo-600 transition-colors text-left"
-                >
-                  {goal.name}
-                </button>
-                <span className="text-sm text-teal-600 font-medium shrink-0">
-                  ${(Number(goal.monthlySavings) || 0).toLocaleString()}/mo
-                </span>
-              </div>
-            ))
+      {/* Main column + docked rail, starting below the allocation bar — the header, KPI strip and
+          bar stay full width, the same way the other three tabs keep their title and KPI row full
+          width. The rail drops below the content under xl, where 320px of it would leave the caps
+          table too narrow to read. */}
+      <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="min-w-0 space-y-5">
+          {plan.hasPending && (
+            <PendingAiBanner
+              timeline={timeline}
+              rationale={pendingRationale}
+              saving={settingsMutation.isPending}
+              onSave={saveAIBudget}
+              onDiscard={discardAI}
+            />
           )}
 
-          {/* General savings target — display only, edited in table above */}
-          <div className="px-5 py-3 flex items-center justify-between gap-3">
-            <span className="text-sm text-gray-700">General savings target</span>
-            <div className="flex items-center gap-2 shrink-0">
-              <span className={`text-sm font-medium ${pendingSavingsTarget != null ? 'text-indigo-700' : 'text-teal-600'}`}>
-                ${effectiveSavingsTarget.toLocaleString()}/mo
-                {pendingSavingsTarget != null && <span className="ml-1 text-xs text-indigo-400">AI</span>}
-              </span>
-            </div>
+          {/* Caps beside savings, with the bank's own view spanning beneath them: the two cards
+              are the plan, and the card below is the check on it. */}
+          <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
+            <SpendingCapsTable
+              rows={plan.spendingCategories}
+              income={plan.income.display}
+              windowLabel={plan.income.windowLabel}
+              readOnly={readOnly}
+              error={aiError}
+              editing={editingBudget?.cat ?? null}
+              editValue={editingBudget?.value ?? ''}
+              onStartEdit={(name, cap) => setEditingBudget({ cat: name, value: cap == null ? '' : String(cap) })}
+              onEditValue={value => setEditingBudget(prev => ({ ...prev, value }))}
+              onCommit={saveBudgetCap}
+              onCancel={() => setEditingBudget(null)}
+            />
+
+            <SavingsGoalsCard
+              plan={plan}
+              readOnly={readOnly}
+              onOpenGoals={() => onTabChange?.('goals')}
+              editingCap={editingBudget?.cat ?? null}
+              editingCapValue={editingBudget?.value ?? ''}
+              onStartEditCap={(name, cap) => setEditingBudget({ cat: name, value: cap == null ? '' : String(cap) })}
+              onEditCapValue={value => setEditingBudget(prev => ({ ...prev, value }))}
+              onCommitCap={saveBudgetCap}
+              onCancelCap={() => setEditingBudget(null)}
+              editingGoalId={editingGoal?.goalId ?? null}
+              editingGoalValue={editingGoal?.value ?? ''}
+              onStartEditGoal={(goalId, manual) => setEditingGoal({ goalId, value: manual ? String(manual) : '' })}
+              onEditGoalValue={value => setEditingGoal(prev => ({ ...prev, value }))}
+              onCommitGoal={saveGoalSavings}
+              onCancelGoal={() => setEditingGoal(null)}
+              editingTarget={editingSavingsTarget}
+              targetValue={savingsTargetValue}
+              onStartEditTarget={() => {
+                setSavingsTargetValue(settings?.budgetSavingsTarget != null ? String(settings.budgetSavingsTarget) : '')
+                setEditingSavingsTarget(true)
+              }}
+              onEditTargetValue={setSavingsTargetValue}
+              onCommitTarget={saveSavingsTarget}
+              onCancelTarget={() => setEditingSavingsTarget(false)}
+            />
           </div>
 
-          {/* Detected from bank */}
-          {((fin?.savingsContrib ?? 0) > 0 || (fin?.investContrib ?? 0) > 0) && (
-            <div className="px-5 py-3 bg-gray-50">
-              <p className="text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wide">Detected from bank data</p>
-              <div className="space-y-1">
-                {(fin?.savingsContrib ?? 0) > 0 && (
-                  <div className="flex justify-between text-xs text-gray-500">
-                    <span>Savings contributions</span>
-                    <span>${Math.round(fin.savingsContrib).toLocaleString()}/mo avg</span>
-                  </div>
-                )}
-                {(fin?.investContrib ?? 0) > 0 && (
-                  <div className="flex justify-between text-xs text-gray-500">
-                    <span>Investment contributions</span>
-                    <span>${Math.round(fin.investContrib).toLocaleString()}/mo avg</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
+          <DetectedFromBankCard plan={plan} />
         </div>
 
-        <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-between flex-wrap gap-2">
-          <p className="text-xs text-gray-400">Edit amounts in the Spending Caps table above.</p>
-          <span className="text-xs text-gray-500">
-            Total saving:{' '}
-            <span className="font-semibold text-teal-600">
-              ${Math.round(totalSavingsPlanned).toLocaleString()}/mo
-            </span>
-          </span>
-        </div>
+        {/* Capped to the viewport and scrollable only where it's sticky: once the follow-up
+            conversation lands here in phase four this will run taller than the screen, and a
+            sticky element taller than its viewport strands its own bottom permanently. Below xl
+            it is in normal flow, where a cap would be wrong. */}
+        <aside
+          className="min-w-0 xl:sticky xl:max-h-[var(--rail-max-h)] xl:overflow-y-auto"
+          style={{ top: railTop, '--rail-max-h': `calc(100vh - ${railTop + 16}px)` }}
+        >
+          <BudgetInsightsPanel
+            plan={plan}
+            hasAiKey={hasAiKey}
+            record={budgetInsights}
+            chatMessages={chatMessages}
+            staleReason={staleReason}
+            insightsError={insightsError}
+            chatError={chatError}
+            chatInput={chatInput}
+            chatLoading={chatLoading}
+            pendingQuestion={pendingQuestion}
+            generating={insightsMutation.isPending}
+            clearing={clearInsightsMutation.isPending}
+            onGenerate={() => insightsMutation.mutate(scopePayload)}
+            onClear={() => clearInsightsMutation.mutate()}
+            onSendChat={handleSendChat}
+            onExplore={option => sendChatMessage(option.prompt)}
+            onChatInput={setChatInput}
+            onOpenSettings={() => onTabChange?.('settings')}
+          />
+        </aside>
       </div>
     </div>
   )

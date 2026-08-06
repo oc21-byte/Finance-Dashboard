@@ -17,6 +17,9 @@ import { createFinanceInsightGeneration, normalizeFinanceInsightRecord } from '.
 import { buildDashboardAnalysis } from './dashboardAnalysis.js'
 import { createDashboardChatBinding, createDashboardChatTurn } from './dashboardChat.js'
 import { createDashboardInsightGeneration, normalizeDashboardInsightRecord } from './dashboardInsightGeneration.js'
+import { buildBudgetAnalysis } from './budgetAnalysis.js'
+import { createBudgetChatBinding, createBudgetChatTurn } from './budgetChat.js'
+import { createBudgetInsightGeneration, normalizeBudgetInsightRecord } from './budgetInsightGeneration.js'
 import { bankFlowOf } from '../src/constants/financeRules.js'
 import {
   HISTORY_VERSION, rebuildHistory, valueHoldingsAsOf, buildEntry,
@@ -41,9 +44,11 @@ const DEFAULT_DB = {
   // The same, for the Finances tab. `ensureDb()` back-fills any key missing from an existing
   // db.json, so adding this needs no migration.
   financeInsights: null,
-  // And for the Dashboard. Three separate keys on purpose: they answer different questions over
-  // different scopes, and refreshing one must not invalidate another's conversation.
+  // And for the Dashboard. Four separate keys on purpose: they answer different questions over
+  // different subjects, and refreshing one must not invalidate another's conversation.
   dashboardInsights: null,
+  // And for the Budget tab, whose subject is the plan rather than either ledger or the balance.
+  budgetInsights: null,
   settings: {
     claudeApiKey: '',
     openaiApiKey: '',
@@ -54,6 +59,10 @@ const DEFAULT_DB = {
     assumedAnnualReturn: 0.06,
     budgetSavingsTarget: null,
     budgetSavingsRate: 15,
+    // Per-category monthly spending caps, `{ categoryName: dollars }`. Declared here rather than
+    // conjured by the blind merge in `PUT /api/settings` — without a default, `ensureDb()`'s
+    // back-fill never creates the key and every reader has to defend against its absence.
+    categoryBudgets: {},
     visionModel: 'claude-sonnet-4-6',
     // Off by default: a card credit already shows up as a smaller card bill on the bank side,
     // so counting it as income too would double-count it. See Finances for the full note.
@@ -836,6 +845,12 @@ function monthLabel(yyyymm) {
   return `${MONTH_NAMES[m - 1]} ${y}`
 }
 
+/** Last calendar day of a `YYYY-MM`. Day 0 of the next month is the last day of this one. */
+function endOfMonth(yyyymm) {
+  const [y, m] = yyyymm.split('-').map(Number)
+  return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10)
+}
+
 // Calendar months that the bank data FULLY spans — the overall date range covers the 1st
 // through the last day of the month. Excludes leading/trailing partial months (e.g. data
 // starting Nov 14 or ending May 24) and the current incomplete month, so monthly averages
@@ -866,9 +881,9 @@ function buildMonthlyFinancials(db, maxMonths = 6) {
   const cc = db.credit_card_transactions || []
 
   const empty = {
-    monthsCovered: 0, windowLabel: 'no data', excluded: [],
+    monthsCovered: 0, windowLabel: 'no data', windowFrom: null, windowTo: null, excluded: [],
     income: 0, expenses: 0, savingsContrib: 0, investContrib: 0,
-    cardSpendMonthly: 0, cardCreditsMonthly: 0, cardBreakdown: [],
+    cardSpendMonthly: 0, cardCreditsMonthly: 0, cardBreakdown: [], bankBreakdown: [],
   }
   const allFull = fullMonthsWithData(bank)
   if (!allFull.length) return empty
@@ -940,6 +955,10 @@ function buildMonthlyFinancials(db, maxMonths = 6) {
   return {
     monthsCovered: divisor,
     windowLabel,
+    // The window as dates, so the Budget tab can build a scope key from it. `months` holds
+    // complete calendar months, so the last day of the final one is its true end.
+    windowFrom: `${months[0]}-01`,
+    windowTo: endOfMonth(months[months.length - 1]),
     excluded,
     income: perMonth(income),
     expenses: perMonth(expenses),
@@ -1707,6 +1726,134 @@ app.post('/api/llm/dashboard-chat', async (req, res) => {
     res.json({ reply })
   } catch (err) {
     failure(res, 'LLM dashboard-chat error', err, { detail: rawAdvice ?? rawIntent })
+  }
+})
+
+// The Budget triad. Structurally identical to the three above — same replace-wholesale storage,
+// same re-read before appending a chat reply — over THE PLAN rather than a ledger or a balance.
+// Everything it quotes comes from `src/utils/budgetModel.js`, the same module the Budget cards
+// render from, which is what makes an insight agreeing with the KPI strip structural rather than a
+// coincidence.
+function saveBudgetInsights(record) {
+  const db = readDb()
+  db.budgetInsights = record
+  writeDb(db)
+  return db.budgetInsights
+}
+
+// The plan has no period chips: its window is the last <=6 COMPLETE bank months, the same one
+// `buildMonthlyFinancials` averages over. The insight route and the chat route must see the same
+// figures, so both assemble their inputs here.
+function budgetAnalysisInputs(db, insightScope) {
+  return {
+    settings: db.settings ?? {},
+    goals: db.goals ?? [],
+    fin: buildMonthlyFinancials(db),
+    insightScope,
+  }
+}
+
+app.get('/api/budget-insights', (req, res) => {
+  const db = readDb()
+  res.json(normalizeBudgetInsightRecord(db.budgetInsights ?? null))
+})
+
+app.delete('/api/budget-insights', (req, res) => {
+  const db = readDb()
+  db.budgetInsights = null
+  writeDb(db)
+  res.json(null)
+})
+
+app.post('/api/llm/budget-insights', async (req, res) => {
+  const db = readDb()
+  const { aiProvider = 'claude', claudeApiKey, openaiApiKey } = db.settings
+  const hasKey = aiProvider === 'openai' ? !!openaiApiKey : !!claudeApiKey
+  if (!hasKey) return res.status(400).json({ error: 'No AI API key configured. Add one in Settings.' })
+
+  const { period, scope, periodLabel } = readScopeBody(req.body)
+  const analysis = buildBudgetAnalysis(budgetAnalysisInputs(db, scope))
+  if (!analysis.observations.length) {
+    return res.status(400).json({ error: 'Not enough budget data yet. Set a cap or import bank activity first.' })
+  }
+  const generation = createBudgetInsightGeneration({ analysis, period, periodLabel, scope })
+
+  let raw = null
+  try {
+    const text = await callLLM({
+      system: generation.prompt.system,
+      userMessages: [{ role: 'user', content: generation.prompt.user }],
+      maxTokens: generation.prompt.maxTokens,
+    })
+    raw = text
+    const result = generation.complete(text, new Date().toISOString())
+    saveBudgetInsights(result)
+    res.json(result)
+  } catch (err) {
+    failure(res, 'LLM budget-insights error', err, { detail: raw })
+  }
+})
+
+app.post('/api/llm/budget-chat', async (req, res) => {
+  const db = readDb()
+  const { aiProvider = 'claude', claudeApiKey, openaiApiKey } = db.settings
+  const hasKey = aiProvider === 'openai' ? !!openaiApiKey : !!claudeApiKey
+  if (!hasKey) return res.status(400).json({ error: 'No AI API key configured. Add one in Settings.' })
+
+  const { messages = [] } = req.body
+  if (!messages.length) return res.status(400).json({ error: 'No messages provided' })
+  if (![...messages].reverse().some(message => message.role === 'user' && message.content?.trim())) {
+    return res.status(400).json({ error: 'No user message provided' })
+  }
+
+  const { period, scope: requestScope } = readScopeBody(req.body)
+
+  // The stored record owns the conversational scope, so re-scoping the page while a question is in
+  // flight still gets an answer about what was asked. See `chatBinding.js`.
+  const binding = createBudgetChatBinding({ record: db.budgetInsights, period, requestScope })
+  const { storedInsights, scope } = binding
+  const analysis = buildBudgetAnalysis(budgetAnalysisInputs(db, scope))
+  const turn = createBudgetChatTurn({ analysis, storedInsights, messages })
+
+  let rawIntent = null
+  let rawAdvice = null
+  try {
+    let reply = turn.directReply
+    if (!reply) {
+      const intentText = await callLLM({
+        system: turn.intentPrompt.system,
+        userMessages: [{ role: 'user', content: turn.intentPrompt.user }],
+        maxTokens: turn.intentPrompt.maxTokens,
+      })
+      rawIntent = intentText
+      const outcome = turn.completeIntent(intentText)
+      if (outcome.type === 'advice') {
+        const adviceText = await callLLM({
+          system: outcome.prompt.system,
+          userMessages: outcome.prompt.messages,
+          maxTokens: outcome.prompt.maxTokens,
+        })
+        rawAdvice = adviceText
+        reply = turn.completeAdvice(adviceText)
+      } else {
+        reply = outcome.reply
+      }
+    }
+
+    // Appended only when the stored insights still describe the plan being discussed.
+    const fresh = readDb()
+    if (binding.canAppend(fresh.budgetInsights)) {
+      fresh.budgetInsights.messages = [
+        ...(fresh.budgetInsights.messages ?? []),
+        turn.userMessage,
+        { role: 'assistant', content: reply },
+      ]
+      writeDb(fresh)
+    }
+
+    res.json({ reply })
+  } catch (err) {
+    failure(res, 'LLM budget-chat error', err, { detail: rawAdvice ?? rawIntent })
   }
 })
 

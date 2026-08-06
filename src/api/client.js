@@ -133,6 +133,10 @@ export const api = {
     get:   () => request('GET',    '/dashboard-insights'),
     clear: () => request('DELETE', '/dashboard-insights'),
   },
+  budgetInsights: {
+    get:   () => request('GET',    '/budget-insights'),
+    clear: () => request('DELETE', '/budget-insights'),
+  },
   shutdown: () => request('POST', '/shutdown'),
   llm: {
     goalAnalysis: (payload) => request('POST', '/llm/goal-analysis', payload),
@@ -146,6 +150,8 @@ export const api = {
     financeChat: (scope, messages) => request('POST', '/llm/finance-chat', { ...scopeBody(scope), messages }),
     dashboardInsights: (scope) => request('POST', '/llm/dashboard-insights', scopeBody(scope)),
     dashboardChat: (scope, messages) => request('POST', '/llm/dashboard-chat', { ...scopeBody(scope), messages }),
+    budgetInsights: (scope) => request('POST', '/llm/budget-insights', scopeBody(scope)),
+    budgetChat: (scope, messages) => request('POST', '/llm/budget-chat', { ...scopeBody(scope), messages }),
     goalChat: (goalId, messages) => request('POST', '/llm/goal-chat', { goalId, messages }),
     budgetBuilder: (payload) => request('POST', '/llm/budget-builder', payload),
     detectColumns: (headers, samples) => request('POST', '/llm/detect-columns', { headers, samples }),
