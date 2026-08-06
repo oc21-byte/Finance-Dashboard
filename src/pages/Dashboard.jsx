@@ -14,7 +14,11 @@ import CompositionDonut from '../components/dashboard/CompositionDonut.jsx'
 import GoalProgressCard from '../components/dashboard/GoalProgressCard.jsx'
 import DashboardInsightsPanel from '../components/dashboard/DashboardInsightsPanel.jsx'
 
-export default function Dashboard({ onTabChange }) {
+// Layout's demo-mode banner is `sticky top-0 z-40`, so anything this page pins starts below it.
+// Unlike Finances and Spend there is no PinnedScopeBar here, so the banner is the only offset.
+const DEMO_BANNER_H = 32
+
+export default function Dashboard({ onTabChange, demoMode }) {
   const queryClient = useQueryClient()
   const [changePeriod, setChangePeriod] = useState('6M')
   // Which bucket the trend and the donut are both focused on, or null for all three. Lifted here
@@ -195,6 +199,10 @@ export default function Dashboard({ onTabChange }) {
     periodLabel: scopeLabel,
   }
 
+  // Where the insights rail freezes. A constant, not a measurement: the demo banner is the only
+  // fixed chrome above this page — the top nav scrolls away and there is no pinned scope bar here.
+  const railTop = (demoMode ? DEMO_BANNER_H : 0) + 16
+
   // Checked against the live cards, not just against the chip: a stored generation also goes stale
   // when the data under it moves, and staying quiet about that lets the panel contradict the
   // numbers directly above it.
@@ -225,69 +233,83 @@ export default function Dashboard({ onTabChange }) {
         onOpenSettings={() => onTabChange?.('settings')}
       />
 
-      <ChangeAttributionCard
-        attribution={attribution}
-        period={changePeriod}
-        onPeriodChange={setChangePeriod}
-        range={changeRange}
-        trailingRows={trailingRows}
-        onInspectWindow={win => onTabChange?.('finances', { range: win, reason: win.reason })}
-        onOpenFinances={() => onTabChange?.('finances')}
-        onOpenSpend={() => onTabChange?.('spend-analyzer')}
-      />
+      {/* Main column + sticky insights rail, starting level with the change waterfall — the header
+          and KPI strip stay full width above it, the same way Finances and Spend keep their title
+          and KPI row full width. The rail drops below the content under xl, where 320px of it would
+          leave the trend too narrow to read. */}
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-6 items-start">
+        <div className="min-w-0 space-y-6">
+          <ChangeAttributionCard
+            attribution={attribution}
+            period={changePeriod}
+            onPeriodChange={setChangePeriod}
+            range={changeRange}
+            trailingRows={trailingRows}
+            onInspectWindow={win => onTabChange?.('finances', { range: win, reason: win.reason })}
+            onOpenFinances={() => onTabChange?.('finances')}
+            onOpenSpend={() => onTabChange?.('spend-analyzer')}
+          />
 
-      {/* The trend and today's split, side by side: one shows how the balance got here, the
-          other what it is right now. Clicking a donut slice lights its band in the trend. */}
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1fr_348px]">
-        <LiquidNetWorthTrend
-          history={netWorthHistory}
-          highlight={bucketFilter}
-          onHighlight={setBucketFilter}
-        />
-        <CompositionDonut
-          cash={cashBalance}
-          savings={savingsTotal}
-          holdings={holdings}
-          prices={prices}
-          pricesFetching={pricesFetching}
-          highlight={bucketFilter}
-          onHighlight={setBucketFilter}
-        />
+          {/* The trend and today's split, side by side: one shows how the balance got here, the
+              other what it is right now. Clicking a donut slice lights its band in the trend. */}
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1fr_348px]">
+            <LiquidNetWorthTrend
+              history={netWorthHistory}
+              highlight={bucketFilter}
+              onHighlight={setBucketFilter}
+            />
+            <CompositionDonut
+              cash={cashBalance}
+              savings={savingsTotal}
+              holdings={holdings}
+              prices={prices}
+              pricesFetching={pricesFetching}
+              highlight={bucketFilter}
+              onHighlight={setBucketFilter}
+            />
+          </div>
+
+          <GoalProgressCard
+            goals={goals}
+            transactions={transactions}
+            onOpenGoals={() => onTabChange?.('goals')}
+          />
+
+          <p className="text-[11px] leading-relaxed text-gray-400">
+            Liquid net worth counts cash, savings, and investment accounts. It does not include
+            property, vehicles, private or corporate shares, or debts.
+          </p>
+        </div>
+
+        {/* Capped to the viewport and scrollable *only* where it's sticky: the observations,
+            exploration choices and conversation run taller than the screen, and a sticky element
+            taller than its viewport leaves its own bottom permanently out of reach. Below xl it's
+            in normal flow, where a cap would be wrong. */}
+        <aside
+          className="xl:sticky xl:overflow-y-auto xl:max-h-[var(--rail-max-h)] min-w-0"
+          style={{ top: railTop, '--rail-max-h': `calc(100vh - ${railTop + 16}px)` }}
+        >
+          <DashboardInsightsPanel
+            hasAiKey={hasAiKey}
+            record={dashboardInsights}
+            chatMessages={chatMessages}
+            staleReason={staleReason}
+            scopeLabel={scopeLabel}
+            insightsError={insightsError}
+            chatError={chatError}
+            chatInput={chatInput}
+            chatLoading={chatLoading}
+            pendingQuestion={pendingQuestion}
+            generating={insightsMutation.isPending}
+            clearing={clearInsightsMutation.isPending}
+            onGenerate={() => insightsMutation.mutate(scopePayload)}
+            onClear={() => clearInsightsMutation.mutate()}
+            onSendChat={handleSendChat}
+            onExplore={option => sendChatMessage(option.prompt)}
+            onChatInput={setChatInput}
+          />
+        </aside>
       </div>
-
-      {/* Goals + Insights side by side on larger screens */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
-        <GoalProgressCard
-          goals={goals}
-          transactions={transactions}
-          onOpenGoals={() => onTabChange?.('goals')}
-        />
-
-        <DashboardInsightsPanel
-          hasAiKey={hasAiKey}
-          record={dashboardInsights}
-          chatMessages={chatMessages}
-          staleReason={staleReason}
-          scopeLabel={scopeLabel}
-          insightsError={insightsError}
-          chatError={chatError}
-          chatInput={chatInput}
-          chatLoading={chatLoading}
-          pendingQuestion={pendingQuestion}
-          generating={insightsMutation.isPending}
-          clearing={clearInsightsMutation.isPending}
-          onGenerate={() => insightsMutation.mutate(scopePayload)}
-          onClear={() => clearInsightsMutation.mutate()}
-          onSendChat={handleSendChat}
-          onExplore={option => sendChatMessage(option.prompt)}
-          onChatInput={setChatInput}
-        />
-      </div>
-
-      <p className="text-[11px] leading-relaxed text-gray-400">
-        Liquid net worth counts cash, savings, and investment accounts. It does not include
-        property, vehicles, private or corporate shares, or debts.
-      </p>
     </div>
   )
 }
