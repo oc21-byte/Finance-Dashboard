@@ -304,8 +304,12 @@ export default function Investments({ demoMode }) {
         onChange={setAccountFilter}
       />
 
-      <div className="grid grid-cols-1 items-stretch gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
-        <div className="min-w-0">
+      {/*
+        On lg, row height comes only from Allocation. Holdings uses h-0/min-h-full so it fills
+        that height and scrolls without stretching the row past the donut card.
+      */}
+      <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_360px] lg:items-stretch">
+        <div className="min-w-0 lg:h-0 lg:min-h-full">
           <HoldingsTable
             rows={visibleRows}
             totalCount={model.rows.length}

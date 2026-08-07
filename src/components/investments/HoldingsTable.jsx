@@ -107,8 +107,8 @@ function HoldingDetail({ row, colSpan, onDeletePurchase, onDeleteHolding, deleti
 /**
  * Holdings ranked by value, in a box that scrolls on its own.
  *
- * The body is height-capped so sixteen rows don't blow past the viewport; `h-full` lets the card
- * chrome stretch with the allocation column beside it when that column is taller (two donuts).
+ * Beside Allocation the wrapper is `h-0 min-h-full` so row height is set by the donut card
+ * alone; this card fills that height and scrolls. Stacked layouts keep a viewport cap.
  */
 export default function HoldingsTable({
   rows,
@@ -131,7 +131,7 @@ export default function HoldingsTable({
   const colSpan = showAccount ? 6 : 5
 
   return (
-    <div className="flex h-full flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+    <div className="flex flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm lg:h-full">
       <div className="shrink-0 border-b border-gray-100 px-5 py-3.5">
         <h2 className="text-[15px] font-semibold text-gray-900">Holdings ranked by value</h2>
         <p className="text-[12.5px] text-gray-400">
@@ -151,7 +151,7 @@ export default function HoldingsTable({
       ) : rows.length === 0 ? (
         <div className="py-12 text-center text-sm text-gray-400">No holdings in "{accountFilter}".</div>
       ) : (
-        <div className="max-h-[min(560px,58vh)] overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-y-auto max-h-[min(560px,58vh)] lg:max-h-none">
           <table className="w-full">
             <thead className="sticky top-0 z-10 bg-white">
               <tr className="border-b border-gray-100 text-left text-xs font-medium uppercase tracking-wide text-gray-400">

@@ -15,9 +15,8 @@ import HoldingsWeightDonut from './HoldingsWeightDonut.jsx'
  * Colours are assigned over the FULL type list, never a filtered one, so selecting an account chip
  * cannot recolour the slices.
  *
- * `h-full` + `mt-auto` on the weight ring let this card stretch to the holdings table beside it
- * and park the second donut at the bottom of the leftover space — the void the height-capped
- * table used to leave empty.
+ * Stacked with the holdings-by-weight ring beneath — content-sized, not stretched to match
+ * the holdings card (that stretch parked the second donut under a dead band via `mt-auto`).
  */
 export default function AllocationDonut({ rollup, totalValue, rows = [] }) {
   const [hover, setHover] = useState(null)
@@ -28,7 +27,7 @@ export default function AllocationDonut({ rollup, totalValue, rows = [] }) {
   const colorOf = row => colors[row.name] ?? UNKNOWN_ACCOUNT
 
   return (
-    <div className="flex h-full flex-col rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+    <div className="flex flex-col rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
       <h2 className="text-[15px] font-semibold text-gray-900">Allocation</h2>
       <p className="text-[12.5px] leading-relaxed text-gray-400">By account type · all holdings</p>
 
@@ -90,7 +89,7 @@ export default function AllocationDonut({ rollup, totalValue, rows = [] }) {
             </ul>
           </div>
 
-          <div className="mt-auto border-t border-gray-100 pt-5">
+          <div className="mt-5 border-t border-gray-100 pt-5">
             <HoldingsWeightDonut rows={rows} />
           </div>
         </>
