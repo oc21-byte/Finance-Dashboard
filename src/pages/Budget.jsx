@@ -31,7 +31,7 @@ export default function Budget({ onTabChange, demoMode }) {
 
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.settings.get })
   const { data: goals = [] } = useQuery({ queryKey: ['goals'], queryFn: api.goals.list })
-  const { data: fin } = useQuery({ queryKey: ['monthly_financials'], queryFn: api.monthlyFinancials.get })
+  const { data: fin } = useQuery({ queryKey: ['monthly-financials'], queryFn: api.monthlyFinancials.get })
   const { data: budgetInsights } = useQuery({ queryKey: ['budget-insights'], queryFn: api.budgetInsights.get })
 
   const [editingIncome, setEditingIncome] = useState(false)

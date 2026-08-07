@@ -108,9 +108,10 @@ export default function Settings() {
   const factoryResetMutation = useMutation({
     mutationFn: api.factoryReset,
     onSuccess: () => {
-      // Remembered source names live outside db.json.
+      // Remembered source / account names live outside db.json.
       localStorage.removeItem('visionSource_finances')
       localStorage.removeItem('visionSource_spendAnalyzer')
+      localStorage.removeItem('visionAccount_investments')
       queryClient.clear()
       window.location.reload()
     },

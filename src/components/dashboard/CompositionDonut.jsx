@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { buildComposition, BUCKET_LABELS } from '../../utils/liquidNetWorth.js'
+import { accountTypeOf } from '../../utils/investmentsModel.js'
 import { buildDonutModel } from '../../utils/netWorthChartModel.js'
 import { BUCKETS, buildAccountTypeColors, UNKNOWN_ACCOUNT } from './palette.js'
 
@@ -33,7 +34,7 @@ export default function CompositionDonut({
   )
 
   const accountColors = useMemo(
-    () => buildAccountTypeColors(holdings.map(h => h.accountType ?? 'Non-Registered')),
+    () => buildAccountTypeColors(holdings.map(accountTypeOf)),
     [holdings],
   )
 

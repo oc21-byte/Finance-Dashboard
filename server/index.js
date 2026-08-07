@@ -25,6 +25,8 @@ import {
   normalizePositions, reconcileHoldings, applyReconcile,
   normalizeSavings, reconcileSavings, applySavingsReconcile,
 } from '../src/utils/statementReconcile.js'
+import { accountTypeOf } from '../src/utils/investmentsModel.js'
+import { resolveUploadLedger, resolveInvestmentTarget } from '../src/utils/uploadHistory.js'
 import {
   DEFAULT_VISION_MODEL, FALLBACK_MODELS,
   normalizeAnthropicModels, normalizeOpenAiModels,
@@ -466,7 +468,7 @@ function sourceValue(db, link, priceMap) {
   }
   if (link.sourceType === 'holdingsAccountType') {
     return (db.holdings ?? [])
-      .filter(h => (h.accountType || 'Other') === link.sourceId)
+      .filter(h => accountTypeOf(h) === link.sourceId)
       .reduce((s, h) => {
         const price = h.ticker ? (priceMap[h.ticker.toUpperCase()] ?? null) : null
         return s + (price !== null ? price * h.shares : h.purchasePrice * h.shares)
@@ -497,7 +499,7 @@ function tickersForGoalLinks(db) {
   }
   if (!buckets.size) return []
   return (db.holdings ?? [])
-    .filter(h => buckets.has(h.accountType || 'Other'))
+    .filter(h => buckets.has(accountTypeOf(h)))
     .map(h => h.ticker)
     .filter(Boolean)
 }
@@ -542,7 +544,7 @@ function validateGoalLinks(db, links, excludeGoalId = null) {
     if (sourceType === 'savings' && !(db.savings_accounts ?? []).some(a => a.id === sourceId)) {
       return `Savings account not found: ${sourceId}`
     }
-    if (sourceType === 'holdingsAccountType' && !(db.holdings ?? []).some(h => (h.accountType || 'Other') === sourceId)) {
+    if (sourceType === 'holdingsAccountType' && !(db.holdings ?? []).some(h => accountTypeOf(h) === sourceId)) {
       return `No holdings in account type: ${sourceId}`
     }
     const used = allocatedPercent(db, sourceType, sourceId, excludeGoalId)
@@ -613,7 +615,7 @@ app.delete('/api/goals/:id', (req, res) => {
 // holdings account-type bucket, with live current value and how much capacity is still free.
 app.get('/api/goal-sources', async (req, res) => {
   const db = readDb()
-  const buckets = [...new Set((db.holdings ?? []).map(h => h.accountType || 'Other'))]
+  const buckets = [...new Set((db.holdings ?? []).map(accountTypeOf))]
   const tickers = (db.holdings ?? []).map(h => h.ticker).filter(Boolean)
   const priceMap = await fetchPrices(tickers)
 
@@ -805,15 +807,17 @@ app.get('/api/upload-history', (req, res) => {
   res.json((db.uploadHistory ?? []).slice().reverse())
 })
 
-const LEDGERS = new Set(['bank', 'credit_card', 'investment'])
-
 app.post('/api/upload-history', (req, res) => {
   const db = readDb()
   if (!db.uploadHistory) db.uploadHistory = []
   const { filename, sourceName, transactionCount, transactionIds, ledger, target, recordIds } = req.body
   const stringIds = value => (Array.isArray(value) ? value.filter(id => typeof id === 'string' && id) : [])
   const ids = stringIds(transactionIds)
-  const kind = LEDGERS.has(ledger) ? ledger : 'bank'
+  // Missing ledger stays `bank` for older clients; a *wrong* ledger must not silently land there —
+  // delete-cascade would then look at the bank collection for investment/card ids.
+  const resolvedLedger = resolveUploadLedger(ledger)
+  if (resolvedLedger.error) return res.status(400).json({ error: resolvedLedger.error })
+  const kind = resolvedLedger.ledger
 
   const entry = {
     id: uuidv4(),
@@ -829,7 +833,9 @@ app.post('/api/upload-history', (req, res) => {
   // their own field rather than being stuffed into `transactionIds`: the cascade has to know which
   // collection to look in, and one array holding two different kinds of id could not say.
   if (kind === 'investment') {
-    entry.target = target === 'savings' ? 'savings' : 'holdings'
+    const resolvedTarget = resolveInvestmentTarget(target)
+    if (resolvedTarget.error) return res.status(400).json({ error: resolvedTarget.error })
+    entry.target = resolvedTarget.target
     entry.recordIds = stringIds(recordIds)
     entry.transactionCount = Number(transactionCount) || entry.recordIds.length || 0
   }
@@ -2391,8 +2397,10 @@ app.post('/api/parse-pdf-vision', async (req, res) => {
 
   // Account summaries describe a balance sheet; the bank and card paths describe a ledger. They
   // share this route for its key check, rate limit, body cap and vision-model tier, and part ways
-  // at the prompt.
-  const isAccountSummary = statementType === 'investment' || statementType === 'savings'
+  // at the prompt. `holdings` is accepted as an alias of `investment` — the Investments UI names
+  // the toggle that way, and a slipped-through alias must not fall into the bank ledger path.
+  const isHoldingsSummary = statementType === 'investment' || statementType === 'holdings'
+  const isAccountSummary = isHoldingsSummary || statementType === 'savings'
   if (isAccountSummary) {
     let rawSummary = null
     try {
@@ -2400,7 +2408,7 @@ app.post('/api/parse-pdf-vision', async (req, res) => {
         userMessages: [{
           role: 'user',
           content: [
-            { type: 'text', text: statementType === 'investment' ? POSITIONS_PROMPT : SAVINGS_PROMPT },
+            { type: 'text', text: isHoldingsSummary ? POSITIONS_PROMPT : SAVINGS_PROMPT },
             ...pages.map(data => ({
               type: 'image',
               source: { type: 'base64', media_type: 'image/jpeg', data },
@@ -2414,7 +2422,7 @@ app.post('/api/parse-pdf-vision', async (req, res) => {
       rawSummary = text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
       const parsed = JSON.parse(rawSummary)
       const statementDate = isoDate(parsed?.statementDate)
-      if (statementType === 'investment') {
+      if (isHoldingsSummary) {
         return res.json({
           statementDate,
           accountLabel: typeof parsed?.accountLabel === 'string' ? parsed.accountLabel.trim() : null,

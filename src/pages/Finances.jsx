@@ -8,6 +8,7 @@ import { annotateDuplicates, duplicateFlags } from '../utils/duplicates.js'
 import { errorStatus } from '../utils/diagnostics.js'
 import { resolvePeriod, explicitRange, filterByRange, describeScope, buildScopeKey } from '../utils/period.js'
 import { expectedBalanceAt } from '../utils/liquidNetWorth.js'
+import { accountTypeOf } from '../utils/investmentsModel.js'
 import { applyFinanceFilters, buildFinanceKpis } from '../utils/financeAggregations.js'
 import ErrorBanner from '../components/ErrorBanner.jsx'
 import CsvMappingModal from '../components/CsvMappingModal.jsx'
@@ -90,7 +91,7 @@ export default function Finances({ demoMode, onTabChange, handoff }) {
   })
 
   const holdingAccountTypes = useMemo(
-    () => [...new Set(holdings.map(h => h.accountType || 'Other'))].sort(),
+    () => [...new Set(holdings.map(accountTypeOf))].sort(),
     [holdings],
   )
 
@@ -369,9 +370,11 @@ export default function Finances({ demoMode, onTabChange, handoff }) {
   }
 
   function handleMappingConfirm(sourceName, mapping) {
-    const newSources = { ...(settings?.csvSources || {}), [sourceName]: mapping }
+    // Tab wins over whatever the modal (or a reused source name) had stored.
+    const locked = { ...mapping, statementType: 'bank' }
+    const newSources = { ...(settings?.csvSources || {}), [sourceName]: locked }
     saveMappingMutation.mutate(newSources)
-    const txs = processCSVRows(csvModalData.rows, { ...mapping, sourceName })
+    const txs = processCSVRows(csvModalData.rows, { ...locked, sourceName })
     pendingUploadMetaRef.current = [{
       filename: csvModalData.fileName ?? 'unknown',
       sourceName,
@@ -762,6 +765,7 @@ export default function Finances({ demoMode, onTabChange, handoff }) {
           headers={csvModalData.headers}
           existingSources={settings?.csvSources || {}}
           initialSourceName={csvModalData.initialSourceName || ''}
+          statementType="bank"
           onConfirm={handleMappingConfirm}
           onCancel={() => setCsvModalData(null)}
         />

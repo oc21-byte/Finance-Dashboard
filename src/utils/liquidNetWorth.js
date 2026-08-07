@@ -15,6 +15,7 @@ import {
   isSavingsTransfer,
   isInvestmentTransfer,
 } from '../constants/financeRules.js'
+import { accountTypeOf } from './investmentsModel.js'
 
 const r2 = n => Math.round((n ?? 0) * 100) / 100
 
@@ -53,7 +54,7 @@ export function portfolioValueOf(holdings = [], prices = {}) {
 export function holdingsByAccountType(holdings = [], prices = {}) {
   const byType = {}
   for (const h of holdings) {
-    const type = h.accountType ?? 'Non-Registered'
+    const type = accountTypeOf(h)
     const price = h.ticker ? (prices[h.ticker.toUpperCase()] ?? null) : null
     byType[type] = (byType[type] ?? 0) + (price !== null ? price * h.shares : h.purchasePrice * h.shares)
   }
@@ -323,7 +324,7 @@ export function buildUnaccountedRows(attribution) {
 export function accountCount({ cash = 0, savingsAccounts = [], holdings = [] }) {
   return (cash !== 0 ? 1 : 0)
     + savingsAccounts.length
-    + new Set(holdings.map(h => h.accountType ?? 'Non-Registered')).size
+    + new Set(holdings.map(accountTypeOf)).size
 }
 
 /**

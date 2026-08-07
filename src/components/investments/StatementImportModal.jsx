@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import { parseAccountStatementVision } from '../../utils/pdfVision.js'
+import { toVisionStatementType } from '../../utils/accountStatementType.js'
 import { errorStatus } from '../../utils/diagnostics.js'
 import {
   normalizePositions, reconcileHoldings,
@@ -95,7 +96,7 @@ export default function StatementImportModal({
 
     try {
       const result = await parseAccountStatementVision(file, {
-        statementType: target,
+        statementType: toVisionStatementType(target),
         onProgress: ({ batch, batchCount }) => batchCount > 1 && setStatus({
           type: 'loading',
           message: `Reading statement with AI vision (part ${batch} of ${batchCount})`,

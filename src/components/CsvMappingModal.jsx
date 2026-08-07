@@ -4,7 +4,13 @@ function guess(headers, patterns, fallback) {
   return headers.find(h => patterns.some(p => p.test(h))) ?? fallback
 }
 
-export default function CsvMappingModal({ headers, existingSources, onConfirm, onCancel, initialSourceName = '', onUseVision = null }) {
+export default function CsvMappingModal({
+  headers, existingSources, onConfirm, onCancel, initialSourceName = '', onUseVision = null,
+  // The tab the user uploaded from is authoritative — same rule as AI column detection in
+  // importQueue. Without it the radio defaulted to credit_card, so a Finances hand-map could
+  // persist card-shaped rows into the bank ledger.
+  statementType: lockedStatementType = null,
+}) {
   const firstHeader = headers[0] || ''
 
   const defaultDate = guess(headers, [/\btrans\w*\s*date\b/i, /^date$/i, /\bdate\b/i], firstHeader)
@@ -22,7 +28,7 @@ export default function CsvMappingModal({ headers, existingSources, onConfirm, o
   const [creditCol, setCreditCol] = useState(defaultCredit)
   const [invertAmounts, setInvertAmounts] = useState(true)
   const [categoryCol, setCategoryCol] = useState('')
-  const [statementType, setStatementType] = useState('credit_card')
+  const [statementType, setStatementType] = useState(lockedStatementType || 'credit_card')
 
   useEffect(() => {
     if (initialSourceName) applyExistingSource(initialSourceName)
@@ -43,7 +49,8 @@ export default function CsvMappingModal({ headers, existingSources, onConfirm, o
       setInvertAmounts(m.invertAmounts !== false)
     }
     setCategoryCol(m.category && headers.includes(m.category) ? m.category : '')
-    setStatementType(m.statementType || 'credit_card')
+    // A saved mapping from the other ledger must not flip the type for this tab.
+    setStatementType(lockedStatementType || m.statementType || 'credit_card')
   }
 
   function handleSourceNameChange(name) {
@@ -61,7 +68,7 @@ export default function CsvMappingModal({ headers, existingSources, onConfirm, o
         ? { debit: debitCol, credit: creditCol }
         : { amount: amountCol, invertAmounts }),
       ...(categoryCol ? { category: categoryCol } : {}),
-      statementType,
+      statementType: lockedStatementType || statementType,
     }
     onConfirm(sourceName.trim(), mapping)
   }
@@ -164,31 +171,37 @@ export default function CsvMappingModal({ headers, existingSources, onConfirm, o
             </>
           )}
 
-          {/* Statement type */}
+          {/* Statement type — locked when the calling tab already decided. */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Statement type</label>
             <div className="flex gap-4">
-              <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <label className={`flex items-center gap-2 text-sm ${lockedStatementType ? 'cursor-default text-gray-500' : 'cursor-pointer'}`}>
                 <input
                   type="radio"
                   checked={statementType === 'credit_card'}
-                  onChange={() => setStatementType('credit_card')}
+                  onChange={() => !lockedStatementType && setStatementType('credit_card')}
+                  disabled={!!lockedStatementType}
                   className="accent-blue-600"
                 />
                 Credit card
               </label>
-              <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <label className={`flex items-center gap-2 text-sm ${lockedStatementType ? 'cursor-default text-gray-500' : 'cursor-pointer'}`}>
                 <input
                   type="radio"
                   checked={statementType === 'bank'}
-                  onChange={() => setStatementType('bank')}
+                  onChange={() => !lockedStatementType && setStatementType('bank')}
+                  disabled={!!lockedStatementType}
                   className="accent-blue-600"
                 />
                 Bank / checking
               </label>
             </div>
             <p className="text-xs text-gray-400 mt-1">
-              Credit card: payments and credits excluded. Bank: deposits counted as income.
+              {lockedStatementType
+                ? lockedStatementType === 'bank'
+                  ? 'Set by Finances — deposits counted as income.'
+                  : 'Set by Spend Analyzer — payments and card credits handled as card rows.'
+                : 'Credit card: payments and credits excluded. Bank: deposits counted as income.'}
             </p>
           </div>
 

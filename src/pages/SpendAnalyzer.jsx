@@ -320,7 +320,9 @@ export default function SpendAnalyzer({ onTabChange, demoMode }) {
   // Hand-mapped rows join the normal flow rather than going straight to the server: they still
   // need duplicate flagging and a look before saving, exactly like auto-detected ones.
   function handleMappingConfirm(sourceName, mapping) {
-    const rows = processCSVRows(csvModalData.rows, { ...mapping, sourceName })
+    // Tab wins over whatever the modal (or a reused source name) had stored.
+    const locked = { ...mapping, statementType: 'credit_card' }
+    const rows = processCSVRows(csvModalData.rows, { ...locked, sourceName })
     if (!rows.length) {
       setCsvModalData(null)
       setImportStatus({ type: 'error', message: 'That mapping produced no transactions. Check the column choices and try again.' })
@@ -330,7 +332,7 @@ export default function SpendAnalyzer({ onTabChange, demoMode }) {
       id: `map${Date.now()}`,
       fileName: csvModalData.fileName,
       transactions: rows,
-      mapping,
+      mapping: locked,
       sourceName,
       note: 'Mapped by hand',
       headers: csvModalData.headers,
@@ -847,6 +849,7 @@ export default function SpendAnalyzer({ onTabChange, demoMode }) {
           headers={csvModalData.headers}
           existingSources={settings?.csvSources || {}}
           initialSourceName={sourceNameFromFile(csvModalData.fileName)}
+          statementType="credit_card"
           onConfirm={handleMappingConfirm}
           onCancel={() => setCsvModalData(null)}
         />
