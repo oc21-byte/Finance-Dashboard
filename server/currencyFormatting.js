@@ -1,20 +1,42 @@
-const usd = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-})
+import { normalizeCurrency } from '../src/utils/displayCurrency.js'
 
-export function formatUsd(value) {
+const formatters = {
+  CAD: new Intl.NumberFormat('en-CA', {
+    style: 'currency',
+    currency: 'CAD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }),
+  USD: new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }),
+}
+
+export function formatMoney(value, currency = 'CAD') {
   const number = Number(value)
-  return Number.isFinite(number) ? usd.format(number) : null
+  if (!Number.isFinite(number)) return null
+  const code = normalizeCurrency(currency) || 'CAD'
+  return formatters[code].format(number)
+}
+
+/** @deprecated Prefer formatMoney(value, displayCurrency). Kept for call sites mid-migration. */
+export function formatUsd(value, currency = 'CAD') {
+  return formatMoney(value, currency)
 }
 
 // Model copy is not trusted to preserve punctuation from a prompt. Normalize every dollar token
 // before user-facing AI prose is stored or returned so `$1037.88` always becomes `$1,037.88`.
-export function normalizeUsdText(value) {
-  return String(value ?? '').replace(/\$-?\d[\d,]*(?:\.\d+)?/g, token => {
-    const formatted = formatUsd(token.replace(/[$,]/g, ''))
+export function normalizeMoneyText(value, currency = 'CAD') {
+  return String(value ?? '').replace(/\$\s*-?\d[\d,]*(?:\.\d+)?/g, token => {
+    const formatted = formatMoney(token.replace(/[$,\s]/g, ''), currency)
     return formatted ?? token
   })
+}
+
+/** @deprecated Prefer normalizeMoneyText(value, displayCurrency). */
+export function normalizeUsdText(value, currency = 'CAD') {
+  return normalizeMoneyText(value, currency)
 }

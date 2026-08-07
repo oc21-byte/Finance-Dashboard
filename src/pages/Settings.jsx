@@ -168,6 +168,22 @@ export default function Settings() {
     }
   }, [settings])
 
+  const saveDisplayCurrency = useMutation({
+    mutationFn: (displayCurrency) => api.settings.update({ displayCurrency }),
+    onSuccess: async () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+      // Portfolio math and history snapshots depend on the home currency.
+      queryClient.invalidateQueries({ queryKey: ['prices'] })
+      try {
+        await api.netWorth.rebuild()
+        await api.netWorth.snapshot()
+      } catch {
+        // Live pages still convert with the new setting; history catches up on next Dashboard visit.
+      }
+      queryClient.invalidateQueries({ queryKey: ['net-worth-history'] })
+    },
+  })
+
   const saveProvider = useMutation({
     mutationFn: (aiProvider) => api.settings.update({ aiProvider }),
     onSuccess: () => {
@@ -379,6 +395,34 @@ export default function Settings() {
                 models. Showing defaults.
               </p>
             )}
+          </div>
+
+          <SectionLabel>Display</SectionLabel>
+
+          <div className={`${cardClass} px-5 py-4 flex items-center justify-between gap-4`}>
+            <div>
+              <h3 className="text-sm font-semibold text-gray-700">Home currency</h3>
+              <p className="text-xs text-gray-400 mt-0.5">
+                Pick the currency your bank and card statements use. Investment quotes in the
+                other currency are converted into this one for portfolio totals.
+              </p>
+            </div>
+            <div className="flex gap-0.5 p-0.5 border border-gray-200 rounded-lg bg-gray-50 shrink-0">
+              {[['CAD', 'CAD'], ['USD', 'USD']].map(([value, label]) => (
+                <button
+                  key={value}
+                  onClick={() => saveDisplayCurrency.mutate(value)}
+                  aria-pressed={(settings?.displayCurrency ?? 'CAD') === value}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
+                    (settings?.displayCurrency ?? 'CAD') === value
+                      ? 'bg-blue-600 text-white'
+                      : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
 
           <SectionLabel>Budget Defaults</SectionLabel>

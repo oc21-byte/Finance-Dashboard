@@ -4,6 +4,9 @@
 // read the same numbers. They previously each recomputed their own slice inline, which is how the
 // filter dropdown ended up listing account types the donut had never heard of.
 
+import { resolveListing } from './listing.js'
+import { convertHoldingMoney, normalizeCurrency } from './displayCurrency.js'
+
 const r2 = n => Math.round(n * 100) / 100
 
 /** Every holding without an explicit type is Non-Registered, matching the add-holding default. */
@@ -14,36 +17,40 @@ export function accountTypeOf(holding) {
 }
 
 /**
- * Price one holding.
+ * Price one holding in the display currency.
  *
- * `currentValue` stays null when Yahoo has no price — the caller decides what to show, and the
- * distinction matters: a null price means "unknown", not "worth nothing". `value` is the figure
- * every total actually sums, and it falls back to cost basis so one unpriced ticker cannot make
- * the portfolio appear to shrink by its whole position.
+ * `currentValue` stays null when Yahoo has no price or FX is missing for a foreign quote —
+ * the caller decides what to show. `value` falls back to converted cost so one unpriced ticker
+ * cannot make the portfolio appear to shrink by its whole position.
  */
-function priceRow(holding, prices) {
+function priceRow(holding, prices, { displayCurrency = 'CAD', usdCad = null } = {}) {
   const ticker = String(holding.ticker || '').toUpperCase()
   const shares = Number(holding.shares) || 0
   const purchasePrice = Number(holding.purchasePrice) || 0
-  const currentPrice = prices?.[ticker] ?? null
-  const costBasis = r2(purchasePrice * shares)
-  const currentValue = currentPrice !== null ? r2(currentPrice * shares) : null
-  const value = currentValue ?? costBasis
-  const gainDollar = currentValue !== null ? r2(currentValue - costBasis) : null
-  const gainPct = gainDollar !== null && costBasis > 0 ? r2((gainDollar / costBasis) * 100) : null
+  const converted = convertHoldingMoney(holding, { prices, displayCurrency, usdCad })
+  const gainDollar = converted.currentValue !== null
+    ? r2(converted.currentValue - converted.costBasis)
+    : null
+  const gainPct = gainDollar !== null && converted.costBasis > 0
+    ? r2((gainDollar / converted.costBasis) * 100)
+    : null
   return {
     ...holding,
     ticker,
     shares,
     purchasePrice,
     accountType: accountTypeOf(holding),
+    listing: converted.listing ?? resolveListing(holding),
+    costCurrency: converted.costCurrency,
+    quoteCurrency: converted.quoteCurrency,
     purchaseCount: holding.purchases?.length ?? 1,
-    currentPrice,
-    costBasis,
-    currentValue,
-    value,
+    currentPrice: converted.currentPrice,
+    costBasis: converted.costBasis,
+    currentValue: converted.currentValue,
+    value: converted.value,
     gainDollar,
     gainPct,
+    fxMissing: converted.fxMissing,
   }
 }
 
@@ -53,9 +60,16 @@ function priceRow(holding, prices) {
  * Rows come back ranked by value descending — the mockup's "Holdings ranked by value" — which is
  * also the order the donut and its legend read in, so a slice and a table row line up by eye.
  */
-export function buildInvestmentsModel({ holdings = [], prices = {}, savingsAccounts = [] } = {}) {
+export function buildInvestmentsModel({
+  holdings = [],
+  prices = {},
+  savingsAccounts = [],
+  displayCurrency = 'CAD',
+  usdCad = null,
+} = {}) {
+  const home = normalizeCurrency(displayCurrency) || 'CAD'
   const rows = holdings
-    .map(h => priceRow(h, prices))
+    .map(h => priceRow(h, prices, { displayCurrency: home, usdCad }))
     .sort((a, b) => b.value - a.value)
 
   const totalCost = r2(rows.reduce((s, r) => s + r.costBasis, 0))
@@ -101,6 +115,7 @@ export function buildInvestmentsModel({ holdings = [], prices = {}, savingsAccou
     totalSavings,
     totalAnnualInterest,
     unpricedCount: weighted.filter(r => r.currentPrice === null).length,
+    displayCurrency: home,
   }
 }
 

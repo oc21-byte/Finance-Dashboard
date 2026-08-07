@@ -2,8 +2,17 @@
 // components rounding independently is eight chances for a KPI and a row to disagree by a cent on
 // the same figure.
 
+import { formatMoney } from '../../utils/moneyFormat.js'
+
+/** Active display currency for this tab's formatters. Set from Investments when settings load. */
+let activeCurrency = 'CAD'
+
+export function setMoneyCurrency(currency) {
+  activeCurrency = currency === 'USD' ? 'USD' : 'CAD'
+}
+
 /** Whole dollars. Portfolio figures are large enough that cents are noise in a headline. */
-export const money = value => '$' + Math.round(Math.abs(Number(value) || 0)).toLocaleString()
+export const money = (value, currency = activeCurrency) => formatMoney(value, currency)
 
 /** Two decimals, for per-share prices and APYs where the cents are the point. */
 export const exact = (value, digits = 2) => Number(value ?? 0).toLocaleString(undefined, {

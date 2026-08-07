@@ -1,7 +1,9 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client.js'
 import { buildInvestmentsModel, filterByAccount, sortHoldings } from '../utils/investmentsModel.js'
+import { priceQueryToken } from '../utils/listing.js'
+import { setMoneyCurrency } from '../components/investments/format.js'
 import InvestmentsHeader from '../components/investments/InvestmentsHeader.jsx'
 import InvestmentKpiRow from '../components/investments/InvestmentKpiRow.jsx'
 import AccountChips from '../components/investments/AccountChips.jsx'
@@ -44,30 +46,44 @@ export default function Investments({ demoMode }) {
     queryFn: api.savingsAccounts.list,
   })
 
-  const tickerList = useMemo(
-    () => [...new Set(holdings.map(h => String(h.ticker || '').toUpperCase()))].filter(Boolean),
+  const priceTokens = useMemo(
+    () => [...new Set(holdings.map(priceQueryToken).filter(Boolean))],
     [holdings],
   )
 
+  const { data: settings } = useQuery({
+    queryKey: ['settings'],
+    queryFn: api.settings.get,
+  })
+  const displayCurrency = settings?.displayCurrency === 'USD' ? 'USD' : 'CAD'
+
+  useEffect(() => {
+    setMoneyCurrency(displayCurrency)
+  }, [displayCurrency])
+
   const {
-    data: prices = {},
+    data: pricePayload = { prices: {}, fx: {} },
     isFetching: pricesFetching,
     error: pricesQueryError,
     dataUpdatedAt: pricesUpdatedAt,
     refetch: refetchPrices,
   } = useQuery({
-    queryKey: ['prices', tickerList],
-    queryFn: () => api.prices.get(tickerList),
-    enabled: tickerList.length > 0,
+    queryKey: ['prices', priceTokens],
+    queryFn: () => api.prices.get(priceTokens),
+    enabled: priceTokens.length > 0,
     staleTime: 60_000,
   })
+  const prices = pricePayload.prices ?? pricePayload
+  const usdCad = pricePayload.fx?.USDCAD ?? null
 
   const priceError = pricesQueryError?.message ?? null
   const showPriceError = priceError && !priceErrorDismissed
 
   const model = useMemo(
-    () => buildInvestmentsModel({ holdings, prices, savingsAccounts }),
-    [holdings, prices, savingsAccounts],
+    () => buildInvestmentsModel({
+      holdings, prices, savingsAccounts, displayCurrency, usdCad,
+    }),
+    [holdings, prices, savingsAccounts, displayCurrency, usdCad],
   )
 
   const visibleRows = useMemo(
@@ -190,7 +206,7 @@ export default function Investments({ demoMode }) {
   function handleHoldingSubmit(e) {
     e.preventDefault()
     if (readOnly) return
-    const { ticker, shares, purchasePrice, purchaseDate, accountType } = holdingForm
+    const { ticker, shares, purchasePrice, purchaseDate, accountType, listing } = holdingForm
     // The account is free text now, so it has to be checked rather than assumed non-empty. It is
     // also the key holdings are grouped and reconciled by, so stray padding would split a position
     // across two accounts that look identical on screen.
@@ -201,6 +217,7 @@ export default function Investments({ demoMode }) {
       purchasePrice: parseFloat(purchasePrice),
       purchaseDate,
       accountType: accountType.trim(),
+      listing: listing || undefined,
     })
   }
 

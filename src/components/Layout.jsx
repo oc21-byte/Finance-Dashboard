@@ -66,9 +66,15 @@ const BOTTOM_NAV = [
 ]
 
 import { useState, useEffect } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client.js'
 
 export default function Layout({ activeTab, onTabChange, children, demoMode }) {
+  const { data: settings } = useQuery({
+    queryKey: ['settings'],
+    queryFn: api.settings.get,
+  })
+  const displayCurrency = settings?.displayCurrency === 'USD' ? 'USD' : 'CAD'
   const [showExitModal, setShowExitModal] = useState(false)
   const [shuttingDown, setShuttingDown] = useState(false)
   const [shutdownError, setShutdownError] = useState(false)
@@ -111,8 +117,13 @@ export default function Layout({ activeTab, onTabChange, children, demoMode }) {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-14">
             <div className="flex items-center gap-8">
-              <span className="text-lg font-bold text-gray-900 tracking-tight">
-                FinanceDash
+              <span className="flex items-baseline gap-2">
+                <span className="text-lg font-bold text-gray-900 tracking-tight">
+                  FinanceDash
+                </span>
+                <span className="hidden sm:inline text-[11px] font-medium text-gray-400">
+                  Amounts in {displayCurrency}
+                </span>
               </span>
               <div className="hidden sm:flex gap-1">
                 {TABS.map((tab) => (

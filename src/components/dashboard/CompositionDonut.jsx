@@ -22,6 +22,8 @@ export default function CompositionDonut({
   savings = 0,
   holdings = [],
   prices = {},
+  displayCurrency = 'CAD',
+  usdCad = null,
   pricesFetching = false,
   highlight = null,
   onHighlight,
@@ -29,8 +31,8 @@ export default function CompositionDonut({
   const [hover, setHover] = useState(null)
 
   const rows = useMemo(
-    () => buildComposition({ cash, savings, holdings, prices }),
-    [cash, savings, holdings, prices],
+    () => buildComposition({ cash, savings, holdings, prices, displayCurrency, usdCad }),
+    [cash, savings, holdings, prices, displayCurrency, usdCad],
   )
 
   const accountColors = useMemo(

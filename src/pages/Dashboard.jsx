@@ -6,6 +6,7 @@ import {
   portfolioValueOf, savingsTotalOf, buildLiquidKpis, sparklinePoints, monthsOfSpend,
   buildChangeAttribution, accountCount, trailingRowCount, staleInsightReason,
 } from '../utils/liquidNetWorth.js'
+import { priceQueryToken } from '../utils/listing.js'
 import DashboardHeader from '../components/dashboard/DashboardHeader.jsx'
 import LiquidNetWorthKpis from '../components/dashboard/LiquidNetWorthKpis.jsx'
 import ChangeAttributionCard from '../components/dashboard/ChangeAttributionCard.jsx'
@@ -45,23 +46,26 @@ export default function Dashboard({ onTabChange, demoMode }) {
     queryFn: api.holdings.list,
   })
 
-  const tickerList = [...new Set(holdings.filter(h => h.ticker).map(h => h.ticker.toUpperCase()))]
-
-  const { data: prices = {}, isFetching: pricesFetching, dataUpdatedAt: pricesUpdatedAt } = useQuery({
-    queryKey: ['prices', tickerList],
-    queryFn: () => api.prices.get(tickerList),
-    enabled: tickerList.length > 0,
-    staleTime: 60_000,
-  })
-
-  const { data: savingsAccounts = [] } = useQuery({
-    queryKey: ['savings-accounts'],
-    queryFn: api.savingsAccounts.list,
-  })
+  const priceTokens = [...new Set(holdings.map(priceQueryToken).filter(Boolean))]
 
   const { data: settings } = useQuery({
     queryKey: ['settings'],
     queryFn: api.settings.get,
+  })
+  const displayCurrency = settings?.displayCurrency === 'USD' ? 'USD' : 'CAD'
+
+  const { data: pricePayload = { prices: {}, fx: {} }, isFetching: pricesFetching, dataUpdatedAt: pricesUpdatedAt } = useQuery({
+    queryKey: ['prices', priceTokens],
+    queryFn: () => api.prices.get(priceTokens),
+    enabled: priceTokens.length > 0,
+    staleTime: 60_000,
+  })
+  const prices = pricePayload.prices ?? pricePayload
+  const usdCad = pricePayload.fx?.USDCAD ?? null
+
+  const { data: savingsAccounts = [] } = useQuery({
+    queryKey: ['savings-accounts'],
+    queryFn: api.savingsAccounts.list,
   })
 
   const { data: netWorthHistory = [] } = useQuery({
@@ -161,7 +165,7 @@ export default function Dashboard({ onTabChange, demoMode }) {
   const hasAiKey = settings?.aiProvider === 'openai' ? !!settings?.hasOpenaiApiKey : !!settings?.hasClaudeApiKey
 
   const cashBalance = cashStatus?.balance ?? Math.round((settings?.cashBalance ?? 0) * 100) / 100
-  const portfolioValue = portfolioValueOf(holdings, prices)
+  const portfolioValue = portfolioValueOf(holdings, prices, { displayCurrency, usdCad })
   const savingsTotal = savingsTotalOf(savingsAccounts)
 
   const kpis = buildLiquidKpis({
@@ -263,6 +267,8 @@ export default function Dashboard({ onTabChange, demoMode }) {
               savings={savingsTotal}
               holdings={holdings}
               prices={prices}
+              displayCurrency={displayCurrency}
+              usdCad={usdCad}
               pricesFetching={pricesFetching}
               highlight={bucketFilter}
               onHighlight={setBucketFilter}

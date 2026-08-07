@@ -16,6 +16,7 @@ import {
   isInvestmentTransfer,
 } from '../constants/financeRules.js'
 import { accountTypeOf } from './investmentsModel.js'
+import { convertHoldingMoney, normalizeCurrency } from './displayCurrency.js'
 
 const r2 = n => Math.round((n ?? 0) * 100) / 100
 
@@ -42,21 +43,31 @@ export const TREND_PERIODS = ['6M', '1Y', 'All']
 export const MATERIAL_FLOOR = 50
 export const MATERIAL_SHARE = 0.01
 
-/** Value holdings at live prices, falling back to cost basis for anything unpriced. */
-export function portfolioValueOf(holdings = [], prices = {}) {
+/** Value holdings in the display currency, falling back to converted cost when unpriced. */
+export function portfolioValueOf(
+  holdings = [],
+  prices = {},
+  { displayCurrency = 'CAD', usdCad = null } = {},
+) {
+  const home = normalizeCurrency(displayCurrency) || 'CAD'
   return r2(holdings.reduce((sum, h) => {
-    const price = h.ticker ? (prices[h.ticker.toUpperCase()] ?? null) : null
-    return sum + (price !== null ? price * h.shares : h.purchasePrice * h.shares)
+    const { value } = convertHoldingMoney(h, { prices, displayCurrency: home, usdCad })
+    return sum + value
   }, 0))
 }
 
 /** Today's portfolio split by investment account type, at the same prices. */
-export function holdingsByAccountType(holdings = [], prices = {}) {
+export function holdingsByAccountType(
+  holdings = [],
+  prices = {},
+  { displayCurrency = 'CAD', usdCad = null } = {},
+) {
+  const home = normalizeCurrency(displayCurrency) || 'CAD'
   const byType = {}
   for (const h of holdings) {
     const type = accountTypeOf(h)
-    const price = h.ticker ? (prices[h.ticker.toUpperCase()] ?? null) : null
-    byType[type] = (byType[type] ?? 0) + (price !== null ? price * h.shares : h.purchasePrice * h.shares)
+    const { value } = convertHoldingMoney(h, { prices, displayCurrency: home, usdCad })
+    byType[type] = (byType[type] ?? 0) + value
   }
   return Object.fromEntries(Object.entries(byType).map(([k, v]) => [k, r2(v)]))
 }
@@ -416,13 +427,17 @@ export function expectedBalanceAt({ opening = null, statementBalances = [], bank
  * band on the trend — the trend only has three bands, and every investment account type maps to
  * `portfolio`.
  */
-export function buildComposition({ cash = 0, savings = 0, holdings = [], prices = {} }) {
+export function buildComposition({
+  cash = 0, savings = 0, holdings = [], prices = {},
+  displayCurrency = 'CAD', usdCad = null,
+} = {}) {
   const rows = [
     { key: 'cash', name: 'Cash', bucket: 'cash', value: Math.max(0, r2(cash)) },
     { key: 'savings', name: 'Savings', bucket: 'savings', value: r2(savings) },
-    ...Object.entries(holdingsByAccountType(holdings, prices)).map(([type, value]) => ({
-      key: `portfolio:${type}`, name: type, bucket: 'portfolio', value,
-    })),
+    ...Object.entries(holdingsByAccountType(holdings, prices, { displayCurrency, usdCad }))
+      .map(([type, value]) => ({
+        key: `portfolio:${type}`, name: type, bucket: 'portfolio', value,
+      })),
   ].filter(r => r.value > 0)
 
   const total = r2(rows.reduce((s, r) => s + r.value, 0))

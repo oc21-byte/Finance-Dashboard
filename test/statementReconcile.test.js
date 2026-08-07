@@ -58,6 +58,49 @@ test('a missing cost basis stays null rather than becoming the market value', ()
   assert.equal(position.marketValue, 3600)
 })
 
+test('a position listing is kept, and statement currency fills gaps', () => {
+  const out = normalizePositions(
+    [
+      { ticker: 'XEQT', shares: 10, costBasis: 400, listing: 'CA' },
+      { ticker: 'VOO', shares: 5, costBasis: 2000 },
+    ],
+    { defaultListing: 'US' },
+  )
+  assert.equal(out.find(p => p.ticker === 'XEQT').listing, 'CA')
+  assert.equal(out.find(p => p.ticker === 'VOO').listing, 'US')
+})
+
+test('applyReconcile persists listing on new and updated holdings', () => {
+  freshIds()
+  const addPlan = reconcileHoldings({
+    holdings: [],
+    accountType: 'FHSA',
+    statementDate: '2026-06-30',
+    positions: normalizePositions([{ ticker: 'HURA', shares: 15, costBasis: 931, listing: 'CA' }]),
+  })
+  const { holdings: created } = applyReconcile([], addPlan.rows, { newId })
+  assert.equal(created[0].listing, 'CA')
+
+  // Same shares, but the statement now names the listing — that alone is worth writing.
+  const existing = holding({
+    id: 'h1', ticker: 'HURA', shares: 15, purchasePrice: 931 / 15,
+    accountType: 'FHSA', listing: null,
+  })
+  const updatePlan = reconcileHoldings({
+    holdings: [existing],
+    accountType: 'FHSA',
+    statementDate: '2026-06-30',
+    positions: normalizePositions([{ ticker: 'HURA', shares: 15, costBasis: 931, listing: 'CA' }]),
+  })
+  assert.equal(rowFor(updatePlan, 'HURA').action, 'update')
+  const { holdings: updated } = applyReconcile(
+    [existing],
+    updatePlan.rows.filter(r => r.action !== 'remove'),
+    { newId },
+  )
+  assert.equal(updated.find(h => h.ticker === 'HURA').listing, 'CA')
+})
+
 // ── reconcileHoldings ───────────────────────────────────────────────────────────────────────────
 
 test('a ticker the account has never held is an add', () => {

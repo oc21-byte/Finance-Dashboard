@@ -27,6 +27,13 @@ import {
 } from '../src/utils/statementReconcile.js'
 import { accountTypeOf } from '../src/utils/investmentsModel.js'
 import { resolveUploadLedger, resolveInvestmentTarget } from '../src/utils/uploadHistory.js'
+import { yahooSymbolCandidates } from '../src/utils/yahooSymbols.js'
+import {
+  resolveListing, priceLookupKey, priceOfHolding,
+} from '../src/utils/listing.js'
+import {
+  normalizeCurrency, quoteCurrencyOf, toDisplay, costCurrencyOf,
+} from '../src/utils/displayCurrency.js'
 import {
   DEFAULT_VISION_MODEL, FALLBACK_MODELS,
   normalizeAnthropicModels, normalizeOpenAiModels,
@@ -95,6 +102,9 @@ const DEFAULT_DB = {
     // corrected ledger could not recompute them.
     cashOpeningBalance: null,
     statementBalances: [],
+    // Home / reporting currency for the whole app. Bank, card, cash and savings are assumed
+    // already entered in this currency; foreign-quoted holdings are FX-converted into it.
+    displayCurrency: 'CAD',
   },
 }
 
@@ -243,8 +253,13 @@ app.get('/api/holdings', (req, res) => {
 
 app.post('/api/holdings', (req, res) => {
   const db = readDb()
-  const { ticker: rawTicker, shares, purchasePrice, purchaseDate, accountType } = req.body
+  const { ticker: rawTicker, shares, purchasePrice, purchaseDate, accountType, listing, costCurrency } = req.body
   const ticker = (rawTicker || '').toUpperCase()
+  const resolvedListing = resolveListing({ listing, accountType })
+  const resolvedCostCurrency = normalizeCurrency(costCurrency)
+    || quoteCurrencyOf(resolvedListing)
+    || normalizeCurrency(db.settings?.displayCurrency)
+    || 'CAD'
 
   const existing = db.holdings.find(h => h.ticker === ticker && h.accountType === accountType)
 
@@ -256,6 +271,8 @@ app.post('/api/holdings', (req, res) => {
       purchasePrice,
       purchaseDate,
       accountType,
+      listing: resolvedListing,
+      costCurrency: resolvedCostCurrency,
       purchases: [{ id: uuidv4(), shares, purchasePrice, purchaseDate }],
     }
     db.holdings.push(holding)
@@ -265,6 +282,8 @@ app.post('/api/holdings', (req, res) => {
 
   ensurePurchasesArray(existing)
   existing.purchases.push({ id: uuidv4(), shares, purchasePrice, purchaseDate })
+  if (resolvedListing) existing.listing = resolvedListing
+  if (normalizeCurrency(costCurrency)) existing.costCurrency = normalizeCurrency(costCurrency)
   recalculateHoldingTotals(existing)
   writeDb(db)
   res.json(existing)
@@ -369,26 +388,85 @@ app.delete('/api/holdings/:holdingId/purchases/:purchaseId', (req, res) => {
 
 // --- Prices (Yahoo Finance) ---
 
-// Fetch live prices for a list of tickers. Returns { TICKER: price|null }. Shared by the
-// /api/prices route and all goal valuation (holdings priced server-side, never in the browser).
-async function fetchPrices(tickers) {
-  const unique = [...new Set(tickers.filter(Boolean).map(t => t.toUpperCase()))]
-  if (!unique.length) return {}
-  const entries = await Promise.all(
-    unique.map(async (ticker) => {
-      try {
-        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=1d`
-        const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
-        if (!r.ok) return [ticker, null]
-        const data = await r.json()
-        const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice ?? null
-        return [ticker, price]
-      } catch {
-        return [ticker, null]
+async function fetchYahooChart(symbol, { interval, range }) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${interval}&range=${range}`
+  const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
+  if (!r.ok) return null
+  return r.json()
+}
+
+/**
+ * Normalize a tickers argument into unique `{ ticker, listing, key }` quote requests.
+ * Accepts bare ticker strings, `TICKER:CA` / `TICKER:US` tokens, or holding-like objects.
+ */
+function quoteRequestsFrom(tickersOrHoldings = []) {
+  const byKey = new Map()
+  for (const item of tickersOrHoldings) {
+    let ticker
+    let listing = null
+    if (typeof item === 'string') {
+      const raw = item.trim().toUpperCase()
+      if (!raw) continue
+      const split = raw.match(/^([A-Z0-9.-]+):(CA|US)$/)
+      if (split) {
+        ticker = split[1]
+        listing = split[2]
+      } else {
+        ticker = raw
       }
-    })
+    } else if (item && typeof item === 'object') {
+      ticker = String(item.ticker || '').trim().toUpperCase()
+      listing = resolveListing(item)
+    }
+    if (!ticker) continue
+    const key = priceLookupKey(ticker, listing)
+    if (!byKey.has(key)) byKey.set(key, { ticker, listing, key })
+  }
+  return [...byKey.values()]
+}
+
+async function fetchPriceForRequest(req, { interval, range }, readValue) {
+  for (const symbol of yahooSymbolCandidates(req.ticker, { listing: req.listing })) {
+    try {
+      const data = await fetchYahooChart(symbol, { interval, range })
+      const value = readValue(data)
+      if (value != null) return value
+    } catch {
+      // try the next candidate
+    }
+  }
+  return null
+}
+
+// Fetch live prices. Returns a map keyed by `priceLookupKey` (TICKER or TICKER:CA) and also
+// aliases the bare ticker when only one listing was requested for it.
+async function fetchPrices(tickersOrHoldings) {
+  const requests = quoteRequestsFrom(tickersOrHoldings)
+  if (!requests.length) return {}
+  const entries = await Promise.all(
+    requests.map(async (req) => {
+      const price = await fetchPriceForRequest(
+        req,
+        { interval: '1d', range: '1d' },
+        data => data?.chart?.result?.[0]?.meta?.regularMarketPrice ?? null,
+      )
+      return [req.key, price]
+    }),
   )
-  return Object.fromEntries(entries)
+  const out = Object.fromEntries(entries)
+  // Convenience alias: a single HURA:CA request is also readable as prices.HURA.
+  const byTicker = new Map()
+  for (const req of requests) {
+    const list = byTicker.get(req.ticker) || []
+    list.push(req)
+    byTicker.set(req.ticker, list)
+  }
+  for (const [ticker, reqs] of byTicker) {
+    if (reqs.length === 1 && out[reqs[0].key] != null && out[ticker] == null) {
+      out[ticker] = out[reqs[0].key]
+    }
+  }
+  return out
 }
 
 // Monthly closes for the last 5 years, used to value historical holdings when rebuilding net
@@ -396,50 +474,63 @@ async function fetchPrices(tickers) {
 // the month it opened and its close is that month's last traded price, which is what a month-end
 // snapshot wants.
 //
-// Returns { TICKER: { 'YYYY-MM': close } }. Any failure yields no entry for that ticker rather
+// Returns { KEY: { 'YYYY-MM': close } }. Any failure yields no entry for that request rather
 // than throwing — `valueHoldingsAsOf` falls the holding back to cost basis and downgrades the
 // entry's `basis`, so a Yahoo outage degrades the chart instead of breaking the rebuild.
-async function fetchHistoricalPrices(tickers) {
-  const unique = [...new Set(tickers.filter(Boolean).map(t => t.toUpperCase()))]
-  if (!unique.length) return {}
+async function fetchHistoricalPrices(tickersOrHoldings) {
+  const requests = quoteRequestsFrom(tickersOrHoldings)
+  if (!requests.length) return {}
   const entries = await Promise.all(
-    unique.map(async (ticker) => {
-      try {
-        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1mo&range=5y`
-        const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
-        if (!r.ok) return [ticker, null]
-        const data = await r.json()
-        const result = data?.chart?.result?.[0]
-        const stamps = result?.timestamp ?? []
-        const closes = result?.indicators?.quote?.[0]?.close ?? []
-        if (!stamps.length) return [ticker, null]
-        const byMonth = {}
-        stamps.forEach((ts, i) => {
-          const close = closes[i]
-          if (close === null || close === undefined) return
-          byMonth[new Date(ts * 1000).toISOString().slice(0, 7)] = close
-        })
-        return [ticker, Object.keys(byMonth).length ? byMonth : null]
-      } catch {
-        return [ticker, null]
-      }
-    })
+    requests.map(async (req) => {
+      const byMonth = await fetchPriceForRequest(
+        req,
+        { interval: '1mo', range: '5y' },
+        (data) => {
+          const result = data?.chart?.result?.[0]
+          const stamps = result?.timestamp ?? []
+          const closes = result?.indicators?.quote?.[0]?.close ?? []
+          if (!stamps.length) return null
+          const months = {}
+          stamps.forEach((ts, i) => {
+            const close = closes[i]
+            if (close === null || close === undefined) return
+            months[new Date(ts * 1000).toISOString().slice(0, 7)] = close
+          })
+          return Object.keys(months).length ? months : null
+        },
+      )
+      return [req.key, byMonth]
+    }),
   )
-  return Object.fromEntries(entries.filter(([, v]) => v !== null))
+  const out = Object.fromEntries(entries.filter(([, v]) => v !== null))
+  const byTicker = new Map()
+  for (const req of requests) {
+    const list = byTicker.get(req.ticker) || []
+    list.push(req)
+    byTicker.set(req.ticker, list)
+  }
+  for (const [ticker, reqs] of byTicker) {
+    if (reqs.length === 1 && out[reqs[0].key] != null && out[ticker] == null) {
+      out[ticker] = out[reqs[0].key]
+    }
+  }
+  return out
 }
 
 /**
- * Build the `priceOf(ticker, yyyymm)` lookup that the history module expects.
+ * Build the `priceOf(ticker, yyyymm, listing)` lookup that the history module expects.
  *
  * Months before a ticker's earliest bar have no close, so the nearest EARLIER month is carried
  * forward rather than returning null — otherwise a holding bought mid-history would flicker
  * between market and cost basis from month to month and fake a return each time it did.
  */
 function historicalPriceLookup(history, livePrices = {}) {
-  return (ticker, yyyymm) => {
-    const series = history[ticker]
-    if (!series) return livePrices[ticker] ?? null
-    if (!yyyymm) return livePrices[ticker] ?? null
+  return (ticker, yyyymm, listing = null) => {
+    const key = priceLookupKey(ticker, listing)
+    const series = history[key] ?? history[ticker]
+    const live = livePrices[key] ?? livePrices[ticker] ?? null
+    if (!series) return live
+    if (!yyyymm) return live
     if (series[yyyymm] !== undefined) return series[yyyymm]
     const earlier = Object.keys(series).filter(m => m < yyyymm).sort()
     if (earlier.length) return series[earlier[earlier.length - 1]]
@@ -447,10 +538,45 @@ function historicalPriceLookup(history, livePrices = {}) {
   }
 }
 
+let fxCache = { USDCAD: null, fetchedAt: 0 }
+const FX_TTL_MS = 60 * 60 * 1000
+
+/** How many CAD one USD buys. Cached ~1h; null when Yahoo is unreachable. */
+async function fetchFxRates() {
+  if (fxCache.USDCAD != null && Date.now() - fxCache.fetchedAt < FX_TTL_MS) {
+    return { USDCAD: fxCache.USDCAD }
+  }
+  try {
+    const data = await fetchYahooChart('USDCAD=X', { interval: '1d', range: '1d' })
+    const rate = data?.chart?.result?.[0]?.meta?.regularMarketPrice ?? null
+    if (rate != null && Number.isFinite(Number(rate)) && Number(rate) > 0) {
+      fxCache = { USDCAD: Number(rate), fetchedAt: Date.now() }
+      return { USDCAD: fxCache.USDCAD }
+    }
+  } catch {
+    // keep prior cache if any
+  }
+  return { USDCAD: fxCache.USDCAD }
+}
+
 app.get('/api/prices', async (req, res) => {
   const tickers = (req.query.tickers || '').split(',').filter(Boolean)
-  res.json(await fetchPrices(tickers))
+  const [prices, fx] = await Promise.all([fetchPrices(tickers), fetchFxRates()])
+  res.json({ prices, fx })
 })
+
+/** Prices plus `__USDCAD` for server-side conversion (goals, insights, snapshots). */
+async function fetchPricesWithFx(tickersOrHoldings) {
+  const [prices, fx] = await Promise.all([
+    fetchPrices(tickersOrHoldings),
+    fetchFxRates(),
+  ])
+  return { ...prices, __USDCAD: fx.USDCAD ?? null }
+}
+
+function displayCurrencyOf(db) {
+  return normalizeCurrency(db?.settings?.displayCurrency) || 'CAD'
+}
 
 // --- Goals ---
 
@@ -467,11 +593,26 @@ function sourceValue(db, link, priceMap) {
     return acct ? acct.balance : 0
   }
   if (link.sourceType === 'holdingsAccountType') {
+    const home = normalizeCurrency(db.settings?.displayCurrency) || 'CAD'
+    const usdCad = priceMap?.__USDCAD ?? null
     return (db.holdings ?? [])
       .filter(h => accountTypeOf(h) === link.sourceId)
       .reduce((s, h) => {
-        const price = h.ticker ? (priceMap[h.ticker.toUpperCase()] ?? null) : null
-        return s + (price !== null ? price * h.shares : h.purchasePrice * h.shares)
+        const listing = resolveListing(h)
+        const quoteCurrency = quoteCurrencyOf(listing) || home
+        const costCurrency = costCurrencyOf(h, { displayCurrency: home })
+        const nativePrice = priceOfHolding(priceMap, h)
+        const market = nativePrice !== null
+          ? toDisplay(nativePrice * h.shares, quoteCurrency, home, usdCad)
+          : null
+        if (market !== null) return s + market
+        const cost = toDisplay(
+          (Number(h.purchasePrice) || 0) * (Number(h.shares) || 0),
+          costCurrency,
+          home,
+          usdCad,
+        )
+        return s + (cost !== null ? cost : (Number(h.purchasePrice) || 0) * (Number(h.shares) || 0))
       }, 0)
   }
   return 0
@@ -488,9 +629,9 @@ function sourceName(db, link) {
   return 'Unknown source'
 }
 
-// Tickers needed to price every holdings bucket linked by any goal (so we only hit Yahoo
-// when a holdings-backed goal actually exists).
-function tickersForGoalLinks(db) {
+// Holdings needed to price every bucket linked by any goal (so we only hit Yahoo when a
+// holdings-backed goal actually exists). Full objects so listing reaches Yahoo resolution.
+function holdingsForGoalLinks(db) {
   const buckets = new Set()
   for (const g of db.goals ?? []) {
     for (const link of g.links ?? []) {
@@ -498,10 +639,7 @@ function tickersForGoalLinks(db) {
     }
   }
   if (!buckets.size) return []
-  return (db.holdings ?? [])
-    .filter(h => buckets.has(accountTypeOf(h)))
-    .map(h => h.ticker)
-    .filter(Boolean)
+  return (db.holdings ?? []).filter(h => h?.ticker && buckets.has(accountTypeOf(h)))
 }
 
 // Derived progress for a goal. Linked goals sum (sourceValue × percent); unlinked goals keep
@@ -557,7 +695,7 @@ function validateGoalLinks(db, links, excludeGoalId = null) {
 
 app.get('/api/goals', async (req, res) => {
   const db = readDb()
-  const priceMap = await fetchPrices(tickersForGoalLinks(db))
+  const priceMap = await fetchPricesWithFx(holdingsForGoalLinks(db))
   const fin = buildMonthlyFinancials(db)
   const goals = (db.goals ?? []).map(g => {
     const { currentAmount, breakdown, isLinked } = computeGoalProgress(db, g, priceMap)
@@ -616,8 +754,7 @@ app.delete('/api/goals/:id', (req, res) => {
 app.get('/api/goal-sources', async (req, res) => {
   const db = readDb()
   const buckets = [...new Set((db.holdings ?? []).map(accountTypeOf))]
-  const tickers = (db.holdings ?? []).map(h => h.ticker).filter(Boolean)
-  const priceMap = await fetchPrices(tickers)
+  const priceMap = await fetchPricesWithFx(db.holdings ?? [])
 
   const build = (link) => {
     const allocatedPct = allocatedPercent(db, link.sourceType, link.sourceId)
@@ -671,6 +808,9 @@ app.put('/api/settings', (req, res) => {
   const db = readDb()
   const previousCash = db.settings?.cashBalance ?? 0
   db.settings = { ...db.settings, ...req.body }
+  if (req.body.displayCurrency !== undefined) {
+    db.settings.displayCurrency = normalizeCurrency(req.body.displayCurrency) || 'CAD'
+  }
 
   // Saving a key is the one moment the cached model list is certainly wrong: it was built without
   // a key, or with the one just replaced. Drop it so the dropdown refills on the next read rather
@@ -1467,7 +1607,7 @@ app.post('/api/llm/goal-analysis', async (req, res) => {
   if (!rawGoal) return res.status(404).json({ error: 'Goal not found' })
 
   const fin = buildMonthlyFinancials(db)
-  const priceMap = await fetchPrices((db.holdings ?? []).map(h => h.ticker).filter(Boolean))
+  const priceMap = await fetchPricesWithFx(db.holdings ?? [])
   const goal = goalWithProgress(db, rawGoal, priceMap)
   const fundingLine = goalFundingLine(goal.breakdown)
 
@@ -1812,7 +1952,7 @@ function saveDashboardInsights(record) {
 // the insight route and the chat route MUST see the same figures — a chat reply computed from a
 // different cash basis than the insights above it is the exact failure the triad exists to prevent.
 async function dashboardAnalysisInputs(db, insightScope) {
-  const priceMap = await fetchPrices((db.holdings ?? []).map(h => h.ticker).filter(Boolean))
+  const priceMap = await fetchPricesWithFx(db.holdings ?? [])
   const today = new Date().toISOString().slice(0, 10)
   return {
     netWorthHistory: db.netWorthHistory ?? [],
@@ -2077,7 +2217,7 @@ app.post('/api/llm/goal-chat', async (req, res) => {
   if (!rawGoal) return res.status(404).json({ error: 'Goal not found' })
 
   const fin = buildMonthlyFinancials(db)
-  const priceMap = await fetchPrices((db.holdings ?? []).map(h => h.ticker).filter(Boolean))
+  const priceMap = await fetchPricesWithFx(db.holdings ?? [])
   const goal = goalWithProgress(db, rawGoal, priceMap)
   const fundingLine = goalFundingLine(goal.breakdown)
 
@@ -2333,9 +2473,11 @@ Return ONLY a JSON object:
 {
   "statementDate": "<the as-of or period-end date, strictly YYYY-MM-DD, or null>",
   "accountLabel": "<the account name or registration as printed (TFSA, Roth IRA, Individual...), or null>",
+  "currency": "<CAD or USD — the statement's primary currency as printed, or null>",
   "positions": [
     { "ticker": "<symbol>", "name": "<security name>", "shares": <number>,
-      "marketValue": <number>, "costBasis": <number or null> }
+      "marketValue": <number>, "costBasis": <number or null>,
+      "listing": "<CA or US>" }
   ]
 }
 
@@ -2351,7 +2493,14 @@ table. This is a snapshot of what is owned, NOT a list of what was traded.
   value into it and never estimate one. A null is correct and expected — the user is asked to
   supply the figure. A guess would be stored as fact and would read as a position with no gain.
 - "marketValue" is that position's total value at the statement date.
-- "ticker" is the trading symbol. Omit a position that has no symbol or fund code printed.
+- "ticker" is the trading symbol as printed (XEQT, VOO) — do NOT append an exchange suffix.
+- "listing" is which market that row trades on:
+  - "CA" for Canadian listings (TSX / TSXV / CSE), including rows under headings like
+    "Canadian Equities", "Canadian Dollars", or priced in CAD on a Canadian broker statement
+  - "US" for United States listings (NYSE / NASDAQ), including rows under "US Equities",
+    "US Dollars", or clearly US-listed names on a USD statement section
+  Use the SECTION the row appears in when the statement splits Canadian vs US holdings. A
+  Canadian broker statement can hold both; do not mark every row CA just because the cover is CAD.
 
 SKIP entirely: cash and money-market sweep balances, account totals and subtotals, total portfolio
 value rows, performance and rate-of-return summaries, asset-allocation percentage tables, and any
@@ -2423,9 +2572,14 @@ app.post('/api/parse-pdf-vision', async (req, res) => {
       const parsed = JSON.parse(rawSummary)
       const statementDate = isoDate(parsed?.statementDate)
       if (isHoldingsSummary) {
+        const currency = (() => {
+          const c = String(parsed?.currency ?? '').trim().toUpperCase()
+          return c === 'CAD' || c === 'USD' ? c : null
+        })()
         return res.json({
           statementDate,
           accountLabel: typeof parsed?.accountLabel === 'string' ? parsed.accountLabel.trim() : null,
+          currency,
           positions: Array.isArray(parsed?.positions) ? parsed.positions : [],
         })
       }
@@ -2536,16 +2690,22 @@ Return valid JSON only, no markdown.`,
 // any path that touches more than today: `historicalPriceLookup` falls back to the live price for
 // a ticker Yahoo has no monthly series for.
 async function priceLookupForHoldings(db) {
-  const tickers = (db.holdings ?? []).map(h => h.ticker).filter(Boolean)
-  const [live, historical] = await Promise.all([
-    fetchPrices(tickers),
-    fetchHistoricalPrices(tickers),
+  const quotes = (db.holdings ?? []).filter(h => h?.ticker)
+  const [live, historical, fx] = await Promise.all([
+    fetchPrices(quotes),
+    fetchHistoricalPrices(quotes),
+    fetchFxRates(),
   ])
-  return historicalPriceLookup(historical, live)
+  return {
+    priceOf: historicalPriceLookup(historical, live),
+    usdCad: fx.USDCAD ?? null,
+    displayCurrency: displayCurrencyOf(db),
+  }
 }
 
 async function computeHistory(db, today, keepDates) {
   const sources = cashSourcesFor(db)
+  const { priceOf, usdCad, displayCurrency } = await priceLookupForHoldings(db)
   return rebuildHistory({
     transactions: db.transactions ?? [],
     holdings: db.holdings ?? [],
@@ -2554,7 +2714,9 @@ async function computeHistory(db, today, keepDates) {
     statementBalances: sources.statementBalances,
     today,
     keepDates,
-    priceOf: await priceLookupForHoldings(db),
+    priceOf,
+    displayCurrency,
+    usdCad,
   })
 }
 
@@ -2635,8 +2797,13 @@ function migrateCashModel(db) {
 app.post('/api/net-worth-snapshot', async (req, res) => {
   const db = readDb()
   const date = new Date().toISOString().slice(0, 10)
-  const prices = await fetchPrices((db.holdings ?? []).map(h => h.ticker).filter(Boolean))
-  const { market, cost, basis } = valueHoldingsAsOf(db.holdings ?? [], date, t => prices[t] ?? null)
+  const prices = await fetchPricesWithFx(db.holdings ?? [])
+  const { market, cost, basis } = valueHoldingsAsOf(
+    db.holdings ?? [],
+    date,
+    (t, _m, listing) => prices[priceLookupKey(t, listing)] ?? prices[t] ?? null,
+    { displayCurrency: displayCurrencyOf(db), usdCad: prices.__USDCAD },
+  )
   const entry = buildEntry({
     date,
     // Derived, not the cached settings value: the ledger is the authority on chequing.

@@ -13,6 +13,8 @@ export const DEFAULT_HOLDING_FORM = {
   purchasePrice: '',
   purchaseDate: dayjs().format('YYYY-MM-DD'),
   accountType: 'Non-Registered',
+  // Empty = infer from account type at save time (TFSA→CA, Roth IRA→US, else Canadian-first).
+  listing: '',
 }
 
 const inputClass = 'w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
@@ -30,7 +32,7 @@ export default function HoldingForm({ form, onChange, onSubmit, saving, accountT
   return (
     <form onSubmit={onSubmit} className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
       <h2 className="mb-4 text-sm font-medium text-gray-700">New holding</h2>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-5">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6">
         <div>
           <label className="mb-1 block text-xs text-gray-500">Ticker</label>
           <input {...field('ticker')} placeholder="AAPL" className={inputClass} required />
@@ -65,6 +67,14 @@ export default function HoldingForm({ form, onChange, onSubmit, saving, accountT
           <datalist id="holding-account-names">
             {options.map(t => <option key={t} value={t} />)}
           </datalist>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-gray-500">Market</label>
+          <select {...field('listing')} className={inputClass}>
+            <option value="">Auto (from account)</option>
+            <option value="CA">Canada (TSX)</option>
+            <option value="US">United States</option>
+          </select>
         </div>
       </div>
       <div className="mt-4 flex justify-end">

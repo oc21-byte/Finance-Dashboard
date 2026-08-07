@@ -95,12 +95,16 @@ export async function parseAccountStatementVision(file, {
   const seenAccounts = new Set()
   let statementDate = null
   let accountLabel = null
+  let currency = null
 
   for (let i = 0; i < batches.length; i++) {
     onProgress?.({ batch: i + 1, batchCount: batches.length })
     const result = await postVisionBatch(batches[i], statementType, null)
     if (!statementDate && result.statementDate) statementDate = result.statementDate
     if (!accountLabel && result.accountLabel) accountLabel = result.accountLabel
+    if (!currency && (result.currency === 'CAD' || result.currency === 'USD')) {
+      currency = result.currency
+    }
 
     for (const position of result.positions || []) {
       const key = String(position?.ticker ?? '').trim().toUpperCase()
@@ -116,5 +120,5 @@ export async function parseAccountStatementVision(file, {
     }
   }
 
-  return { positions, accounts, statementDate, accountLabel, pageCount: pages.length }
+  return { positions, accounts, statementDate, accountLabel, currency, pageCount: pages.length }
 }

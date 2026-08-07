@@ -56,6 +56,10 @@
 // import was complete.
 
 import { isSavingsTransfer } from '../src/constants/financeRules.js'
+import { resolveListing } from '../src/utils/listing.js'
+import {
+  normalizeCurrency, quoteCurrencyOf, costCurrencyOf, toDisplay,
+} from '../src/utils/displayCurrency.js'
 
 // Bump when the stored shape changes in a way that requires recomputation. `settings
 // .netWorthHistoryVersion` is compared against this to decide whether to rebuild once on load.
@@ -102,12 +106,18 @@ function lotsAsOf(holding, asOf) {
 /**
  * Value every holding as it stood on `asOf`, at market and at cost.
  *
- * @param priceOf (ticker, yyyymm) => number|null — a live-price lookup for a snapshot, or a
- *   historical-close lookup for a backfilled month. Returning null falls that holding back to
- *   cost basis and downgrades `basis`.
+ * @param priceOf (ticker, yyyymm, listing?) => number|null — native quote in the listing currency.
+ * @param opts.displayCurrency home currency for the returned totals
+ * @param opts.usdCad CAD per USD; required when converting across currencies
  * @returns {{ market, cost, basis }}
  */
-export function valueHoldingsAsOf(holdings = [], asOf = null, priceOf = () => null) {
+export function valueHoldingsAsOf(
+  holdings = [],
+  asOf = null,
+  priceOf = () => null,
+  { displayCurrency = 'CAD', usdCad = null } = {},
+) {
+  const home = normalizeCurrency(displayCurrency) || 'CAD'
   const yyyymm = asOf ? asOf.slice(0, 7) : null
   let market = 0
   let cost = 0
@@ -121,14 +131,26 @@ export function valueHoldingsAsOf(holdings = [], asOf = null, priceOf = () => nu
     const lotCost = lots.reduce((s, l) => s + l.shares * l.purchasePrice, 0)
     if (shares === 0 && lotCost === 0) continue
 
-    const price = h?.ticker ? priceOf(h.ticker.toUpperCase(), yyyymm) : null
-    cost += lotCost
-    if (price !== null && price !== undefined && Number.isFinite(price)) {
-      market += price * shares
+    const listing = resolveListing(h)
+    const quoteCurrency = quoteCurrencyOf(listing) || home
+    const costCurrency = costCurrencyOf(h, { displayCurrency: home })
+    const costDisp = toDisplay(lotCost, costCurrency, home, usdCad)
+    const costInHome = costDisp !== null ? costDisp : lotCost
+    cost += costInHome
+
+    const nativePrice = h?.ticker
+      ? priceOf(h.ticker.toUpperCase(), yyyymm, listing)
+      : null
+    const priceDisp = (nativePrice !== null && nativePrice !== undefined && Number.isFinite(nativePrice))
+      ? toDisplay(nativePrice, quoteCurrency, home, usdCad)
+      : null
+
+    if (priceDisp !== null) {
+      market += priceDisp * shares
       priced++
     } else {
-      // No price: the honest stand-in is what was paid, which contributes zero market return.
-      market += lotCost
+      // No convertible price: stand in with cost in home currency (zero market return).
+      market += costInHome
       unpriced++
     }
   }
@@ -310,11 +332,14 @@ export function rebuildHistory({
   today,
   keepDates = [],
   priceOf = () => null,
+  displayCurrency = 'CAD',
+  usdCad = null,
 }) {
   const dated = transactions.filter(t => t.date)
   const earliest = dated.length ? dated.map(t => t.date).sort()[0] : today
   const currentSavings = savingsAccounts.reduce((s, a) => s + (a.balance ?? 0), 0)
   const cashSources = { opening, statementBalances, bankRows: dated }
+  const fxOpts = { displayCurrency, usdCad }
 
   const dates = [...new Set([
     ...monthEndDates(earliest, today),
@@ -326,7 +351,7 @@ export function rebuildHistory({
   ])].sort()
 
   return dates.map(date => {
-    const { market, cost, basis } = valueHoldingsAsOf(holdings, date, priceOf)
+    const { market, cost, basis } = valueHoldingsAsOf(holdings, date, priceOf, fxOpts)
     return buildEntry({
       date,
       cash: cashAsOf(cashSources, date),

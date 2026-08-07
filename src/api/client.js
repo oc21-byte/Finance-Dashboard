@@ -89,7 +89,9 @@ export const api = {
     reconcile: (data)  => request('POST',   '/savings-accounts/reconcile', data),
   },
   prices: {
-    get: (tickers) => request('GET', `/prices?tickers=${tickers.join(',')}`),
+    // Returns `{ prices, fx: { USDCAD } }` so foreign-quoted holdings can convert into the
+    // display currency without a second round trip.
+    get: (tickers) => request('GET', `/prices?tickers=${encodeURIComponent(tickers.join(','))}`),
   },
   settings: {
     get: () => request('GET', '/settings'),

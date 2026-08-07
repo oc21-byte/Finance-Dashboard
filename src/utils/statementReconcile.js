@@ -13,6 +13,8 @@
 // as `budgetModel.js` ↔ `budgetAnalysis.js`.
 
 import { accountTypeOf } from './investmentsModel.js'
+import { normalizeListing, listingFromAccountType } from './listing.js'
+import { normalizeCurrency, quoteCurrencyOf } from './displayCurrency.js'
 
 const r2 = n => Math.round(n * 100) / 100
 const r4 = n => Math.round(n * 10000) / 10000
@@ -34,7 +36,12 @@ function num(value) {
  * value, and the review step has to ask. Filling it in here from `marketValue` would record a
  * fabricated zero gain, which the Dashboard's saved-versus-markets split would then inherit.
  */
-export function normalizePositions(raw = []) {
+export function normalizePositions(raw = [], {
+  defaultListing = null,
+  defaultCostCurrency = null,
+} = {}) {
+  const fallback = normalizeListing(defaultListing)
+  const costFallback = normalizeCurrency(defaultCostCurrency)
   const seen = new Set()
   const out = []
   for (const entry of raw) {
@@ -44,12 +51,19 @@ export function normalizePositions(raw = []) {
     if (seen.has(ticker)) continue
     seen.add(ticker)
     const costBasis = num(entry?.costBasis)
+    const listing = normalizeListing(entry?.listing) || fallback
     out.push({
       ticker,
       name: String(entry?.name ?? '').trim(),
       shares: r4(shares),
       marketValue: num(entry?.marketValue),
       costBasis: costBasis === null || costBasis < 0 ? null : r2(costBasis),
+      // Per-row listing from the section/currency the statement printed; else the statement default.
+      listing,
+      costCurrency: normalizeCurrency(entry?.costCurrency)
+        || costFallback
+        || quoteCurrencyOf(listing)
+        || null,
     })
   }
   return out
@@ -88,10 +102,25 @@ export function reconcileHoldings({ holdings = [], accountType, statementDate = 
     const prevCostBasis = existing ? r2((Number(existing.purchasePrice) || 0) * prevShares) : null
     const costBasis = position.costBasis
     const needsCostBasis = costBasis === null
+    // Only an explicit listing from the statement can change a stored one. Inferring CA from
+    // "FHSA" on every re-import would rewrite unchanged rows forever.
+    const positionListing = normalizeListing(position.listing)
+    const existingListing = normalizeListing(existing?.listing)
+    const listing = positionListing || existingListing || listingFromAccountType(type) || null
+    const listingChanged = !!existing && !!positionListing && positionListing !== existingListing
+    const positionCostCurrency = normalizeCurrency(position.costCurrency)
+    const existingCostCurrency = normalizeCurrency(existing?.costCurrency)
+    const costCurrency = positionCostCurrency
+      || existingCostCurrency
+      || quoteCurrencyOf(listing)
+      || null
+    const costCurrencyChanged = !!existing && !!positionCostCurrency
+      && positionCostCurrency !== existingCostCurrency
 
     let action
     if (!existing) action = 'add'
     else if (!sharesSame(prevShares, position.shares)) action = 'update'
+    else if (listingChanged || costCurrencyChanged) action = 'update'
     else if (needsCostBasis) action = 'unchanged'
     else action = moneySame(prevCostBasis, costBasis) ? 'unchanged' : 'update'
 
@@ -99,6 +128,8 @@ export function reconcileHoldings({ holdings = [], accountType, statementDate = 
       ticker: position.ticker,
       name: position.name,
       accountType: type,
+      listing,
+      costCurrency,
       action,
       shares: position.shares,
       prevShares,
@@ -126,6 +157,8 @@ export function reconcileHoldings({ holdings = [], accountType, statementDate = 
       ticker,
       name: '',
       accountType: type,
+      listing: normalizeListing(holding.listing),
+      costCurrency: normalizeCurrency(holding.costCurrency),
       action: 'remove',
       shares: 0,
       prevShares: shares,
@@ -198,6 +231,8 @@ export function applyReconcile(holdings = [], rows = [], { newId } = {}) {
       purchasePrice: row.avgCost,
       purchaseDate: row.purchaseDate,
       accountType: row.accountType,
+      listing: row.listing || holding.listing || null,
+      costCurrency: row.costCurrency || holding.costCurrency || null,
       purchases: [{ id: lotId, shares: row.shares, purchasePrice: row.avgCost, purchaseDate: row.purchaseDate }],
     })
   }
@@ -213,6 +248,8 @@ export function applyReconcile(holdings = [], rows = [], { newId } = {}) {
       purchasePrice: row.avgCost,
       purchaseDate: row.purchaseDate,
       accountType: row.accountType,
+      listing: row.listing || null,
+      costCurrency: row.costCurrency || null,
       purchases: [{ id: lotId, shares: row.shares, purchasePrice: row.avgCost, purchaseDate: row.purchaseDate }],
     })
   }

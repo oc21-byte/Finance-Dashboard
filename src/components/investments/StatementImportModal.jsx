@@ -1,6 +1,8 @@
 import { useMemo, useRef, useState } from 'react'
 import { parseAccountStatementVision } from '../../utils/pdfVision.js'
 import { toVisionStatementType } from '../../utils/accountStatementType.js'
+import { listingFromCurrency } from '../../utils/listing.js'
+import { normalizeCurrency } from '../../utils/displayCurrency.js'
 import { errorStatus } from '../../utils/diagnostics.js'
 import {
   normalizePositions, reconcileHoldings,
@@ -103,7 +105,11 @@ export default function StatementImportModal({
         }),
       })
 
-      const rows = isHoldings ? normalizePositions(result.positions) : normalizeSavings(result.accounts)
+      const defaultListing = isHoldings ? listingFromCurrency(result.currency) : null
+      const defaultCostCurrency = isHoldings ? normalizeCurrency(result.currency) : null
+      const rows = isHoldings
+        ? normalizePositions(result.positions, { defaultListing, defaultCostCurrency })
+        : normalizeSavings(result.accounts)
       if (!rows.length) {
         setStatus({
           type: 'error',
@@ -114,7 +120,12 @@ export default function StatementImportModal({
         return
       }
 
-      setParsed({ rows, statementDate: result.statementDate, accountLabel: result.accountLabel })
+      setParsed({
+        rows,
+        statementDate: result.statementDate,
+        accountLabel: result.accountLabel,
+        currency: result.currency || null,
+      })
       setStatementDate(result.statementDate || '')
       setStatus(null)
 
@@ -205,6 +216,8 @@ export default function StatementImportModal({
             shares: r.shares,
             marketValue: r.marketValue,
             costBasis: r.costBasis,
+            listing: r.listing,
+            costCurrency: r.costCurrency,
           })),
         removeTickers: selectedRows.filter(r => r.action === 'remove').map(r => r.ticker),
       })
@@ -446,6 +459,11 @@ function HoldingsPlan({ rows, isSelected, onToggle, costs, confirmed, onSetCost,
                 <td className="px-3 py-2.5">
                   <div className="flex items-center gap-2">
                     <span className="font-semibold text-gray-900">{row.ticker}</span>
+                    {row.listing && (
+                      <span className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+                        {row.listing}
+                      </span>
+                    )}
                     <ActionBadge action={row.action} />
                   </div>
                   {row.name && <p className="truncate text-xs text-gray-400">{row.name}</p>}

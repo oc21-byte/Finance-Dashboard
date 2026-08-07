@@ -1,12 +1,11 @@
+import { useQuery } from '@tanstack/react-query'
 import { paceStyle } from '../shared/paceStyles.js'
+import { formatMoney } from '../../utils/moneyFormat.js'
+import { api } from '../../api/client.js'
 
-const money = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  maximumFractionDigits: 0,
-})
-
-const moneyValue = value => (value == null ? '—' : money.format(value))
+const moneyValue = (value, currency = 'CAD') => (
+  value == null ? '—' : formatMoney(value, currency)
+)
 
 // Whole percents above 10, one decimal below it. A rate of 8% and a rate of 8.4% are a materially
 // different distance from a target; at 15% vs 15.4% they are not.
@@ -15,11 +14,11 @@ function percent(rate) {
   return `${value.toFixed(Math.abs(value) >= 10 ? 0 : 1)}%`
 }
 
-function Metric({ label, value, tone }) {
+function Metric({ label, value, tone, currency = 'CAD' }) {
   return (
     <div className="rounded-lg border border-white/80 bg-white/75 px-2.5 py-2">
       <p className="text-[9.5px] font-semibold uppercase tracking-wide text-gray-400">{label}</p>
-      <p className={`mt-0.5 text-[12.5px] font-bold ${tone ?? 'text-gray-800'}`}>{moneyValue(value)}</p>
+      <p className={`mt-0.5 text-[12.5px] font-bold ${tone ?? 'text-gray-800'}`}>{moneyValue(value, currency)}</p>
     </div>
   )
 }
@@ -33,6 +32,8 @@ function Metric({ label, value, tone }) {
  * accomplishment that hasn't happened. Both are shown, but only one of them is the headline.
  */
 export default function SavingsRateCard({ pace, scope }) {
+  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.settings.get })
+  const currency = settings?.displayCurrency === 'USD' ? 'USD' : 'CAD'
   const styles = paceStyle(pace?.status)
 
   const income = Number(pace?.income) || 0
@@ -110,16 +111,16 @@ export default function SavingsRateCard({ pace, scope }) {
               )}
             </div>
             <div className="mt-1.5 flex items-baseline justify-between gap-2 text-[10.5px] text-gray-400">
-              <span>{moneyValue(contributions)}/mo to savings</span>
-              {targetRate != null && <span>Target {percent(targetRate)} · {moneyValue(target)}</span>}
+              <span>{moneyValue(contributions, currency)}/mo to savings</span>
+              {targetRate != null && <span>Target {percent(targetRate)} · {moneyValue(target, currency)}</span>}
             </div>
           </div>
 
           {shortfall != null && (
             <p className={`mt-2.5 text-[11.5px] leading-relaxed ${metTarget ? 'text-emerald-700' : 'text-gray-600'}`}>
               {metTarget
-                ? `Meeting the target, with ${moneyValue(Math.abs(shortfall))} a month over it.`
-                : `${moneyValue(shortfall)} a month short of the target.`}
+                ? `Meeting the target, with ${moneyValue(Math.abs(shortfall), currency)} a month over it.`
+                : `${moneyValue(shortfall, currency)} a month short of the target.`}
             </p>
           )}
         </>
@@ -133,10 +134,10 @@ export default function SavingsRateCard({ pace, scope }) {
 
       {(pace?.income != null || pace?.expenses != null) && (
         <div className="mt-3 grid grid-cols-2 gap-1.5">
-          <Metric label="Monthly income" value={pace.income} />
-          <Metric label="Monthly expenses" value={pace.expenses} />
-          <Metric label="Headroom" value={pace.headroom} tone={headroomTone} />
-          <Metric label="Savings target" value={pace.savingsTarget} />
+          <Metric label="Monthly income" value={pace.income} currency={currency} />
+          <Metric label="Monthly expenses" value={pace.expenses} currency={currency} />
+          <Metric label="Headroom" value={pace.headroom} tone={headroomTone} currency={currency} />
+          <Metric label="Savings target" value={pace.savingsTarget} currency={currency} />
         </div>
       )}
 

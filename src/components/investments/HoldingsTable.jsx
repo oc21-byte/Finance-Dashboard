@@ -49,6 +49,9 @@ function HoldingDetail({ row, colSpan, onDeletePurchase, onDeleteHolding, deleti
           <Fact label="Cost basis">{money(row.costBasis)}</Fact>
           <Fact label="Held since">{date(row.purchaseDate)}</Fact>
           <Fact label="Account">{row.accountType}</Fact>
+          <Fact label="Market">
+            {row.listing === 'CA' ? 'Canada (TSX)' : row.listing === 'US' ? 'United States' : 'Auto'}
+          </Fact>
         </dl>
 
         <div className="mt-4 flex flex-wrap items-end justify-between gap-3">

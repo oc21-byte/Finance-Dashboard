@@ -1,25 +1,24 @@
+import { useQuery } from '@tanstack/react-query'
 import { paceStyle } from '../shared/paceStyles.js'
+import { formatMoney } from '../../utils/moneyFormat.js'
+import { api } from '../../api/client.js'
 
-const money = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  maximumFractionDigits: 0,
-})
-
-function moneyValue(value) {
-  return value == null ? '—' : money.format(value)
+function moneyValue(value, currency = 'CAD') {
+  return value == null ? '—' : formatMoney(value, currency)
 }
 
-function PaceMetric({ label, value, tone }) {
+function PaceMetric({ label, value, tone, currency = 'CAD' }) {
   return (
     <div className="rounded-lg border border-white/80 bg-white/75 px-2.5 py-2">
       <p className="text-[9.5px] font-semibold uppercase tracking-wide text-gray-400">{label}</p>
-      <p className={`mt-0.5 text-[12.5px] font-bold ${tone ?? 'text-gray-800'}`}>{moneyValue(value)}</p>
+      <p className={`mt-0.5 text-[12.5px] font-bold ${tone ?? 'text-gray-800'}`}>{moneyValue(value, currency)}</p>
     </div>
   )
 }
 
 export default function FinancialPaceCard({ pace, scope }) {
+  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.settings.get })
+  const currency = settings?.displayCurrency === 'USD' ? 'USD' : 'CAD'
   const styles = paceStyle(pace?.status)
   const showMetrics = pace?.income != null || pace?.expenses != null
   const headroomTone = pace?.headroom == null
@@ -47,10 +46,10 @@ export default function FinancialPaceCard({ pace, scope }) {
 
       {showMetrics && (
         <div className="mt-3 grid grid-cols-2 gap-1.5">
-          <PaceMetric label="Monthly income" value={pace.income} />
-          <PaceMetric label="Monthly expenses" value={pace.expenses} />
-          <PaceMetric label="Headroom" value={pace.headroom} tone={headroomTone} />
-          <PaceMetric label="Savings target" value={pace.savingsTarget} />
+          <PaceMetric label="Monthly income" value={pace.income} currency={currency} />
+          <PaceMetric label="Monthly expenses" value={pace.expenses} currency={currency} />
+          <PaceMetric label="Headroom" value={pace.headroom} tone={headroomTone} currency={currency} />
+          <PaceMetric label="Savings target" value={pace.savingsTarget} currency={currency} />
         </div>
       )}
 
