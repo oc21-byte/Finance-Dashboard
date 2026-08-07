@@ -82,6 +82,7 @@ rules encode) and `project-plan.md` (original, partly outdated concept). Never m
 | Liquid-net-worth history | `server/netWorthHistory.js` |
 | Budget math/UI | `src/utils/budgetModel.js`, `src/components/budget/*` |
 | Investments math/UI | `src/utils/investmentsModel.js`, `statementReconcile.js`, `src/components/investments/*` |
+| Goals math/UI | `src/utils/goalsModel.js`, `src/components/goals/*` |
 | Settings UI, model catalog | `src/pages/Settings.jsx`, `src/components/settings/*`, `src/utils/modelCatalog.js` |
 | Insight triads (one per tab) | `server/{spend,finance,dashboard,budget}{Analysis,InsightGeneration,Chat}.js` |
 | Shared insight safeguards | `server/chatBinding.js`, `server/modelText.js` |
@@ -260,6 +261,26 @@ Dashboard and Budget have no pinned bar and offset by the banner alone.
 - `/api/parse-pdf-vision` branches on `statementType`: `bank`/`credit_card` read a ledger,
   `investment`/`savings` read a balance sheet. The positions prompt must keep telling the model to
   ignore the activity section — both tables are printed on the same page.
+
+## Goals behavior
+
+- The grid is a summary and the **detail panel below it is the whole goal** — one open at a time, in
+  a fixed place. `selectedId` is `null`, a goal id, or `'new'`; editing is a flag on top of a
+  selected goal, so cancelling lands back on it rather than on an empty page.
+- **A linked goal's `currentAmount` is derived, not stored.** `computeGoalProgress` sums
+  `sourceValue × percent` and ignores the stored figure, which is why Add Funds is hidden for linked
+  goals and why links save on change rather than through the edit form.
+- A source is capped at **100% across all goals**. `/api/goal-sources` reports `allocatedPct`
+  including the goal being viewed, so a goal's own share is a subtraction — `allocationSegments()`
+  owns it. `validateGoalLinks` re-checks on every write with the goal itself excluded.
+- **Cash is counted once.** A goal linked to the `cash` source already holds that cash in its
+  `currentAmount`, so `emergencyFund()` nets `linkedBreakdown`'s cash out before adding
+  `settings.cashBalance`. Adding both was the original bug.
+- The timeline here quotes the goal's **stated** `monthlySavings`. `goalProgress()` in
+  `liquidNetWorth.js` prefers the rate visible in the ledger and feeds the Dashboard's goal card.
+  Two rates, on purpose — a plan and an observation. Never merge them.
+- Goal analysis and chat accept **either provider's** key, matching the server routes. Demo mode
+  disables every editor and leaves AI available, as on Budget.
 
 ## Insight contracts
 

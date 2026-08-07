@@ -1064,9 +1064,10 @@ function fullMonthsWithData(transactions) {
   )
 }
 
-// Monthly financials for insight prompts, using the SAME definitions as the Finances tab
-// (src/pages/Finances.jsx buildMonthlyData) so the numbers the model cites equal what the
-// user sees in the app:
+// Monthly financials for insight prompts. The definitions match what the Finances tab counts as
+// income/expense (`src/constants/financeRules.js`, via `bankFlowOf` below) so the numbers the model
+// cites are the same ones the user sees — Finances slices by its period chips, so it has no single
+// average to compare against, but the classification underneath is shared:
 //   income / expenses / savings / investments  ->  from BANK transactions, by category.
 // Expenses are the bank "Expense" category, which already includes credit-card bill
 // payments — so credit-card transactions are NOT added to the total (that would

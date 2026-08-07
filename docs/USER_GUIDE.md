@@ -31,7 +31,7 @@ Take it one section at a time — you don't have to read it all at once.
 - [Spend Analyzer — your credit card spending](#spend-analyzer--your-credit-card-spending)
 - [Budget — your spending limits & savings plan](#budget--your-spending-limits--savings-plan)
 - [Investments — your stocks and savings](#investments--your-stocks-and-savings)
-- [Goals — what you're saving toward](#goals--what-youre-saving-toward) *(emergency fund calculator, linking accounts, growth projection)*
+- [Goals — what you're saving toward](#goals--what-youre-saving-toward) *(emergency fund, linking accounts, growth projection)*
 - [Settings — your preferences](#settings--your-preferences)
 - [Handy tips & good-to-knows](#handy-tips--good-to-knows)
 
@@ -543,29 +543,39 @@ import replaced or removed at the time.
 **What it's for:** This is the motivating part — set a target (an emergency fund, a vacation,
 a house down payment) and watch yourself get closer.
 
-### Emergency Fund Calculator
+### How the page is laid out
 
-At the top of the Goals page you'll find a built-in **Emergency Fund Calculator** — a quick
-sanity check on whether you have enough set aside for a rainy day.
+Your goals sit in a grid, each as a small card with a **progress ring**, the percentage
+you've reached, and one badge saying how it's funded — either the accounts it's linked to,
+the monthly amount you've set, or "No monthly savings set" if it has neither.
 
-- **Pick a coverage target** — choose 3, 6, 9, or 12 months of expenses. Most financial
-  guidance suggests 3–6 months; pick what feels right for your situation.
-- The calculator uses your **average monthly spending** (from your real transactions) to work
-  out a target dollar amount automatically.
-- If you already have an "Emergency Fund" goal, it shows a progress bar combining that
-  goal's balance *plus* your current cash balance, so you get credit for money you're
-  already holding.
+**Click any card** to open its full detail underneath the grid: progress, funds, linked
+accounts, and AI analysis. Only one goal is open at a time, always in the same place — click
+the card again, or **Close ✕**, to collapse it.
+
+### Emergency Fund
+
+The banner across the top is a quick sanity check on whether you have enough set aside for a
+rainy day. It isn't an ordinary goal, which is why it isn't in the grid with them: its target
+is worked out for you rather than chosen.
+
+- **Pick a coverage target** — 3, 6, 9, or 12 months of expenses. Most financial guidance
+  suggests 3–6 months; pick what feels right for your situation. The target updates as you
+  click, and the small print underneath says what it's based on — for example
+  *"6 × $2,000.00/mo avg spend (Feb–Jul 2026)."*
+- Progress combines your **"Emergency Fund" goal's balance** with **cash you haven't already
+  earmarked to it**. Cash counts toward an emergency whether or not a goal names it — but a
+  dollar is only ever counted once, so if the goal is linked directly to your cash balance
+  you won't see it added twice.
 - **Gap** — the shortfall between where you are and where you want to be.
-- **Create Emergency Fund Goal** — if you don't have one yet, click this button and the
-  calculator will create a goal pre-filled with the right target amount and your current
-  cash balance as a head start.
+- **Create Emergency Fund Goal** — if you don't have one yet, this creates it with the right
+  target and your current cash balance as a head start.
 - **Sync target** — if your goal's target is out of date (maybe your spending changed), a
-  small "Sync target → $X,XXX" button appears so you can update it to match the current
-  calculation in one click.
+  "Sync target → $X,XXX" button appears to update it in one click.
 
 ### Create a goal
 
-1. Click **New Goal**.
+1. Click **+ New Goal** (top right, or the dashed tile at the end of the grid).
 2. Fill in:
 
    - **Goal name** — like "Emergency Fund."
@@ -573,46 +583,44 @@ sanity check on whether you have enough set aside for a rainy day.
    - **Target date** — when you'd like to hit it.
    - **Monthly savings** — how much you plan to put toward it each month (optional, but it
      powers the timeline estimate). If you've been saving consistently, you'll see a
-     suggestion like *"Your avg savings: $400/mo over 6 mo — Use this"* — click it to
-     fill in the field automatically.
+     suggestion like *"Your avg savings: $400/mo over 6 mo"* — click it to fill the field in.
 
-3. **Link accounts (optional but powerful)** — at the bottom of the form, you'll see a
-   **Linked accounts** section. This lets the goal automatically track money you already
-   have in savings accounts or investment holdings, instead of you manually adding funds.
+3. Click **Create Goal**. The new goal opens straight away, ready to link accounts to.
 
-   - Pick an account from the dropdown and enter the **percentage** of that account to
-     count toward this goal (e.g. "50% of my High-Yield Savings").
-   - You can link multiple accounts. The app caps the total at 100% per account across
-     all goals — so two goals can't double-count the same money.
-   - Click **Add** for each account, then continue.
+### Linking accounts
 
-4. Click **Create Goal**.
+Linking is the powerful bit: instead of adding funds by hand, the goal tracks money you
+already have in a savings account, an investment account, or your cash balance.
 
-Each goal shows up as a card with a progress bar, the percentage you've reached, and — if
-you entered a monthly amount — a friendly estimate like *"~12 months to go."*
+Open a goal and find **Linked accounts — allocation** in its detail panel.
 
-If your goal has **linked investment accounts**, the app also factors in your average monthly
-investment contributions (calculated from your bank history). The card will show something
-like *"Saving $600/mo ($200 manual + $400 avg investment contrib)"* and use the combined rate
-for the timeline estimate. This means you don't have to manually account for regular brokerage
-or retirement contributions when projecting how long a goal will take.
+- Pick an account and enter the **percentage** of it that counts toward this goal (e.g. "50%
+  of my High-Yield Savings"), then click **Add**. It saves immediately.
+- Each linked account gets a bar showing how it's divided up — **this goal's** share, what
+  **other goals** have claimed, and what's still **free**. An account is capped at 100% across
+  all your goals, so two goals can never count the same dollar.
+- **Remove** releases a link and frees that capacity back up.
+- You can link accounts to a goal at any time, not just when creating it.
+
+Once a goal is linked its amount comes from those accounts, so the **Add Funds** box
+disappears — there's nothing to add by hand.
 
 ### Keeping a goal updated
 
-- **Linked goal?** Nothing to do — the progress bar updates automatically as your account
-  balances and investment prices change. The card shows a breakdown ("Funded by linked
-  accounts") listing which accounts are contributing what.
-- **Unlinked goal?** Type the amount in the **Add amount…** box on the card and click
-  **Add Funds**. The progress bar jumps forward.
-- **Need to change something?** Click **Edit** to adjust the target, date, monthly savings,
-  or linked accounts, then **Save**.
-- **Want advice?** Click **Get AI Analysis** for thoughts on your goal, and use the chat box
-  to ask things like *"How can I reach this faster?"* (needs your AI key).
-- **Done with a goal?** Click **Delete** to remove it.
+- **Linked goal?** Nothing to do — progress updates automatically as your balances and
+  investment prices change.
+- **Unlinked goal?** Type the amount in the **Add amount…** box and click **Add Funds**.
+- **Need to change something?** **Edit** adjusts the name, target, date and monthly savings.
+  (Linked accounts are managed in their own card, not in this form.)
+- **Want advice?** **Get AI Analysis** in the right-hand panel gives you thoughts on the goal,
+  and the chat box below it takes follow-ups like *"How can I reach this faster?"* — it works
+  with whichever AI provider you've set up in Settings.
+- **Done with a goal?** **Delete** asks you to confirm first, and tells you how much progress
+  you'd be discarding. Deleting a linked goal doesn't touch the accounts themselves.
 
 ### Growth projection
 
-Linked goals show an extra estimate in a dashed box:
+Goals can show an extra estimate in a dashed box:
 
 > 📈 With growth (6% return + APY), you'd reach this in ~9 months
 
