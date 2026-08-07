@@ -68,13 +68,14 @@ const BOTTOM_NAV = [
 import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client.js'
+import { resolveDisplayCurrency } from '../utils/displayCurrency.js'
 
 export default function Layout({ activeTab, onTabChange, children, demoMode }) {
   const { data: settings } = useQuery({
     queryKey: ['settings'],
     queryFn: api.settings.get,
   })
-  const displayCurrency = settings?.displayCurrency === 'USD' ? 'USD' : 'CAD'
+  const displayCurrency = resolveDisplayCurrency(settings?.displayCurrency)
   const [showExitModal, setShowExitModal] = useState(false)
   const [shuttingDown, setShuttingDown] = useState(false)
   const [shutdownError, setShutdownError] = useState(false)

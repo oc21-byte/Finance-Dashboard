@@ -3,12 +3,13 @@
 // the same figure.
 
 import { formatMoney } from '../../utils/moneyFormat.js'
+import { DEFAULT_DISPLAY_CURRENCY, resolveDisplayCurrency } from '../../utils/displayCurrency.js'
 
 /** Active display currency for this tab's formatters. Set from Investments when settings load. */
-let activeCurrency = 'CAD'
+let activeCurrency = DEFAULT_DISPLAY_CURRENCY
 
 export function setMoneyCurrency(currency) {
-  activeCurrency = currency === 'USD' ? 'USD' : 'CAD'
+  activeCurrency = resolveDisplayCurrency(currency)
 }
 
 /** Whole dollars. Portfolio figures are large enough that cents are noise in a headline. */

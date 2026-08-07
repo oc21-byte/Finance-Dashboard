@@ -1,9 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
 import { paceStyle } from '../shared/paceStyles.js'
 import { formatMoney } from '../../utils/moneyFormat.js'
+import { DEFAULT_DISPLAY_CURRENCY, resolveDisplayCurrency } from '../../utils/displayCurrency.js'
 import { api } from '../../api/client.js'
 
-const moneyValue = (value, currency = 'CAD') => (
+const moneyValue = (value, currency = DEFAULT_DISPLAY_CURRENCY) => (
   value == null ? '—' : formatMoney(value, currency)
 )
 
@@ -14,7 +15,7 @@ function percent(rate) {
   return `${value.toFixed(Math.abs(value) >= 10 ? 0 : 1)}%`
 }
 
-function Metric({ label, value, tone, currency = 'CAD' }) {
+function Metric({ label, value, tone, currency = DEFAULT_DISPLAY_CURRENCY }) {
   return (
     <div className="rounded-lg border border-white/80 bg-white/75 px-2.5 py-2">
       <p className="text-[9.5px] font-semibold uppercase tracking-wide text-gray-400">{label}</p>
@@ -33,7 +34,7 @@ function Metric({ label, value, tone, currency = 'CAD' }) {
  */
 export default function SavingsRateCard({ pace, scope }) {
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.settings.get })
-  const currency = settings?.displayCurrency === 'USD' ? 'USD' : 'CAD'
+  const currency = resolveDisplayCurrency(settings?.displayCurrency)
   const styles = paceStyle(pace?.status)
 
   const income = Number(pace?.income) || 0

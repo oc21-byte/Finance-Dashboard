@@ -22,7 +22,7 @@ export default function CompositionDonut({
   savings = 0,
   holdings = [],
   prices = {},
-  displayCurrency = 'CAD',
+  displayCurrency = 'USD',
   usdCad = null,
   pricesFetching = false,
   highlight = null,

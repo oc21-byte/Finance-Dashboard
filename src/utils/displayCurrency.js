@@ -10,9 +10,17 @@ import { resolveListing, priceOfHolding } from './listing.js'
 
 export const DISPLAY_CURRENCIES = new Set(['CAD', 'USD'])
 
+/** Default home currency when settings omit or reject a value. */
+export const DEFAULT_DISPLAY_CURRENCY = 'USD'
+
 export function normalizeCurrency(value) {
   const v = String(value ?? '').trim().toUpperCase()
   return DISPLAY_CURRENCIES.has(v) ? v : null
+}
+
+/** Normalize a home-currency setting, falling back to the app default. */
+export function resolveDisplayCurrency(value) {
+  return normalizeCurrency(value) || DEFAULT_DISPLAY_CURRENCY
 }
 
 export function quoteCurrencyOf(listing) {
@@ -24,12 +32,12 @@ export function quoteCurrencyOf(listing) {
 /**
  * Cost currency for a holding: stored value, else the quote currency, else display currency.
  */
-export function costCurrencyOf(holding, { displayCurrency = 'CAD' } = {}) {
+export function costCurrencyOf(holding, { displayCurrency = DEFAULT_DISPLAY_CURRENCY } = {}) {
+  const home = resolveDisplayCurrency(displayCurrency)
   return (
     normalizeCurrency(holding?.costCurrency)
-    || quoteCurrencyOf(resolveListing(holding))
-    || normalizeCurrency(displayCurrency)
-    || 'CAD'
+    || quoteCurrencyOf(resolveListing({ ...holding, displayCurrency: home }))
+    || home
   )
 }
 
@@ -61,19 +69,19 @@ const r2 = n => Math.round((Number(n) || 0) * 100) / 100
  */
 export function convertHoldingMoney(holding, {
   prices = {},
-  displayCurrency = 'CAD',
+  displayCurrency = DEFAULT_DISPLAY_CURRENCY,
   usdCad = null,
   rawPrice = undefined,
 } = {}) {
   const shares = Number(holding?.shares) || 0
   const purchasePrice = Number(holding?.purchasePrice) || 0
-  const listing = resolveListing(holding)
-  const home = normalizeCurrency(displayCurrency) || 'CAD'
+  const home = resolveDisplayCurrency(displayCurrency)
+  const listing = resolveListing({ ...holding, displayCurrency: home })
   const quoteCurrency = quoteCurrencyOf(listing) || home
   const costCurrency = costCurrencyOf(holding, { displayCurrency: home })
   const nativePrice = rawPrice !== undefined
     ? rawPrice
-    : priceOfHolding(prices, holding)
+    : priceOfHolding(prices, holding, home)
 
   const nativeCost = purchasePrice * shares
   const costBasis = toDisplay(nativeCost, costCurrency, home, usdCad)

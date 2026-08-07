@@ -4,9 +4,10 @@
  * Bare Canadian symbols collide with unrelated US listings on Yahoo (HURA → TuHURA
  * Biosciences, TEC → Harbor Transformative Technology). The TSX listing is `TICKER.TO`.
  *
- * `listing` comes from the holding when known (`CA` | `US`). Without it, candidates stay
- * Canadian-first — this app's registered accounts are mostly TFSA / RRSP / FHSA — and a
- * pure US symbol like AAPL still resolves after `AAPL.TO` 404s.
+ * `listing` comes from the holding when known (`CA` | `US`), else from home currency via
+ * `resolveListing`. Without any hint, prefer the bare US symbol — CAD-hedged CDRs like
+ * NVDA.TO / PYPL.TO would otherwise win and price a USD book at ~1/5 the real share price.
+ * Canadian tickers must carry `listing: 'CA'`, a registered account type, or home currency CAD.
  */
 
 const EXCHANGE_SUFFIX =
@@ -17,8 +18,7 @@ export function yahooSymbolCandidates(ticker, { listing = null } = {}) {
   if (!t) return []
   if (EXCHANGE_SUFFIX.test(t)) return [t]
 
-  if (listing === 'US') return [t, `${t}.TO`]
   if (listing === 'CA') return [`${t}.TO`, t]
-  // Unknown: Canadian-first, then bare.
-  return [`${t}.TO`, t]
+  // US, or unknown: bare first so CDR aliases cannot steal the quote.
+  return [t, `${t}.TO`]
 }

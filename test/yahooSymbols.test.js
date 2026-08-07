@@ -2,11 +2,16 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { yahooSymbolCandidates } from '../src/utils/yahooSymbols.js'
 
-test('unknown listing stays Canadian-first for unsuffixed tickers', () => {
-  // Regression: bare HURA is TuHURA Biosciences (USD ~$2), while HURA.TO is Global X
-  // Uranium (CAD ~$50). Pricing the FHSA lots at the US symbol manufactured ~97% losses.
-  assert.deepEqual(yahooSymbolCandidates('HURA'), ['HURA.TO', 'HURA'])
-  assert.deepEqual(yahooSymbolCandidates('xeqt'), ['XEQT.TO', 'XEQT'])
+test('unknown listing prefers the bare US symbol so CDRs cannot steal the quote', () => {
+  // Regression: NVDA.TO is NVIDIA CDR (~$49 CAD), not the NASDAQ share (~$219 USD).
+  assert.deepEqual(yahooSymbolCandidates('NVDA'), ['NVDA', 'NVDA.TO'])
+  assert.deepEqual(yahooSymbolCandidates('HURA'), ['HURA', 'HURA.TO'])
+})
+
+test('CA listing stays Canadian-first for unsuffixed tickers', () => {
+  // Bare HURA is TuHURA Biosciences (USD ~$2); HURA.TO is Global X Uranium (CAD ~$50).
+  assert.deepEqual(yahooSymbolCandidates('HURA', { listing: 'CA' }), ['HURA.TO', 'HURA'])
+  assert.deepEqual(yahooSymbolCandidates('xeqt', { listing: 'CA' }), ['XEQT.TO', 'XEQT'])
 })
 
 test('an already-qualified ticker is left alone', () => {

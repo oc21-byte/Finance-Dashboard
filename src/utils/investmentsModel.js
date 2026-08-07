@@ -5,7 +5,7 @@
 // filter dropdown ended up listing account types the donut had never heard of.
 
 import { resolveListing } from './listing.js'
-import { convertHoldingMoney, normalizeCurrency } from './displayCurrency.js'
+import { convertHoldingMoney, DEFAULT_DISPLAY_CURRENCY, resolveDisplayCurrency } from './displayCurrency.js'
 
 const r2 = n => Math.round(n * 100) / 100
 
@@ -23,7 +23,7 @@ export function accountTypeOf(holding) {
  * the caller decides what to show. `value` falls back to converted cost so one unpriced ticker
  * cannot make the portfolio appear to shrink by its whole position.
  */
-function priceRow(holding, prices, { displayCurrency = 'CAD', usdCad = null } = {}) {
+function priceRow(holding, prices, { displayCurrency = DEFAULT_DISPLAY_CURRENCY, usdCad = null } = {}) {
   const ticker = String(holding.ticker || '').toUpperCase()
   const shares = Number(holding.shares) || 0
   const purchasePrice = Number(holding.purchasePrice) || 0
@@ -40,7 +40,7 @@ function priceRow(holding, prices, { displayCurrency = 'CAD', usdCad = null } = 
     shares,
     purchasePrice,
     accountType: accountTypeOf(holding),
-    listing: converted.listing ?? resolveListing(holding),
+    listing: converted.listing ?? resolveListing({ ...holding, displayCurrency }),
     costCurrency: converted.costCurrency,
     quoteCurrency: converted.quoteCurrency,
     purchaseCount: holding.purchases?.length ?? 1,
@@ -64,10 +64,10 @@ export function buildInvestmentsModel({
   holdings = [],
   prices = {},
   savingsAccounts = [],
-  displayCurrency = 'CAD',
+  displayCurrency = DEFAULT_DISPLAY_CURRENCY,
   usdCad = null,
 } = {}) {
-  const home = normalizeCurrency(displayCurrency) || 'CAD'
+  const home = resolveDisplayCurrency(displayCurrency)
   const rows = holdings
     .map(h => priceRow(h, prices, { displayCurrency: home, usdCad }))
     .sort((a, b) => b.value - a.value)

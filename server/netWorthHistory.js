@@ -58,7 +58,8 @@
 import { isSavingsTransfer } from '../src/constants/financeRules.js'
 import { resolveListing } from '../src/utils/listing.js'
 import {
-  normalizeCurrency, quoteCurrencyOf, costCurrencyOf, toDisplay,
+  DEFAULT_DISPLAY_CURRENCY, resolveDisplayCurrency,
+  quoteCurrencyOf, costCurrencyOf, toDisplay,
 } from '../src/utils/displayCurrency.js'
 
 // Bump when the stored shape changes in a way that requires recomputation. `settings
@@ -115,9 +116,9 @@ export function valueHoldingsAsOf(
   holdings = [],
   asOf = null,
   priceOf = () => null,
-  { displayCurrency = 'CAD', usdCad = null } = {},
+  { displayCurrency = DEFAULT_DISPLAY_CURRENCY, usdCad = null } = {},
 ) {
-  const home = normalizeCurrency(displayCurrency) || 'CAD'
+  const home = resolveDisplayCurrency(displayCurrency)
   const yyyymm = asOf ? asOf.slice(0, 7) : null
   let market = 0
   let cost = 0
@@ -131,7 +132,7 @@ export function valueHoldingsAsOf(
     const lotCost = lots.reduce((s, l) => s + l.shares * l.purchasePrice, 0)
     if (shares === 0 && lotCost === 0) continue
 
-    const listing = resolveListing(h)
+    const listing = resolveListing({ ...h, displayCurrency: home })
     const quoteCurrency = quoteCurrencyOf(listing) || home
     const costCurrency = costCurrencyOf(h, { displayCurrency: home })
     const costDisp = toDisplay(lotCost, costCurrency, home, usdCad)
@@ -332,7 +333,7 @@ export function rebuildHistory({
   today,
   keepDates = [],
   priceOf = () => null,
-  displayCurrency = 'CAD',
+  displayCurrency = DEFAULT_DISPLAY_CURRENCY,
   usdCad = null,
 }) {
   const dated = transactions.filter(t => t.date)

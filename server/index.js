@@ -32,7 +32,8 @@ import {
   resolveListing, priceLookupKey, priceOfHolding,
 } from '../src/utils/listing.js'
 import {
-  normalizeCurrency, quoteCurrencyOf, toDisplay, costCurrencyOf,
+  DEFAULT_DISPLAY_CURRENCY, normalizeCurrency, resolveDisplayCurrency,
+  quoteCurrencyOf, toDisplay, costCurrencyOf,
 } from '../src/utils/displayCurrency.js'
 import {
   DEFAULT_VISION_MODEL, FALLBACK_MODELS,
@@ -104,7 +105,7 @@ const DEFAULT_DB = {
     statementBalances: [],
     // Home / reporting currency for the whole app. Bank, card, cash and savings are assumed
     // already entered in this currency; foreign-quoted holdings are FX-converted into it.
-    displayCurrency: 'CAD',
+    displayCurrency: DEFAULT_DISPLAY_CURRENCY,
   },
 }
 
@@ -255,11 +256,11 @@ app.post('/api/holdings', (req, res) => {
   const db = readDb()
   const { ticker: rawTicker, shares, purchasePrice, purchaseDate, accountType, listing, costCurrency } = req.body
   const ticker = (rawTicker || '').toUpperCase()
-  const resolvedListing = resolveListing({ listing, accountType })
+  const home = resolveDisplayCurrency(db.settings?.displayCurrency)
+  const resolvedListing = resolveListing({ listing, accountType, displayCurrency: home })
   const resolvedCostCurrency = normalizeCurrency(costCurrency)
     || quoteCurrencyOf(resolvedListing)
-    || normalizeCurrency(db.settings?.displayCurrency)
-    || 'CAD'
+    || home
 
   const existing = db.holdings.find(h => h.ticker === ticker && h.accountType === accountType)
 
@@ -398,8 +399,9 @@ async function fetchYahooChart(symbol, { interval, range }) {
 /**
  * Normalize a tickers argument into unique `{ ticker, listing, key }` quote requests.
  * Accepts bare ticker strings, `TICKER:CA` / `TICKER:US` tokens, or holding-like objects.
+ * Bare strings and holdings without a stored listing inherit `displayCurrency` (USD→US).
  */
-function quoteRequestsFrom(tickersOrHoldings = []) {
+function quoteRequestsFrom(tickersOrHoldings = [], { displayCurrency } = {}) {
   const byKey = new Map()
   for (const item of tickersOrHoldings) {
     let ticker
@@ -413,10 +415,11 @@ function quoteRequestsFrom(tickersOrHoldings = []) {
         listing = split[2]
       } else {
         ticker = raw
+        listing = resolveListing({ displayCurrency })
       }
     } else if (item && typeof item === 'object') {
       ticker = String(item.ticker || '').trim().toUpperCase()
-      listing = resolveListing(item)
+      listing = resolveListing({ ...item, displayCurrency })
     }
     if (!ticker) continue
     const key = priceLookupKey(ticker, listing)
@@ -440,8 +443,8 @@ async function fetchPriceForRequest(req, { interval, range }, readValue) {
 
 // Fetch live prices. Returns a map keyed by `priceLookupKey` (TICKER or TICKER:CA) and also
 // aliases the bare ticker when only one listing was requested for it.
-async function fetchPrices(tickersOrHoldings) {
-  const requests = quoteRequestsFrom(tickersOrHoldings)
+async function fetchPrices(tickersOrHoldings, { displayCurrency } = {}) {
+  const requests = quoteRequestsFrom(tickersOrHoldings, { displayCurrency })
   if (!requests.length) return {}
   const entries = await Promise.all(
     requests.map(async (req) => {
@@ -477,8 +480,8 @@ async function fetchPrices(tickersOrHoldings) {
 // Returns { KEY: { 'YYYY-MM': close } }. Any failure yields no entry for that request rather
 // than throwing — `valueHoldingsAsOf` falls the holding back to cost basis and downgrades the
 // entry's `basis`, so a Yahoo outage degrades the chart instead of breaking the rebuild.
-async function fetchHistoricalPrices(tickersOrHoldings) {
-  const requests = quoteRequestsFrom(tickersOrHoldings)
+async function fetchHistoricalPrices(tickersOrHoldings, { displayCurrency } = {}) {
+  const requests = quoteRequestsFrom(tickersOrHoldings, { displayCurrency })
   if (!requests.length) return {}
   const entries = await Promise.all(
     requests.map(async (req) => {
@@ -561,21 +564,25 @@ async function fetchFxRates() {
 
 app.get('/api/prices', async (req, res) => {
   const tickers = (req.query.tickers || '').split(',').filter(Boolean)
-  const [prices, fx] = await Promise.all([fetchPrices(tickers), fetchFxRates()])
+  const displayCurrency = displayCurrencyOf(readDb())
+  const [prices, fx] = await Promise.all([
+    fetchPrices(tickers, { displayCurrency }),
+    fetchFxRates(),
+  ])
   res.json({ prices, fx })
 })
 
 /** Prices plus `__USDCAD` for server-side conversion (goals, insights, snapshots). */
-async function fetchPricesWithFx(tickersOrHoldings) {
+async function fetchPricesWithFx(tickersOrHoldings, { displayCurrency } = {}) {
   const [prices, fx] = await Promise.all([
-    fetchPrices(tickersOrHoldings),
+    fetchPrices(tickersOrHoldings, { displayCurrency }),
     fetchFxRates(),
   ])
   return { ...prices, __USDCAD: fx.USDCAD ?? null }
 }
 
 function displayCurrencyOf(db) {
-  return normalizeCurrency(db?.settings?.displayCurrency) || 'CAD'
+  return resolveDisplayCurrency(db?.settings?.displayCurrency)
 }
 
 // --- Goals ---
@@ -593,15 +600,15 @@ function sourceValue(db, link, priceMap) {
     return acct ? acct.balance : 0
   }
   if (link.sourceType === 'holdingsAccountType') {
-    const home = normalizeCurrency(db.settings?.displayCurrency) || 'CAD'
+    const home = resolveDisplayCurrency(db.settings?.displayCurrency)
     const usdCad = priceMap?.__USDCAD ?? null
     return (db.holdings ?? [])
       .filter(h => accountTypeOf(h) === link.sourceId)
       .reduce((s, h) => {
-        const listing = resolveListing(h)
+        const listing = resolveListing({ ...h, displayCurrency: home })
         const quoteCurrency = quoteCurrencyOf(listing) || home
         const costCurrency = costCurrencyOf(h, { displayCurrency: home })
-        const nativePrice = priceOfHolding(priceMap, h)
+        const nativePrice = priceOfHolding(priceMap, h, home)
         const market = nativePrice !== null
           ? toDisplay(nativePrice * h.shares, quoteCurrency, home, usdCad)
           : null
@@ -695,7 +702,7 @@ function validateGoalLinks(db, links, excludeGoalId = null) {
 
 app.get('/api/goals', async (req, res) => {
   const db = readDb()
-  const priceMap = await fetchPricesWithFx(holdingsForGoalLinks(db))
+  const priceMap = await fetchPricesWithFx(holdingsForGoalLinks(db), { displayCurrency: displayCurrencyOf(db) })
   const fin = buildMonthlyFinancials(db)
   const goals = (db.goals ?? []).map(g => {
     const { currentAmount, breakdown, isLinked } = computeGoalProgress(db, g, priceMap)
@@ -754,7 +761,7 @@ app.delete('/api/goals/:id', (req, res) => {
 app.get('/api/goal-sources', async (req, res) => {
   const db = readDb()
   const buckets = [...new Set((db.holdings ?? []).map(accountTypeOf))]
-  const priceMap = await fetchPricesWithFx(db.holdings ?? [])
+  const priceMap = await fetchPricesWithFx(db.holdings ?? [], { displayCurrency: displayCurrencyOf(db) })
 
   const build = (link) => {
     const allocatedPct = allocatedPercent(db, link.sourceType, link.sourceId)
@@ -809,7 +816,7 @@ app.put('/api/settings', (req, res) => {
   const previousCash = db.settings?.cashBalance ?? 0
   db.settings = { ...db.settings, ...req.body }
   if (req.body.displayCurrency !== undefined) {
-    db.settings.displayCurrency = normalizeCurrency(req.body.displayCurrency) || 'CAD'
+    db.settings.displayCurrency = resolveDisplayCurrency(req.body.displayCurrency)
   }
 
   // Saving a key is the one moment the cached model list is certainly wrong: it was built without
@@ -1607,7 +1614,7 @@ app.post('/api/llm/goal-analysis', async (req, res) => {
   if (!rawGoal) return res.status(404).json({ error: 'Goal not found' })
 
   const fin = buildMonthlyFinancials(db)
-  const priceMap = await fetchPricesWithFx(db.holdings ?? [])
+  const priceMap = await fetchPricesWithFx(db.holdings ?? [], { displayCurrency: displayCurrencyOf(db) })
   const goal = goalWithProgress(db, rawGoal, priceMap)
   const fundingLine = goalFundingLine(goal.breakdown)
 
@@ -1952,7 +1959,7 @@ function saveDashboardInsights(record) {
 // the insight route and the chat route MUST see the same figures — a chat reply computed from a
 // different cash basis than the insights above it is the exact failure the triad exists to prevent.
 async function dashboardAnalysisInputs(db, insightScope) {
-  const priceMap = await fetchPricesWithFx(db.holdings ?? [])
+  const priceMap = await fetchPricesWithFx(db.holdings ?? [], { displayCurrency: displayCurrencyOf(db) })
   const today = new Date().toISOString().slice(0, 10)
   return {
     netWorthHistory: db.netWorthHistory ?? [],
@@ -2217,7 +2224,7 @@ app.post('/api/llm/goal-chat', async (req, res) => {
   if (!rawGoal) return res.status(404).json({ error: 'Goal not found' })
 
   const fin = buildMonthlyFinancials(db)
-  const priceMap = await fetchPricesWithFx(db.holdings ?? [])
+  const priceMap = await fetchPricesWithFx(db.holdings ?? [], { displayCurrency: displayCurrencyOf(db) })
   const goal = goalWithProgress(db, rawGoal, priceMap)
   const fundingLine = goalFundingLine(goal.breakdown)
 
@@ -2691,15 +2698,16 @@ Return valid JSON only, no markdown.`,
 // a ticker Yahoo has no monthly series for.
 async function priceLookupForHoldings(db) {
   const quotes = (db.holdings ?? []).filter(h => h?.ticker)
+  const displayCurrency = displayCurrencyOf(db)
   const [live, historical, fx] = await Promise.all([
-    fetchPrices(quotes),
-    fetchHistoricalPrices(quotes),
+    fetchPrices(quotes, { displayCurrency }),
+    fetchHistoricalPrices(quotes, { displayCurrency }),
     fetchFxRates(),
   ])
   return {
     priceOf: historicalPriceLookup(historical, live),
     usdCad: fx.USDCAD ?? null,
-    displayCurrency: displayCurrencyOf(db),
+    displayCurrency,
   }
 }
 
@@ -2797,7 +2805,7 @@ function migrateCashModel(db) {
 app.post('/api/net-worth-snapshot', async (req, res) => {
   const db = readDb()
   const date = new Date().toISOString().slice(0, 10)
-  const prices = await fetchPricesWithFx(db.holdings ?? [])
+  const prices = await fetchPricesWithFx(db.holdings ?? [], { displayCurrency: displayCurrencyOf(db) })
   const { market, cost, basis } = valueHoldingsAsOf(
     db.holdings ?? [],
     date,

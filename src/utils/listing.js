@@ -38,13 +38,17 @@ export function listingFromAccountType(accountType) {
 
 /**
  * Resolve the listing used for Yahoo lookups.
- * Explicit holding/position listing wins, then statement currency, then account-type hint.
+ * Explicit holding/position listing wins, then statement currency, then account-type hint,
+ * then the app's home currency (USD books → US quotes; CAD books → TSX-first).
  */
-export function resolveListing({ listing, accountType, statementCurrency } = {}) {
+export function resolveListing({
+  listing, accountType, statementCurrency, displayCurrency,
+} = {}) {
   return (
     normalizeListing(listing)
     || listingFromCurrency(statementCurrency)
     || listingFromAccountType(accountType)
+    || listingFromCurrency(displayCurrency)
     || null
   )
 }
@@ -58,19 +62,19 @@ export function priceLookupKey(ticker, listing) {
 }
 
 /** Read a live price for a holding from a fetchPrices map. */
-export function priceOfHolding(prices, holding) {
+export function priceOfHolding(prices, holding, displayCurrency) {
   const ticker = String(holding?.ticker || '').trim().toUpperCase()
   if (!ticker) return null
-  const listing = resolveListing(holding)
+  const listing = resolveListing({ ...holding, displayCurrency })
   const key = priceLookupKey(ticker, listing)
   const price = prices?.[key] ?? prices?.[ticker]
   return price ?? null
 }
 
 /** Encode a holding for `/api/prices?tickers=`. */
-export function priceQueryToken(holding) {
+export function priceQueryToken(holding, displayCurrency) {
   const ticker = String(holding?.ticker || '').trim().toUpperCase()
   if (!ticker) return null
-  const listing = resolveListing(holding)
+  const listing = resolveListing({ ...holding, displayCurrency })
   return listing ? `${ticker}:${listing}` : ticker
 }

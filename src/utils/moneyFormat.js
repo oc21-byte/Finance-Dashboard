@@ -1,4 +1,4 @@
-import { normalizeCurrency } from './displayCurrency.js'
+import { DEFAULT_DISPLAY_CURRENCY, normalizeCurrency, resolveDisplayCurrency } from './displayCurrency.js'
 
 const formatters = {
   CAD: new Intl.NumberFormat('en-CA', {
@@ -31,20 +31,20 @@ const exactFormatters = {
 }
 
 /** Whole dollars for headlines. */
-export function formatMoney(value, currency = 'CAD') {
+export function formatMoney(value, currency = DEFAULT_DISPLAY_CURRENCY) {
   const n = Math.round(Math.abs(Number(value) || 0))
-  const code = normalizeCurrency(currency) || 'CAD'
+  const code = resolveDisplayCurrency(currency)
   return formatters[code].format(n)
 }
 
 /** Two-decimal money for per-share prices. */
-export function formatMoneyExact(value, currency = 'CAD') {
+export function formatMoneyExact(value, currency = DEFAULT_DISPLAY_CURRENCY) {
   const n = Number(value)
-  if (!Number.isFinite(n)) return exactFormatters[normalizeCurrency(currency) || 'CAD'].format(0)
-  const code = normalizeCurrency(currency) || 'CAD'
+  if (!Number.isFinite(n)) return exactFormatters[resolveDisplayCurrency(currency)].format(0)
+  const code = resolveDisplayCurrency(currency)
   return exactFormatters[code].format(n)
 }
 
-export function currencyLabel(currency = 'CAD') {
-  return normalizeCurrency(currency) === 'USD' ? 'USD' : 'CAD'
+export function currencyLabel(currency = DEFAULT_DISPLAY_CURRENCY) {
+  return resolveDisplayCurrency(currency)
 }

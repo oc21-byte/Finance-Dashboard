@@ -4,6 +4,7 @@ import StatementBalances from '../components/settings/StatementBalances.jsx'
 import InfoTip from '../components/dashboard/InfoTip.jsx'
 import { api } from '../api/client.js'
 import { DEFAULT_VISION_MODEL, withSelected } from '../utils/modelCatalog.js'
+import { resolveDisplayCurrency } from '../utils/displayCurrency.js'
 
 const inputClass = 'w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
 const numberInputClass = 'w-28 border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm text-right tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500'
@@ -412,9 +413,9 @@ export default function Settings() {
                 <button
                   key={value}
                   onClick={() => saveDisplayCurrency.mutate(value)}
-                  aria-pressed={(settings?.displayCurrency ?? 'CAD') === value}
+                  aria-pressed={resolveDisplayCurrency(settings?.displayCurrency) === value}
                   className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
-                    (settings?.displayCurrency ?? 'CAD') === value
+                    resolveDisplayCurrency(settings?.displayCurrency) === value
                       ? 'bg-blue-600 text-white'
                       : 'text-gray-500 hover:text-gray-700'
                   }`}

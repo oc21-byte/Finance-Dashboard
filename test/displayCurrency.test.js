@@ -1,7 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  DEFAULT_DISPLAY_CURRENCY,
   normalizeCurrency,
+  resolveDisplayCurrency,
   quoteCurrencyOf,
   toDisplay,
   convertHoldingMoney,
@@ -22,6 +24,13 @@ test('toDisplay converts USD to CAD and back', () => {
 test('toDisplay returns null when a cross-currency conversion has no rate', () => {
   assert.equal(toDisplay(100, 'USD', 'CAD', null), null)
   assert.equal(toDisplay(100, 'USD', 'CAD', 0), null)
+})
+
+test('home currency defaults to USD', () => {
+  assert.equal(DEFAULT_DISPLAY_CURRENCY, 'USD')
+  assert.equal(resolveDisplayCurrency(undefined), 'USD')
+  assert.equal(resolveDisplayCurrency('bogus'), 'USD')
+  assert.equal(resolveDisplayCurrency('CAD'), 'CAD')
 })
 
 test('quote currency follows listing', () => {

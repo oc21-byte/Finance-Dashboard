@@ -16,7 +16,7 @@ import {
   isInvestmentTransfer,
 } from '../constants/financeRules.js'
 import { accountTypeOf } from './investmentsModel.js'
-import { convertHoldingMoney, normalizeCurrency } from './displayCurrency.js'
+import { convertHoldingMoney, DEFAULT_DISPLAY_CURRENCY, resolveDisplayCurrency } from './displayCurrency.js'
 
 const r2 = n => Math.round((n ?? 0) * 100) / 100
 
@@ -47,9 +47,9 @@ export const MATERIAL_SHARE = 0.01
 export function portfolioValueOf(
   holdings = [],
   prices = {},
-  { displayCurrency = 'CAD', usdCad = null } = {},
+  { displayCurrency = DEFAULT_DISPLAY_CURRENCY, usdCad = null } = {},
 ) {
-  const home = normalizeCurrency(displayCurrency) || 'CAD'
+  const home = resolveDisplayCurrency(displayCurrency)
   return r2(holdings.reduce((sum, h) => {
     const { value } = convertHoldingMoney(h, { prices, displayCurrency: home, usdCad })
     return sum + value
@@ -60,9 +60,9 @@ export function portfolioValueOf(
 export function holdingsByAccountType(
   holdings = [],
   prices = {},
-  { displayCurrency = 'CAD', usdCad = null } = {},
+  { displayCurrency = DEFAULT_DISPLAY_CURRENCY, usdCad = null } = {},
 ) {
-  const home = normalizeCurrency(displayCurrency) || 'CAD'
+  const home = resolveDisplayCurrency(displayCurrency)
   const byType = {}
   for (const h of holdings) {
     const type = accountTypeOf(h)
@@ -429,7 +429,7 @@ export function expectedBalanceAt({ opening = null, statementBalances = [], bank
  */
 export function buildComposition({
   cash = 0, savings = 0, holdings = [], prices = {},
-  displayCurrency = 'CAD', usdCad = null,
+  displayCurrency = DEFAULT_DISPLAY_CURRENCY, usdCad = null,
 } = {}) {
   const rows = [
     { key: 'cash', name: 'Cash', bucket: 'cash', value: Math.max(0, r2(cash)) },

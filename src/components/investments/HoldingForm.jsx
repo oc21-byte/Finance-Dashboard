@@ -13,7 +13,7 @@ export const DEFAULT_HOLDING_FORM = {
   purchasePrice: '',
   purchaseDate: dayjs().format('YYYY-MM-DD'),
   accountType: 'Non-Registered',
-  // Empty = infer from account type at save time (TFSA→CA, Roth IRA→US, else Canadian-first).
+  // Empty = infer from account type / home currency at save time (TFSA→CA, Roth IRA→US, USD home→US).
   listing: '',
 }
 
@@ -71,7 +71,7 @@ export default function HoldingForm({ form, onChange, onSubmit, saving, accountT
         <div>
           <label className="mb-1 block text-xs text-gray-500">Market</label>
           <select {...field('listing')} className={inputClass}>
-            <option value="">Auto (from account)</option>
+            <option value="">Auto (account / home currency)</option>
             <option value="CA">Canada (TSX)</option>
             <option value="US">United States</option>
           </select>

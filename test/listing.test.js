@@ -37,6 +37,17 @@ test('explicit listing wins over account type and statement currency', () => {
   }), 'US')
 })
 
+test('home currency supplies a listing when the holding has none', () => {
+  assert.equal(resolveListing({
+    accountType: 'Non-Registered',
+    displayCurrency: 'USD',
+  }), 'US')
+  assert.equal(resolveListing({
+    accountType: 'Non-Registered',
+    displayCurrency: 'CAD',
+  }), 'CA')
+})
+
 test('US listing prefers the bare Yahoo symbol so Harbor TEC is not mistaken for TEC.TO', () => {
   assert.deepEqual(yahooSymbolCandidates('TEC', { listing: 'US' }), ['TEC', 'TEC.TO'])
   assert.deepEqual(yahooSymbolCandidates('HURA', { listing: 'CA' }), ['HURA.TO', 'HURA'])
@@ -53,4 +64,6 @@ test('price map keys keep CA and US quotes for the same ticker apart', () => {
 test('price query tokens carry the listing for /api/prices', () => {
   assert.equal(priceQueryToken({ ticker: 'XEQT', listing: 'CA' }), 'XEQT:CA')
   assert.equal(priceQueryToken({ ticker: 'VOO', accountType: 'Roth IRA' }), 'VOO:US')
+  assert.equal(priceQueryToken({ ticker: 'NVDA' }, 'USD'), 'NVDA:US')
+  assert.equal(priceQueryToken({ ticker: 'XEQT' }, 'CAD'), 'XEQT:CA')
 })

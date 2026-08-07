@@ -7,6 +7,7 @@ import {
   buildChangeAttribution, accountCount, trailingRowCount, staleInsightReason,
 } from '../utils/liquidNetWorth.js'
 import { priceQueryToken } from '../utils/listing.js'
+import { resolveDisplayCurrency } from '../utils/displayCurrency.js'
 import DashboardHeader from '../components/dashboard/DashboardHeader.jsx'
 import LiquidNetWorthKpis from '../components/dashboard/LiquidNetWorthKpis.jsx'
 import ChangeAttributionCard from '../components/dashboard/ChangeAttributionCard.jsx'
@@ -46,13 +47,13 @@ export default function Dashboard({ onTabChange, demoMode }) {
     queryFn: api.holdings.list,
   })
 
-  const priceTokens = [...new Set(holdings.map(priceQueryToken).filter(Boolean))]
-
   const { data: settings } = useQuery({
     queryKey: ['settings'],
     queryFn: api.settings.get,
   })
-  const displayCurrency = settings?.displayCurrency === 'USD' ? 'USD' : 'CAD'
+  const displayCurrency = resolveDisplayCurrency(settings?.displayCurrency)
+
+  const priceTokens = [...new Set(holdings.map(h => priceQueryToken(h, displayCurrency)).filter(Boolean))]
 
   const { data: pricePayload = { prices: {}, fx: {} }, isFetching: pricesFetching, dataUpdatedAt: pricesUpdatedAt } = useQuery({
     queryKey: ['prices', priceTokens],

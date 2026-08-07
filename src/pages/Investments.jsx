@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client.js'
 import { buildInvestmentsModel, filterByAccount, sortHoldings } from '../utils/investmentsModel.js'
 import { priceQueryToken } from '../utils/listing.js'
+import { resolveDisplayCurrency } from '../utils/displayCurrency.js'
 import { setMoneyCurrency } from '../components/investments/format.js'
 import InvestmentsHeader from '../components/investments/InvestmentsHeader.jsx'
 import InvestmentKpiRow from '../components/investments/InvestmentKpiRow.jsx'
@@ -46,16 +47,16 @@ export default function Investments({ demoMode }) {
     queryFn: api.savingsAccounts.list,
   })
 
-  const priceTokens = useMemo(
-    () => [...new Set(holdings.map(priceQueryToken).filter(Boolean))],
-    [holdings],
-  )
-
   const { data: settings } = useQuery({
     queryKey: ['settings'],
     queryFn: api.settings.get,
   })
-  const displayCurrency = settings?.displayCurrency === 'USD' ? 'USD' : 'CAD'
+  const displayCurrency = resolveDisplayCurrency(settings?.displayCurrency)
+
+  const priceTokens = useMemo(
+    () => [...new Set(holdings.map(h => priceQueryToken(h, displayCurrency)).filter(Boolean))],
+    [holdings, displayCurrency],
+  )
 
   useEffect(() => {
     setMoneyCurrency(displayCurrency)
@@ -262,7 +263,7 @@ export default function Investments({ demoMode }) {
       <InvestmentsHeader
         holdingCount={holdings.length}
         savingsCount={savingsAccounts.length}
-        pricesUpdatedAt={tickerList.length ? pricesUpdatedAt : null}
+        pricesUpdatedAt={priceTokens.length ? pricesUpdatedAt : null}
         pricesFetching={pricesFetching}
         unpricedCount={model.unpricedCount}
         onRefreshPrices={() => refetchPrices()}
