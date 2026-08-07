@@ -10,18 +10,19 @@ Built with React + Vite (frontend) and Express (backend), with AI features (Clau
 
 | Tab | What it does |
 |---|---|
-| **Dashboard** | Liquid net worth over time, where the change came from, composition, goal progress, AI insights |
-| **Finances** | Import bank statements (CSV or PDF), manage transactions, track income vs expenses |
+| **Dashboard** | Liquid net worth over time, where the change came from, composition, goal progress, statement reconciliation, AI insights |
+| **Finances** | Import bank statements (CSV, Excel, or PDF), manage transactions, track income vs expenses |
 | **Spend Analyzer** | Credit card spending by category and merchant, Spend Style, Financial Pace, guided insights, exact-data chat, AI recategorization |
-| **Budget** | Per-category spending caps, savings targets, AI-powered Budget Builder |
-| **Investments** | Holdings tracker with live prices (Yahoo Finance), purchase lots, savings accounts |
-| **Goals** | Savings goals with emergency fund calculator, linked accounts, growth projections |
+| **Budget** | Per-category spending caps, savings and goal targets, AI-powered Budget Builder, plan-health insights |
+| **Investments** | Holdings tracker with live prices (Yahoo Finance), purchase lots, allocation and weight donuts, savings accounts, PDF account-statement import |
+| **Goals** | Goal cards with progress rings and a detail panel, emergency fund calculator, linked accounts, growth projections |
+| **Settings** | AI provider and key, statement extraction model, income and rate defaults, statement closing balances, upload history, saved CSV sources |
 
 ---
 
 ## Requirements
 
-- [Node.js](https://nodejs.org/) v18 or later
+- [Node.js](https://nodejs.org/) v20.19+ or v22.12+ (required by Vite 8 — older versions, including v18, will fail to start the dev server)
 - npm (comes with Node.js)
 - A Claude (Anthropic) or OpenAI API key — needed for AI features (PDF parsing, categorization, insights, budget generation). Basic tracking works without one.
 
@@ -42,7 +43,8 @@ cd finance-dashboard
 npm install
 ```
 
-Most packages come from the npm registry. One — `xlsx`, used to read `.xlsx` statements — is fetched
+Most packages come from the npm registry. One — `xlsx`, used to read Excel statements (`.xlsx`,
+`.xlsm`, `.xlsb`, `.xls`) — is fetched
 from `cdn.sheetjs.com`, because SheetJS publishes its maintained builds there rather than to npm. If
 you're on a network that blocks it, `npm install` will report that it can't reach the host.
 
@@ -157,15 +159,37 @@ A demo mode ships with mock data so you can explore the app without entering rea
 finance-dashboard/
 ├── src/              # React frontend
 │   ├── pages/        # Dashboard, Finances, SpendAnalyzer, Budget, Investments, Goals, Settings
-│   ├── components/   # Shared UI components
+│   ├── components/   # Shared UI, plus a directory per tab (dashboard/, budget/, goals/, …)
+│   ├── utils/        # Visual math and chart geometry — no chart library is used
+│   ├── constants/    # Categories and bank-flow rules
 │   └── api/          # API client (all backend calls go through here)
 ├── server/
-│   ├── index.js      # Express backend + all API routes
-│   └── config.js     # Server config (DEMO_MODE flag)
+│   ├── index.js      # Express backend + all API routes and external calls
+│   ├── config.js     # Server config (DEMO_MODE flag)
+│   ├── *Analysis.js  # Deterministic insight math (spend, finance, dashboard, budget)
+│   ├── *InsightGeneration.js / *Chat.js   # AI wording and follow-up chat, one pair per tab
+│   └── netWorthHistory.js                 # Liquid-net-worth history
+├── test/             # Node test-runner suites (npm test)
 ├── docs/
-│   ├── USER_GUIDE.md     # End-user feature guide
-│   └── STARTUP_GUIDE.md  # First-time setup for non-technical users
+│   ├── USER_GUIDE.md     # End-user feature guide (PDF alongside)
+│   ├── STARTUP_GUIDE.md  # First-time setup for non-technical users (PDF alongside)
+│   └── adr/              # Architecture decision records
 ├── data/
 │   └── db.json       # Your local data (git-ignored)
+├── AGENTS.md         # Architecture rules and code map for contributors
 └── package.json
 ```
+
+Numbers are calculated locally and only worded by the AI — deterministic insight math lives in
+`server/*Analysis.js`, never in the prompt. See [AGENTS.md](AGENTS.md) for the full architecture
+rules and code map.
+
+---
+
+## Running the tests
+
+```bash
+npm test
+```
+
+Runs the suites in `test/` with the built-in Node test runner. No extra dependencies or config.
