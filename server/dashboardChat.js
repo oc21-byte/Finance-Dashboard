@@ -3,6 +3,7 @@ import { formatUsd, normalizeUsdText } from './currencyFormatting.js'
 import { createChatBinding } from './chatBinding.js'
 import { stripJsonFence, validatePlainText } from './modelText.js'
 import { BUCKET_LABELS } from '../src/utils/liquidNetWorth.js'
+import { advisorRole, financeSystemPrompt } from './appKnowledge.js'
 
 // The balance-side allowlist. Deliberately NOT the bank one from `financeChat.js` or the card one
 // from `spendChat.js`: this tab has no rows to slice. It has a small, fixed set of computed figures,
@@ -373,11 +374,11 @@ function advicePrompt(context) {
     })),
   }
   return {
-    system: `You are a practical personal finance assistant answering an advisory question about a stored Dashboard result.
+    system: financeSystemPrompt(advisorRole('Dashboard'), {
+      extra: `${JSON.stringify(source, null, 2)}
 
-${JSON.stringify(source, null, 2)}
-
-Use only the supplied facts. Do not perform arithmetic or invent causes, intentions, transactions, budgets or amounts. Liquid net worth counts cash, savings and investment accounts only — never call it net worth and never imply it covers property, vehicles, private shares or debts. Market movement is the change in unrealised gain, not a return on contributions. Unexplained cash is a bookkeeping discrepancy to reconcile, not spending. Be constructive and non-shaming, but do not minimize a thin runway or a goal that is off pace. Answer in 2–4 concise sentences, plain text only. State which supplied period your advice refers to when relevant.`,
+Use only the supplied facts. Do not perform arithmetic or invent causes, intentions, transactions, budgets or amounts. Unexplained cash is a bookkeeping discrepancy to reconcile, not spending. Be constructive and non-shaming, but do not minimize a thin runway or a goal that is off pace. Answer in 2–4 concise sentences, plain text only. State which supplied period your advice refers to when relevant.`,
+    }),
     maxTokens: 512,
   }
 }

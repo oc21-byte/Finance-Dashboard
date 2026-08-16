@@ -4,6 +4,7 @@ import { stripJsonFence, validatePlainText } from './modelText.js'
 import { matchesFinanceScope } from './financeAnalysis.js'
 import { payeeOf, accountOf } from '../src/utils/financeAggregations.js'
 import { bankFlowOf } from '../src/constants/financeRules.js'
+import { advisorRole, financeSystemPrompt } from './appKnowledge.js'
 
 // The bank-side allowlist. Deliberately NOT the card-side one from `spendChat.js`: there are no
 // merchants, cards or categories on this ledger, and accepting those names would let the classifier
@@ -506,11 +507,11 @@ function advicePrompt(context) {
     })),
   }
   return {
-    system: `You are a practical personal finance assistant answering an advisory question about a stored Finances result.
+    system: financeSystemPrompt(advisorRole('Finances'), {
+      extra: `${JSON.stringify(source, null, 2)}
 
-${JSON.stringify(source, null, 2)}
-
-Use only the supplied facts. Do not perform arithmetic or invent causes, intentions, transactions, budgets or amounts. Money moved to savings or investments is allocation, not spending — never describe it as an expense. Be constructive and non-shaming, but do not minimize Over Pace or other financial strain. Answer in 2–4 concise sentences, plain text only. State which supplied period your advice refers to when relevant.`,
+Use only the supplied facts. Do not perform arithmetic or invent causes, intentions, transactions, budgets or amounts. Be constructive and non-shaming, but do not minimize Over Pace or other financial strain. Answer in 2–4 concise sentences, plain text only. State which supplied period your advice refers to when relevant.`,
+    }),
     maxTokens: 512,
   }
 }

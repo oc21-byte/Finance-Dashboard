@@ -3,6 +3,10 @@
 This context describes the personal-finance language shared by the dashboard, its insights, and
 its user-facing guidance.
 
+`server/appKnowledge.js` is the prompt-side condensation of this file: the distinctions below that
+a model gets wrong by default are restated there as `VOCABULARY` and reach every AI surface. This
+file stays the fuller source of truth — when a definition changes here, change it there too.
+
 ## Language
 
 **Bank Transaction**:

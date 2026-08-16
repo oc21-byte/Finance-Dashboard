@@ -1,5 +1,6 @@
 import { formatUsd, normalizeUsdText } from './currencyFormatting.js'
 import { stripJsonFence, validateSummary } from './modelText.js'
+import { COPYWRITER_ROLE, financeSystemPrompt } from './appKnowledge.js'
 
 const EXPLORE_OPTIONS = [
   {
@@ -117,7 +118,7 @@ export function normalizeSpendInsightRecord(record) {
 export function createSpendInsightGeneration({ analysis, period, periodLabel = null, scope = null }) {
   const facts = promptFacts(analysis)
   const prompt = {
-    system: `You write concise copy for a personal finance dashboard. The facts, classifications, scores and arithmetic are already final. Never recalculate, alter or contradict them. Respond with valid JSON only.`,
+    system: financeSystemPrompt(COPYWRITER_ROLE),
     user: `Write the two short summaries displayed beneath a user's deterministic Spend Style and Financial Pace.
 
 SOURCE FACTS — use only these values:
@@ -131,7 +132,6 @@ Writing rules:
 - Plain text only: no markdown, headings, bullets or emoji.
 - Sound positive, polished and human, but do not flatter or minimize a financial problem.
 - Treat Spend Style as a description of recent behaviour, never a permanent personality or psychological diagnosis.
-- Never use shaming labels such as reckless, irresponsible, bad with money or impulsive.
 - Never call the distribution healthy or unhealthy.
 - Do not invent causes, intentions, budgets, transactions, amounts or recommendations unsupported by the source facts.
 - The profile summary should explain the assigned style using its evidence.
