@@ -233,6 +233,12 @@ so judging the whole window against Q3 reports a tie (every bar solid, nothing m
 "reach for X" line, because "Discover it pays 5% on Transport" is true in one quarter and false in
 the next.
 
+`buildCandidates` ranks cards you do NOT hold on `net` — the yearly gain after the annual fee —
+never on the headline rate, and it leaves the losers in the list. A card that would cost you money
+is as useful to know about as one that would pay, and dropping them would make the list read as an
+endorsement. Everything it returns is annualized, so it carries the same short-window caution the
+projection does: the caller suppresses the figures rather than printing a ranking built on a week.
+
 `rotatingUsage` answers the question a long window otherwise buries: what each quarter's categories
 were, how much eligible spend landed on the card, and how much fitted under a cap that reset four
 times. Its `cap` is prorated to the months of that quarter the window actually covers — measuring a

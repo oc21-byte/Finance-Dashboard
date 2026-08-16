@@ -13,6 +13,7 @@ Built with React + Vite (frontend) and Express (backend), with AI features (Clau
 | **Dashboard** | Liquid net worth over time, where the change came from, composition, goal progress, statement reconciliation, AI insights |
 | **Finances** | Import bank statements (CSV, Excel, or PDF), manage transactions, track income vs expenses |
 | **Spend Analyzer** | Credit card spending by category and merchant, Spend Style, Financial Pace, guided insights, exact-data chat, AI recategorization |
+| **Spend Analyzer → Rewards** | What your cards earned on the spending on screen, the best card per category, rotating-quarter calendars, a spending audit of where money actually went, and a ranked comparison of cards you don't hold |
 | **Budget** | Per-category spending caps, savings and goal targets, AI-powered Budget Builder, plan-health insights |
 | **Investments** | Holdings tracker with live prices (Yahoo Finance), purchase lots, allocation and weight donuts, savings accounts, PDF account-statement import |
 | **Goals** | Goal cards with progress rings and a detail panel, emergency fund calculator, linked accounts, growth projections |

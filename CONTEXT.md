@@ -19,6 +19,60 @@ Money returned on a credit card through cashback, a refund, rebate, or another c
 what is owed and is not spending.
 _Avoid_: Card income, negative spending
 
+**Estimated Earned**:
+What a card's published rates would have paid on the spending in the window on screen, scored month
+by month. An observation about a period, never annualized, and always an estimate: it comes from
+published rates, not from what an issuer actually credited.
+_Avoid_: Cashback, rewards earned, cash back received
+
+**Card Credit** is deliberately not the same thing, and the two are never added together. A Card
+Credit is cashback already *redeemed* onto a statement; Estimated Earned is what the spending
+*generated*. Counting both would count one dollar twice, so nothing on the Rewards view reads
+`creditKind` rows at all.
+
+**Optimal**:
+What the same window's spending would have earned with every category on the best card held. A
+comparison, over the same months and the same rows as Estimated Earned.
+_Avoid_: Potential earnings, maximum cashback
+
+**Left Behind**:
+The distance between Estimated Earned and Optimal — money that a different card choice would have
+earned, on spending that already happened. It counts only spend on cards that can be scored; money
+on an unlinked card has nowhere it could have been rerouted to.
+_Avoid_: Lost money, wasted rewards, missed cashback
+
+**Yearly Projection**:
+A forward estimate: average monthly spend per category at today's rates, times twelve. The only
+rewards figure that extrapolates, and the only one a short window makes unreliable.
+_Avoid_: Annual earnings, yearly cashback
+
+**Wallet**:
+The link between a card name on your statements and the card product it actually is. The statement
+name stays what it always was; the wallet only says which product it refers to.
+_Avoid_: Card list, accounts
+
+**Bonus Category**:
+A category a card pays more than its base rate on. When a bonus covers only part of a category — gas
+within Transport, drugstores within Health — the rate is marked as an over-estimate rather than
+being presented as covering the whole category.
+_Avoid_: Reward category, multiplier
+
+**Rotating Category**:
+A bonus category that changes each quarter and applies only to that quarter. Which card is best for
+a category is therefore an answer about a month, not about a window: the same card can be the right
+choice in one quarter and the wrong one in the next.
+_Avoid_: Bonus category (unqualified), quarterly reward
+
+**Cap**:
+A limit on the *spending* a bonus rate applies to, not on the reward paid. Spending past it earns
+the same card's base rate. A quarterly cap is shared across every category that quarter covers.
+_Avoid_: Reward limit, maximum cashback
+
+**Correction**:
+A rate a person has told the app is wrong, stored separately from the shipped card catalog so that
+updating the catalog never overwrites it. Shown as theirs, never as published.
+_Avoid_: Override, custom rate
+
 **Spend Style**:
 A recent-behaviour profile that describes recurring patterns in a person's card purchases without
 claiming a permanent personality or psychological diagnosis.
