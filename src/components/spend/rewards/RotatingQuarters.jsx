@@ -1,7 +1,6 @@
 import {
-  quartersInRange, withQuarter, rotatingQuarterFor, calendarRangeOf,
+  quartersInRange, withQuarter, rotatingQuarterFor, calendarRangeOf, cardById,
 } from '../../../utils/rewardsModel.js'
-import { catalogCard } from '../../../constants/cardCatalog.js'
 import { CATEGORY_COLORS } from '../../../constants/categories.js'
 import { dollars, rate as fmtRate } from './format.js'
 
@@ -30,6 +29,7 @@ export default function RotatingQuarters({
   range,
   currentQuarter,
   categories = [],
+  custom = {},
   demoMode = false,
   onEntryChange,
 }) {
@@ -53,7 +53,7 @@ export default function RotatingQuarters({
         // `withQuarter` on a missing entry would write back a wallet row with no `catalogId`,
         // silently unlinking the card it was meant to annotate.
         if (!entry) return null
-        const catalog = catalogCard(entry.catalogId)
+        const catalog = cardById(entry.catalogId, custom)
         const span = calendarRangeOf(catalog)
         const recorded = entry.quarters ?? {}
         // A category recorded in an earlier quarter stays offered even if this window's filters

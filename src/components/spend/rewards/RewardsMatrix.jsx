@@ -1,6 +1,5 @@
 import { CATEGORY_COLORS } from '../../../constants/categories.js'
-import { catalogCard } from '../../../constants/cardCatalog.js'
-import { withSlot, withoutSlotFor, withQuarter } from '../../../utils/rewardsModel.js'
+import { withSlot, withoutSlotFor, withQuarter, cardById } from '../../../utils/rewardsModel.js'
 import { issuerArt } from './cardArt.js'
 import { dollars, rate as fmtRate } from './format.js'
 
@@ -27,6 +26,7 @@ export default function RewardsMatrix({
   wallet = {},
   categoryColors = CATEGORY_COLORS,
   currentQuarter,
+  custom = {},
   demoMode = false,
   onEntryChange,
 }) {
@@ -52,7 +52,7 @@ export default function RewardsMatrix({
     // than from the resolved card, whose rates already have the current choice merged in: on a card
     // that both publishes rates and lets you choose one (Customized Cash pays 2% on grocery *and*
     // 3% on a category you pick), calling the cleared option "1% base" would understate it.
-    const published = catalogCard(card.id)?.rates?.[row.category]?.pct ?? card.base
+    const published = cardById(card.id, custom)?.rates?.[row.category]?.pct ?? card.base
 
     if (card.chooser) {
       const pcts = card.chooser.pcts ?? []

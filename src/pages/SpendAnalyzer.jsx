@@ -212,6 +212,19 @@ export default function SpendAnalyzer({ onTabChange, demoMode }) {
     cardRewardsMutation.mutate({ ...current, region })
   }
 
+  // Corrections and user-authored cards. Both sit beside `wallet` under the one settings key, and
+  // both are sent with the whole object for the same reason the wallet is: the server merges
+  // `settings` only at the top level.
+  function handleOverrides(overrides) {
+    const current = settings?.cardRewards ?? {}
+    cardRewardsMutation.mutate({ ...current, overrides })
+  }
+
+  function handleCustom(custom) {
+    const current = settings?.cardRewards ?? {}
+    cardRewardsMutation.mutate({ ...current, custom })
+  }
+
   const insightsMutation = useMutation({
     mutationFn: (period) => api.llm.spendInsights(period),
     onSuccess: () => {
@@ -748,6 +761,8 @@ export default function SpendAnalyzer({ onTabChange, demoMode }) {
           demoMode={demoMode}
           onLink={handleLinkCard}
           onRegionChange={handleRegionChange}
+          onOverrides={handleOverrides}
+          onCustom={handleCustom}
           saving={cardRewardsMutation.isPending}
           clearsPinned={clearsPinned}
         />

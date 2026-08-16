@@ -119,6 +119,10 @@ const DEFAULT_DB = {
       region: null,
       wallet: {},
       overrides: {},
+      // Cards the user authored, keyed by a `custom:`-prefixed id so they can never collide with a
+      // shipped catalog id. Deliberately not written into `cardCatalog.js`, which stays a static
+      // file replaced wholesale on every update.
+      custom: {},
     },
   },
 }

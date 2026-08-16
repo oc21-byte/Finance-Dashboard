@@ -7,6 +7,8 @@ import {
   topCatCategoryFor, bestFor, secondRateFor, earnedActual, earnedOptimal, projectAnnual,
   compareCandidate, buildRewardsModel, classifySources, linkKindOf, SHORT_WINDOW_MONTHS,
   withSlot, withoutSlotFor, withQuarter, buildCandidates, rotatingQuarterFor, calendarRangeOf,
+  auditByCategory, unknownQuartersIn, withOverride, withoutOverride, listOverrides,
+  normalizeCustomCard, cardById, allCards, newCustomId, CUSTOM_PREFIX,
 } from '../src/utils/rewardsModel.js'
 import { catalogCard, CARD_CATALOG } from '../src/constants/cardCatalog.js'
 
@@ -873,4 +875,233 @@ test('a rotating quarter beats a standing rate on the same category, but never a
   // And the quarter's own categories are there alongside it.
   assert.equal(q2.rates.Shopping.pct, 5)
   assert.equal(q2.rates.Grocery.pct, 5)
+})
+
+// ------------------------------------------------------------------ the spending audit
+
+test('the audit reads where money actually landed, and what the wrong card cost', () => {
+  // Grocery on the flat 2% card, when the 6% grocery card was sitting right there.
+  const txs = ledger([[400, 'Grocery', 'Active Cash']])
+  const range = rangeOf(txs)
+  const rows = auditByCategory(txs, ['Active Cash', 'Blue Cash'], wallet(), range)
+  const grocery = rows.find(r => r.category === 'Grocery')
+
+  assert.equal(grocery.spend, 400 * 6)
+  assert.equal(grocery.earned, round(400 * 0.02 * 6), 'what it actually paid')
+  assert.equal(grocery.optimal, round(400 * 0.06 * 6), 'what Blue Cash would have paid')
+  assert.equal(grocery.leftBehind, round(400 * 0.04 * 6))
+
+  // One slice, on the card the money really went to, and it was not the best one.
+  assert.equal(grocery.slices.length, 1)
+  assert.equal(grocery.slices[0].sourceName, 'Active Cash')
+  assert.equal(grocery.slices[0].share, 1)
+  assert.equal(grocery.slices[0].onBest, false)
+  assert.equal(grocery.best.card.short, 'Blue Cash Preferred')
+})
+
+test('spending already on the best card leaves nothing behind', () => {
+  const txs = ledger([[400, 'Grocery', 'Blue Cash']])
+  const rows = auditByCategory(txs, ['Active Cash', 'Blue Cash'], wallet(), rangeOf(txs))
+  const grocery = rows.find(r => r.category === 'Grocery')
+  assert.equal(grocery.leftBehind, 0)
+  assert.equal(grocery.earned, grocery.optimal)
+  assert.equal(grocery.slices[0].onBest, true)
+})
+
+test('a category split across cards keeps one slice per card, biggest first', () => {
+  const txs = [
+    ...ledger([[300, 'Grocery', 'Active Cash']]),
+    ...ledger([[100, 'Grocery', 'Blue Cash']]),
+  ]
+  const grocery = auditByCategory(txs, ['Active Cash', 'Blue Cash'], wallet(), rangeOf(txs))
+    .find(r => r.category === 'Grocery')
+
+  assert.deepEqual(grocery.slices.map(s => s.sourceName), ['Active Cash', 'Blue Cash'])
+  assert.equal(round(grocery.slices[0].share), 0.75)
+  assert.equal(grocery.slices[0].onBest, false)
+  assert.equal(grocery.slices[1].onBest, true, 'the part that was routed right is marked as such')
+  // Only the misrouted three quarters cost anything.
+  assert.equal(grocery.leftBehind, round(300 * 0.04 * 6))
+})
+
+test('a tie leaves nothing behind — no card was the wrong one', () => {
+  // Housing: neither card bonuses it, so both pay their base. Active Cash's 2% wins outright, so
+  // use a category where the rates are genuinely equal instead.
+  const txs = ledger([[100, 'Housing', 'Active Cash']])
+  const only = { wallet: { 'Active Cash': { catalogId: 'activeCash' } }, overrides: {} }
+  const row = auditByCategory(txs, ['Active Cash'], only, rangeOf(txs))
+    .find(r => r.category === 'Housing')
+  assert.equal(row.leftBehind, 0)
+  assert.equal(row.slices[0].onBest, true)
+})
+
+test('spend on an unlinked card is reported, never counted as money left behind', () => {
+  // The distinction the audit exists to keep: "you used the wrong card" and "you never told us what
+  // this card is" are different problems with different fixes.
+  const txs = [
+    ...ledger([[400, 'Grocery', 'Blue Cash']]),
+    ...ledger([[400, 'Grocery', 'Mystery']]),
+  ]
+  const rows = auditByCategory(txs, ['Blue Cash'], wallet(), rangeOf(txs))
+  const grocery = rows.find(r => r.category === 'Grocery')
+
+  assert.equal(grocery.spend, 800 * 6, 'all of it is spending')
+  assert.equal(grocery.unlinkedSpend, 400 * 6)
+  assert.equal(grocery.leftBehind, 0, 'the linked half was already on the best card')
+  assert.equal(grocery.slices.find(s => s.sourceName === 'Mystery').linked, false)
+})
+
+test('rows are ranked by what they cost, so the worst routing is first', () => {
+  const txs = [
+    ...ledger([[100, 'Grocery', 'Active Cash']]),        // 4 points behind on $100
+    ...ledger([[1000, 'Subscription', 'Active Cash']]),  // 4 points behind on $1,000
+  ]
+  const rows = auditByCategory(txs, ['Active Cash', 'Blue Cash'], wallet(), rangeOf(txs))
+  assert.deepEqual(rows.map(r => r.category), ['Subscription', 'Grocery'])
+  assert.ok(rows[0].leftBehind > rows[1].leftBehind)
+})
+
+test('the audit agrees with the headline figures it sits beneath', () => {
+  const txs = [
+    ...ledger([[400, 'Grocery', 'Active Cash']]),
+    ...ledger([[250, 'Food & Dining', 'Blue Cash']]),
+  ]
+  const range = rangeOf(txs)
+  const sources = ['Active Cash', 'Blue Cash']
+  const rows = auditByCategory(txs, sources, wallet(), range)
+  const sum = key => round(rows.reduce((total, r) => total + r[key], 0))
+
+  assert.equal(sum('earned'), earnedActual(txs, sources, wallet(), range).period)
+  assert.equal(sum('optimal'), earnedOptimal(txs, sources, wallet(), range).period)
+})
+
+test('an unknown rotating quarter is named, so the figures read as a floor', () => {
+  const txs = ledger([[300, 'Transport', 'Discover']])
+  const rewards = { wallet: { Discover: { catalogId: 'discoverIt' } }, overrides: {} }
+  // Feb–Jul 2026 is entirely inside the published calendar, so nothing is unknown.
+  assert.deepEqual(unknownQuartersIn(rangeOf(txs), ['Discover'], rewards), [])
+
+  // A window reaching past the calendar names the quarter and why.
+  const future = { months: ['2026-11'], monthCount: 1, to: '2026-11-30' }
+  const unknown = unknownQuartersIn(future, ['Discover'], rewards)
+  assert.equal(unknown.length, 1)
+  assert.equal(unknown[0].quarterKey, '2026-Q4')
+  assert.equal(unknown[0].reason, 'unpublished')
+})
+
+// ------------------------------------------------------------------ corrections and custom cards
+
+test('a correction beats the catalog, and survives replacing it', () => {
+  const overrides = withOverride({}, 'amexBcp', 'Grocery', { pct: 4 })
+  const card = resolveCard('Blue Cash', { catalogId: 'amexBcp' }, { overrides })
+  assert.equal(card.rates.Grocery.pct, 4, 'the user outranks what we ship')
+  assert.equal(card.rates.Grocery.corrected, true, 'and the grid marks it as theirs, not ours')
+  // Stored under the card id, entirely outside CARD_CATALOG — which is what makes a catalog
+  // update safe to ship.
+  assert.deepEqual(overrides, { amexBcp: { Grocery: { pct: 4 } } })
+})
+
+test('a correction can add a rate the card never had, and carry its own cap', () => {
+  const overrides = withOverride({}, 'activeCash', 'Transport', { pct: 5, capMo: 300 })
+  const card = resolveCard('Active Cash', { catalogId: 'activeCash' }, { overrides })
+  assert.equal(card.rates.Transport.pct, 5)
+  assert.equal(monthlyCapOf(card.rates.Transport), 300)
+})
+
+test('clearing a correction removes the card once its last one goes', () => {
+  let overrides = withOverride({}, 'amexBcp', 'Grocery', { pct: 4 })
+  overrides = withOverride(overrides, 'amexBcp', 'Transport', { pct: 3 })
+  assert.deepEqual(Object.keys(overrides.amexBcp).sort(), ['Grocery', 'Transport'])
+
+  overrides = withoutOverride(overrides, 'amexBcp', 'Grocery')
+  assert.deepEqual(Object.keys(overrides.amexBcp), ['Transport'])
+
+  overrides = withoutOverride(overrides, 'amexBcp', 'Transport')
+  assert.ok(!('amexBcp' in overrides), 'no empty husk left behind')
+})
+
+test('a nonsense correction is refused rather than stored', () => {
+  assert.deepEqual(withOverride({}, 'amexBcp', 'Grocery', { pct: 'abc' }), {})
+  assert.deepEqual(withOverride({}, 'amexBcp', 'Grocery', { pct: -1 }), {})
+  assert.deepEqual(withOverride({}, '', 'Grocery', { pct: 4 }), {})
+  assert.deepEqual(withOverride({}, 'amexBcp', '', { pct: 4 }), {})
+  // A zero is a real answer — "this card pays nothing here" — and is kept.
+  assert.deepEqual(withOverride({}, 'amexBcp', 'Grocery', { pct: 0 }), { amexBcp: { Grocery: { pct: 0 } } })
+})
+
+test('corrections list with the card they belong to, including one that has left the catalog', () => {
+  const overrides = withOverride(withOverride({}, 'amexBcp', 'Grocery', { pct: 4 }), 'goneInV2', 'Health', { pct: 9 })
+  const rows = listOverrides(overrides)
+  assert.equal(rows.length, 2)
+  const stale = rows.find(r => r.cardId === 'goneInV2')
+  assert.equal(stale.card, null, 'listed anyway, so a correction can always be found and cleared')
+  assert.equal(stale.short, 'goneInV2')
+})
+
+test('a custom card is scored exactly like a shipped one', () => {
+  const custom = {
+    'custom:1': { name: 'Local Credit Union Visa', issuer: 'CU', base: 1, rates: { Grocery: { pct: 4 } } },
+  }
+  const card = resolveCard('CU Visa', { catalogId: 'custom:1' }, { custom })
+  assert.equal(card.short, 'Local Credit Union Visa')
+  assert.equal(card.custom, true)
+  assert.equal(card.rates.Grocery.pct, 4)
+  assert.equal(bestFor([card], 'Grocery').rate, 4)
+})
+
+test('a custom id can never collide with a shipped one', () => {
+  assert.ok(newCustomId({}).startsWith(CUSTOM_PREFIX))
+  assert.equal(newCustomId({ 'custom:1': {}, 'custom:2': {} }), 'custom:3')
+  // No catalog id is prefixed, so the two namespaces cannot overlap however the catalog grows.
+  assert.ok(CARD_CATALOG.every(c => !c.id.startsWith(CUSTOM_PREFIX)))
+  // And a custom id the user has deleted resolves to null rather than falling through to a card.
+  assert.equal(cardById('custom:99', {}), null)
+})
+
+test('custom card input is coerced on the way in, never trusted', () => {
+  const card = normalizeCustomCard({
+    name: '  My Card  ', fee: '-40', base: 'abc', region: 'mars',
+    rates: {
+      Grocery: { pct: '3.5', capMo: '500' },
+      Income: { pct: 5 },            // not a rateable category
+      Health: { pct: 'nonsense' },   // not a number
+      Shopping: { pct: 2, capMo: -1 },
+    },
+  }, 'custom:1')
+
+  assert.equal(card.name, 'My Card')
+  assert.equal(card.fee, 0, 'a negative fee is not a fee')
+  assert.equal(card.base, 0)
+  assert.equal(card.region, 'us')
+  assert.deepEqual(Object.keys(card.rates).sort(), ['Grocery', 'Shopping'])
+  assert.equal(card.rates.Grocery.pct, 3.5)
+  assert.equal(card.rates.Grocery.capMo, 500)
+  assert.equal(card.rates.Shopping.capMo, undefined, 'a negative cap is dropped, not stored')
+})
+
+test('custom cards join the pickable list ahead of the catalog', () => {
+  const custom = { 'custom:1': { name: 'Mine' } }
+  const list = allCards(custom)
+  assert.equal(list[0].id, 'custom:1')
+  assert.equal(list.length, CARD_CATALOG.length + 1)
+  assert.deepEqual(allCards({}).map(c => c.id), CARD_CATALOG.map(c => c.id))
+})
+
+test('a custom card reaches the whole model, wallet through to earnings', () => {
+  const txs = ledger([[400, 'Grocery', 'CU Visa']])
+  const model = buildRewardsModel({
+    spendTxs: txs,
+    allSources: ['CU Visa'],
+    range: rangeOf(txs),
+    settings: {
+      cardRewards: {
+        wallet: { 'CU Visa': { kind: 'catalog', catalogId: 'custom:1' } },
+        custom: { 'custom:1': { name: 'CU Visa', base: 1, rates: { Grocery: { pct: 4 } } } },
+        overrides: {},
+      },
+    },
+  })
+  assert.equal(model.cards.length, 1)
+  assert.deepEqual(model.unlinkedSources, [], 'a custom id is not a stale one')
+  assert.equal(model.earned.period, round(400 * 0.04 * 6))
 })

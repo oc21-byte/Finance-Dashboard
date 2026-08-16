@@ -17,6 +17,7 @@ const money = n => '$' + Math.round(n).toLocaleString()
 export default function WalletSetup({
   sourceStates,
   wallet = {},
+  custom = {},
   onLink,
   demoMode = false,
   onDone,
@@ -75,6 +76,7 @@ export default function WalletSetup({
                 </div>
               </div>
               <CardPicker
+                custom={custom}
                 value={pickerValueFor(wallet[row.sourceName])}
                 disabled={demoMode}
                 className="w-72 max-w-full"

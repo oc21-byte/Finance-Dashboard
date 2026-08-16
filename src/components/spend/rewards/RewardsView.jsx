@@ -8,6 +8,9 @@ import RotatingQuarters from './RotatingQuarters.jsx'
 import EarnedCard from './EarnedCard.jsx'
 import Limitations from './Limitations.jsx'
 import CardCatalogBrowser from './CardCatalogBrowser.jsx'
+import SpendAudit from './SpendAudit.jsx'
+import RateCorrections from './RateCorrections.jsx'
+import CustomCardForm from './CustomCardForm.jsx'
 import { resolveDisplayCurrency } from '../../../utils/displayCurrency.js'
 import { money } from './format.js'
 
@@ -36,6 +39,8 @@ export default function RewardsView({
   demoMode = false,
   onLink,
   onRegionChange,
+  onOverrides,
+  onCustom,
   saving = false,
   clearsPinned = 0,
   browserOpen = false,
@@ -59,6 +64,8 @@ export default function RewardsView({
   // explicitly asked for every region, and must survive a reload as itself.
   const storedRegion = settings?.cardRewards?.region
   const region = storedRegion === undefined ? defaultRegion(settings?.displayCurrency) : storedRegion
+  const custom = settings?.cardRewards?.custom ?? {}
+  const overrides = settings?.cardRewards?.overrides ?? {}
   const ownedIds = useMemo(
     () => Object.values(wallet).map(entry => entry?.catalogId).filter(Boolean),
     [wallet],
@@ -125,6 +132,7 @@ export default function RewardsView({
           <WalletSetup
             sourceStates={model.sourceStates}
             wallet={wallet}
+            custom={custom}
             demoMode={demoMode}
             onLink={onLink}
             onDone={needsSetup ? undefined : () => setSetupOpen(false)}
@@ -137,6 +145,7 @@ export default function RewardsView({
           wallet={wallet}
           categoryColors={categoryColors}
           currentQuarter={model.currentQuarter}
+          custom={custom}
           demoMode={demoMode}
           onEntryChange={handleEntryChange}
         />
@@ -147,6 +156,14 @@ export default function RewardsView({
           <p className="text-[12.5px] text-gray-400">
             No spending in this period to rank cards against. Widen the period, or clear a filter.
           </p>
+        )}
+
+        {model.cards.length > 0 && (
+          <SpendAudit
+            rows={model.audit}
+            unknownQuarters={model.unknownQuarters}
+            leftBehind={model.leftBehind}
+          />
         )}
 
         <CardCatalogBrowser
@@ -161,6 +178,16 @@ export default function RewardsView({
           onLink={onLink}
           defaultOpen={browserOpen}
         />
+
+        <RateCorrections
+          cards={model.cards}
+          overrides={overrides}
+          custom={custom}
+          demoMode={demoMode}
+          onChange={onOverrides}
+        />
+
+        <CustomCardForm custom={custom} demoMode={demoMode} onChange={onCustom} />
 
         {saving && <p className="text-[12px] text-gray-400">Saving…</p>}
       </div>
@@ -188,6 +215,7 @@ export default function RewardsView({
           range={range}
           currentQuarter={model.currentQuarter}
           categories={categories}
+          custom={custom}
           demoMode={demoMode}
           onEntryChange={handleEntryChange}
         />

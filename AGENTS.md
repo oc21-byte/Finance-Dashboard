@@ -195,6 +195,23 @@ quarter **deletes** the key, because an unrecorded quarter is an open question t
 not an answer meaning zero. A published rate is never editable here; correcting one is Phase 5's
 separate, deliberate act, and a cell already carrying a correction offers no dropdown at all.
 
+Three things live beside the wallet under `settings.cardRewards`, and all three exist to keep user
+data out of `cardCatalog.js` so that file stays shipped-and-replaceable. `overrides` are corrected
+rates, keyed by card id and applied last in `resolveCard`, so a catalog update can never clobber
+one. `custom` holds user-authored cards under **`custom:`-prefixed ids** — the prefix is what makes
+collision with a shipped id impossible however the catalog grows — resolved ahead of the catalog by
+`cardById`, which every reader must use instead of `catalogCard` or a custom card silently reads as
+stale. `region` is the browser's country filter, where `undefined` means "never chosen" and `null`
+means "show everything".
+
+`auditByCategory` is the only thing on the page reading real per-row attribution rather than
+modelling. Its per-category `earned` and `optimal` must sum to `earnedActual` and `earnedOptimal`
+over the same rows — a test pins that, and it is the only reason the audit can sit under the
+headline without contradicting it. `leftBehind` counts **only spend on cards that resolve**: money
+on an unlinked source has nowhere to be rerouted to, and folding it in would make "you used the
+wrong card" and "you never told us what this card is" the same number. The second is reported as
+`unattributedSpend` and, per category, as `unlinkedSpend`.
+
 The grid's cleared-option label reads the **catalog's** published rate for that category, not the
 resolved card's — the resolved card already has the current choice merged in, so a card that both
 publishes a rate and lets you choose one (Customized Cash: 2% grocery *and* 3% on a pick) would

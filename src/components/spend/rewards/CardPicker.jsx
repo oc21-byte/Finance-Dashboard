@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
-import { CARD_CATALOG, REGION_LABELS } from '../../../constants/cardCatalog.js'
+import { REGION_LABELS } from '../../../constants/cardCatalog.js'
+import { allCards } from '../../../utils/rewardsModel.js'
 
 // The value↔storage translation lives in `rewardsModel.js` beside `linkKindOf`, which reads the
 // same shape. Re-exported here so a caller rendering the picker imports one thing, not two.
@@ -29,11 +30,15 @@ export default function CardPicker({
   id,
   className = '',
   placeholder = 'Link a rewards card…',
+  custom = {},
 }) {
+  // The user's own cards are pickable exactly like shipped ones, and sort first under their own
+  // region heading — `allCards` puts them ahead of the catalog.
+  const cards = useMemo(() => allCards(custom), [custom])
   // Grouped by region then issuer so the list reads like a wallet, not like a database dump.
   const groups = useMemo(() => {
     const byRegion = new Map()
-    for (const card of CARD_CATALOG) {
+    for (const card of cards) {
       let issuers = byRegion.get(card.region)
       if (!issuers) byRegion.set(card.region, (issuers = new Map()))
       const list = issuers.get(card.issuer) ?? []
@@ -50,14 +55,14 @@ export default function CardPicker({
         }))
         .sort((a, b) => a.issuer.localeCompare(b.issuer)),
     }))
-  }, [])
+  }, [cards])
 
   // A stored id whose catalog row has since been removed. Kept as an option so the select shows
   // what is actually stored rather than silently snapping to "not linked".
   const stale = value
     && value !== 'unlisted'
     && value !== 'none'
-    && !CARD_CATALOG.some(c => c.id === value)
+    && !cards.some(c => c.id === value)
 
   return (
     <select

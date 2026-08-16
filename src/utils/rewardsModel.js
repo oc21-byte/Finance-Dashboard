@@ -21,7 +21,7 @@
  * derived from published rates and is labelled an estimate wherever it renders.
  */
 
-import { catalogCard, CARD_CATALOG } from '../constants/cardCatalog.js'
+import { catalogCard, CARD_CATALOG, CATALOG_REGIONS } from '../constants/cardCatalog.js'
 import { categoryOf, cardOf } from './spendAggregations.js'
 
 /**
@@ -172,6 +172,71 @@ export function withQuarter(entry, quarterKey, category) {
 }
 
 /**
+ * A card the user defined themselves, stored in `settings.cardRewards.custom`.
+ *
+ * The prefix is what makes this safe. A custom id can never collide with a shipped one, so replacing
+ * `CARD_CATALOG` wholesale — the whole point of keeping it a static file in git — can never
+ * clobber, shadow or be shadowed by something a user authored. Custom cards resolve FIRST for the
+ * same reason overrides win: what the user tells us about their own wallet outranks what we ship.
+ */
+export const CUSTOM_PREFIX = 'custom:'
+
+export const isCustomId = id => String(id ?? '').startsWith(CUSTOM_PREFIX)
+
+/** A stable id for a newly authored card. Collision-proof by construction, not by chance. */
+export function newCustomId(existing = {}) {
+  let n = 1
+  while (existing[`${CUSTOM_PREFIX}${n}`]) n += 1
+  return `${CUSTOM_PREFIX}${n}`
+}
+
+/**
+ * Coerce user input into the catalog shape, dropping anything malformed rather than storing it.
+ *
+ * A custom card is read by exactly the same code that reads a shipped one, so a bad field here is
+ * a `NaN` in the middle of a reward total rather than a validation message. Everything is clamped
+ * and typed on the way in; `verified` is deliberately absent, since the user is the source.
+ */
+export function normalizeCustomCard(input = {}, id = null) {
+  const pct = v => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : null)
+  const rates = {}
+  for (const [category, rate] of Object.entries(input.rates ?? {})) {
+    const value = pct(rate?.pct)
+    if (!isRateableCategory(category) || value === null) continue
+    rates[category] = { pct: value }
+    const cap = Number(rate?.capMo)
+    if (Number.isFinite(cap) && cap > 0) rates[category].capMo = cap
+  }
+  return {
+    id: id ?? input.id ?? null,
+    name: String(input.name ?? '').trim() || 'My card',
+    short: String(input.short ?? input.name ?? '').trim() || 'My card',
+    issuer: String(input.issuer ?? '').trim() || 'Other',
+    region: CATALOG_REGIONS.includes(input.region) ? input.region : 'us',
+    fee: Math.max(0, Number(input.fee) || 0),
+    base: Math.max(0, Number(input.base) || 0),
+    summary: String(input.summary ?? '').trim() || 'A card you added yourself',
+    rates,
+    custom: true,
+  }
+}
+
+/** A card by id: the user's own first, then the shipped catalog. Never throws. */
+export function cardById(id, custom = {}) {
+  if (isCustomId(id)) {
+    const stored = custom?.[id]
+    return stored ? normalizeCustomCard(stored, id) : null
+  }
+  return catalogCard(id)
+}
+
+/** Every card a picker may offer: the shipped catalog plus whatever the user authored. */
+export function allCards(custom = {}) {
+  const mine = Object.entries(custom ?? {}).map(([id, card]) => normalizeCustomCard(card, id))
+  return [...mine, ...CARD_CATALOG]
+}
+
+/**
  * Where a rotating card's bonus categories for one quarter come from, and what they are.
  *
  * Three answers, and they are not interchangeable:
@@ -240,9 +305,9 @@ export function rotatingPools(cards) {
   return pools
 }
 
-export function resolveCard(sourceName, entry, { quarterKey = null, overrides = {} } = {}) {
+export function resolveCard(sourceName, entry, { quarterKey = null, overrides = {}, custom = {} } = {}) {
   if (linkKindOf(entry) !== 'catalog') return null
-  const card = catalogCard(entry.catalogId)
+  const card = cardById(entry.catalogId, custom)
   if (!card) return null
 
   const rates = {}
@@ -296,6 +361,7 @@ export function resolveCard(sourceName, entry, { quarterKey = null, overrides = 
     topCat: card.topCat ?? null,
     chooser: card.chooser ?? null,
     rotating: card.rotating ?? null,
+    custom: !!card.custom,
     // Only meaningful for rotating cards: where this quarter's categories came from —
     // 'catalog', 'user', 'unpublished', or 'none'. See `rotatingQuarterFor`.
     rotatingSource: card.rotating ? rotatingQuarterFor(card, entry, quarterKey).source : null,
@@ -304,9 +370,9 @@ export function resolveCard(sourceName, entry, { quarterKey = null, overrides = 
 
 /** Every linked card in the wallet, resolved for one quarter. Unlinked sources are skipped. */
 export function resolveWallet(sourceNames, cardRewards = {}, quarterKey = null) {
-  const { wallet = {}, overrides = {} } = cardRewards
+  const { wallet = {}, overrides = {}, custom = {} } = cardRewards
   return sourceNames
-    .map(name => resolveCard(name, wallet[name], { quarterKey, overrides }))
+    .map(name => resolveCard(name, wallet[name], { quarterKey, overrides, custom }))
     .filter(Boolean)
 }
 
@@ -318,7 +384,7 @@ export function resolveWallet(sourceNames, cardRewards = {}, quarterKey = null) 
  * respect. Only `unlinked` should nag.
  */
 export function classifySources(sourceNames, cardRewards = {}, spendTxs = []) {
-  const { wallet = {} } = cardRewards
+  const { wallet = {}, custom = {} } = cardRewards
   const spend = new Map()
   for (const tx of spendTxs) {
     const category = categoryOf(tx)
@@ -337,7 +403,7 @@ export function classifySources(sourceNames, cardRewards = {}, spendTxs = []) {
       spend: round2(spend.get(sourceName) || 0),
     }
     // A `catalog` link whose id has since left the catalog is unlinked again, not silently scored.
-    if (kind === 'catalog' && !catalogCard(entry.catalogId)) out.unlinked.push({ ...row, stale: true })
+    if (kind === 'catalog' && !cardById(entry.catalogId, custom)) out.unlinked.push({ ...row, stale: true })
     else if (kind) out[kind].push(row)
     else out.unlinked.push(row)
   }
@@ -600,9 +666,15 @@ export function earnedOptimal(spendTxs, sourceNames, cardRewards, range) {
     const cards = resolveWallet(sourceNames, cardRewards, quarterKeyOf(month))
     if (!cards.length) continue
 
-    // The month's spend per category, regardless of which card it landed on.
+    // The month's spend per category, regardless of which of your cards it landed on — but only
+    // spend that landed on a card we can score. Money on an unlinked source has nowhere to be
+    // rerouted TO, and counting it here would fold "you never told us what this card is" into
+    // `leftBehind`, which is supposed to mean one thing: you used the wrong card among the ones you
+    // hold. Unlinked spend is reported on its own as `unattributedSpend`.
+    const scorable = new Set(cards.map(c => c.sourceName))
     const spendByCategory = new Map()
-    for (const byCategory of rows.values()) {
+    for (const [source, byCategory] of rows) {
+      if (!scorable.has(source)) continue
       for (const [category, spend] of byCategory) {
         spendByCategory.set(category, (spendByCategory.get(category) || 0) + spend)
       }
@@ -719,6 +791,165 @@ export function compareCandidate(cards, candidateCard, monthly) {
 }
 
 /**
+ * Where your spending actually went, per category — the page's sharpest output.
+ *
+ * Every other block on this view models what your cards WOULD pay. This one reads real per-row
+ * attribution: which card each purchase actually landed on, whether that was the best card
+ * available, and what the difference cost. It is the only place the two can be compared, because it
+ * is the only place both are computed over the same rows.
+ *
+ * Scored month by month for the same reasons everything else is — caps bite inside a month, and a
+ * rotating quarter applies to its own months. `optimal` routes only spend that sits on a card we can
+ * score: money on an unlinked source has nowhere to be rerouted to, and is reported separately.
+ */
+export function auditByCategory(spendTxs, sourceNames, cardRewards, range) {
+  const grid = monthlyGrid(spendTxs)
+  const rows = new Map()
+  const touch = (category) => {
+    if (!rows.has(category)) {
+      rows.set(category, { category, spend: 0, byCard: new Map(), earned: 0, optimal: 0, unlinked: 0 })
+    }
+    return rows.get(category)
+  }
+
+  for (const month of monthsOf(range, grid)) {
+    const monthRows = grid.get(month)
+    if (!monthRows) continue
+    const cards = resolveWallet(sourceNames, cardRewards, quarterKeyOf(month))
+    const bySource = new Map(cards.map(c => [c.sourceName, c]))
+
+    // What actually happened: each card's own spend, at that card's own rates.
+    for (const [source, spendByCategory] of monthRows) {
+      const card = bySource.get(source)
+      const topCat = card ? topCatCategoryActual(card, spendByCategory) : null
+      const pools = card ? rotatingPools([card]) : null
+      for (const [category, spend] of spendByCategory) {
+        const row = touch(category)
+        row.spend += spend
+        row.byCard.set(source, (row.byCard.get(source) || 0) + spend)
+        if (card) row.earned += fillCategory(optionsFor([card], category, topCat), spend, pools).earned
+        else row.unlinked += spend
+      }
+    }
+
+    // What perfect routing would have paid on that same scorable spend.
+    if (cards.length) {
+      const scorable = new Set(cards.map(c => c.sourceName))
+      const spendByCategory = new Map()
+      for (const [source, byCategory] of monthRows) {
+        if (!scorable.has(source)) continue
+        for (const [category, spend] of byCategory) {
+          spendByCategory.set(category, (spendByCategory.get(category) || 0) + spend)
+        }
+      }
+      const monthly = [...spendByCategory.entries()].map(([category, spend]) => ({ category, monthly: spend }))
+      const topCat = topCatCategoryFor(cards, monthly)
+      const pools = rotatingPools(cards)
+      for (const [category, spend] of spendByCategory) {
+        touch(category).optimal += fillCategory(optionsFor(cards, category, topCat), spend, pools).earned
+      }
+    }
+  }
+
+  // The best card is named at the window's last quarter, matching the grid: the audit explains
+  // what happened, but the advice it implies is about which card to reach for now.
+  const current = resolveWallet(sourceNames, cardRewards, quarterKeyOf(range?.to?.slice(0, 7)))
+  const monthlyNow = [...rows.values()].map(r => ({ category: r.category, monthly: r.spend }))
+  const topCatNow = topCatCategoryFor(current, monthlyNow)
+
+  return [...rows.values()]
+    .map((row) => {
+      const best = bestFor(current, row.category, topCatNow)
+      const slices = [...row.byCard.entries()]
+        .map(([sourceName, spend]) => {
+          const card = current.find(c => c.sourceName === sourceName)
+          return {
+            sourceName,
+            short: card?.short ?? sourceName,
+            spend: round2(spend),
+            share: row.spend > 0 ? spend / row.spend : 0,
+            linked: !!card,
+            // Solid where the money landed on the card that was actually best here, faded where it
+            // did not. A tie means every card was as good, so nothing was misplaced.
+            onBest: !!best && !!card && (best.tie || best.card.sourceName === sourceName),
+          }
+        })
+        .sort((a, b) => b.spend - a.spend)
+
+      return {
+        category: row.category,
+        spend: round2(row.spend),
+        earned: round2(row.earned),
+        optimal: round2(row.optimal),
+        leftBehind: round2(Math.max(0, row.optimal - row.earned)),
+        unlinkedSpend: round2(row.unlinked),
+        best,
+        slices,
+      }
+    })
+    .sort((a, b) => b.leftBehind - a.leftBehind || b.spend - a.spend)
+}
+
+/**
+ * Quarters inside the window whose rotating categories nobody knows — neither the catalog nor the
+ * user. Their months are scored at the card's base rate, so every figure on the page is a floor
+ * rather than an estimate, and the audit says so instead of implying the bonus paid nothing.
+ */
+export function unknownQuartersIn(range, sourceNames, cardRewards = {}) {
+  const { wallet = {}, custom = {} } = cardRewards
+  const out = []
+  for (const { key } of quartersInRange(range)) {
+    for (const sourceName of sourceNames) {
+      const entry = wallet[sourceName]
+      const card = cardById(entry?.catalogId, custom)
+      if (!card?.rotating) continue
+      const { source } = rotatingQuarterFor(card, entry, key)
+      if (source === 'unpublished' || source === 'missing' || source === 'none') {
+        out.push({ sourceName, short: card.short, quarterKey: key, reason: source })
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * Set one corrected rate, returning a whole new `overrides` map.
+ *
+ * Corrections live beside the catalog rather than in it, which is the property that makes shipping
+ * a catalog update safe: replacing `CARD_CATALOG` wholesale cannot touch what a user has told us.
+ */
+export function withOverride(overrides = {}, cardId, category, { pct, capMo } = {}) {
+  const value = Number(pct)
+  if (!cardId || !category || !Number.isFinite(value) || value < 0) return overrides
+  const rate = { pct: value }
+  const cap = Number(capMo)
+  if (Number.isFinite(cap) && cap > 0) rate.capMo = cap
+  return { ...overrides, [cardId]: { ...(overrides[cardId] ?? {}), [category]: rate } }
+}
+
+/** Drop one correction, and the card's entry entirely once its last correction goes. */
+export function withoutOverride(overrides = {}, cardId, category) {
+  const forCard = { ...(overrides[cardId] ?? {}) }
+  delete forCard[category]
+  const next = { ...overrides }
+  if (Object.keys(forCard).length) next[cardId] = forCard
+  else delete next[cardId]
+  return next
+}
+
+/** Every correction on record, flattened for listing. */
+export function listOverrides(overrides = {}, custom = {}) {
+  const out = []
+  for (const [cardId, categories] of Object.entries(overrides)) {
+    const card = cardById(cardId, custom)
+    for (const [category, rate] of Object.entries(categories)) {
+      out.push({ cardId, card, short: card?.short ?? cardId, category, ...rate })
+    }
+  }
+  return out.sort((a, b) => a.short.localeCompare(b.short) || a.category.localeCompare(b.category))
+}
+
+/**
  * Every catalog card you don't already hold, scored against your real spending, best first.
  *
  * "Best" is `net` — the yearly gain AFTER the annual fee — not the headline earn rate. A 5% card
@@ -799,6 +1030,8 @@ export function buildRewardsModel({ spendTxs = [], allSources = [], range, setti
   })
 
   const sources = cards.map(c => c.sourceName)
+  const audit = auditByCategory(spendTxs, sources, cardRewards, range)
+  const unknownQuarters = unknownQuartersIn(range, sources, cardRewards)
   const earned = earnedActual(spendTxs, sources, cardRewards, range)
   const optimal = earnedOptimal(spendTxs, sources, cardRewards, range)
   const projection = projectAnnual(cards, monthly, averageMonthlyByCard(spendTxs, range))
@@ -817,6 +1050,9 @@ export function buildRewardsModel({ spendTxs = [], allSources = [], range, setti
     unlinkedSources: sourceStates.unlinked.map(s => s.sourceName),
     monthly,
     rows,
+    // Real per-row attribution: where the money actually went, and what that cost.
+    audit,
+    unknownQuarters,
     topCatCategory,
     currentQuarter,
     // Observed, over the window on screen. Never annualized.
