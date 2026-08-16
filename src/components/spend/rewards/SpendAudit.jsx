@@ -70,32 +70,48 @@ export default function SpendAudit({ rows = [], unknownQuarters = [], leftBehind
 
               {/* Width is the category's share of the biggest category, so rows are comparable to
                   each other rather than each being stretched to full width. */}
+              {/* Each card gets one segment, split where it needs to be: solid for the months that
+                  card WAS the best one here, faded for the months it was not. A rotating bonus makes
+                  that a per-month answer, so a single card can legitimately be both. */}
               <div className="mt-1.5 flex h-2.5 rounded-full overflow-hidden bg-gray-100" style={{ width: `${max > 0 ? (row.spend / max) * 100 : 0}%`, minWidth: '12%' }}>
-                {row.slices.map(slice => (
-                  <div
-                    key={slice.sourceName}
-                    title={`${slice.short} · ${dollars(slice.spend)}${slice.linked ? (slice.onBest ? ' · best card' : ' · not the best card here') : ' · not linked'}`}
-                    style={{
-                      width: `${slice.share * 100}%`,
-                      background: color,
-                      opacity: slice.onBest ? 1 : 0.28,
-                    }}
-                  />
-                ))}
+                {row.slices.flatMap((slice) => {
+                  const onW = row.spend > 0 ? (slice.onBestSpend / row.spend) * 100 : 0
+                  const offW = row.spend > 0 ? (slice.offBestSpend / row.spend) * 100 : 0
+                  const unW = slice.linked ? 0 : slice.share * 100
+                  const seg = (kind, width, opacity, note) => width <= 0 ? null : (
+                    <div
+                      key={`${slice.sourceName}-${kind}`}
+                      title={`${slice.short} · ${dollars(slice.spend)} · ${note}`}
+                      style={{ width: `${width}%`, background: color, opacity }}
+                    />
+                  )
+                  return [
+                    seg('on', onW, 1, 'on the best card for those months'),
+                    seg('off', offW, 0.28, 'a better card was available those months'),
+                    seg('unlinked', unW, 0.15, 'not linked, so not scored'),
+                  ].filter(Boolean)
+                })}
               </div>
 
               <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[11.5px] text-gray-400">
                 {row.slices.map(slice => (
                   <span key={slice.sourceName}>
-                    <span className={slice.onBest ? 'text-gray-600' : 'text-gray-400'}>{slice.short}</span>
+                    <span className={slice.onBestShare > 0.5 ? 'text-gray-600' : 'text-gray-400'}>{slice.short}</span>
                     {' '}{Math.round(slice.share * 100)}%
                     {!slice.linked && <span className="text-gray-300"> · not linked</span>}
                   </span>
                 ))}
-                {row.best && !row.best.tie && row.leftBehind > 0 && (
-                  <span className="text-gray-500">
-                    → {row.best.card.short} pays {fmtRate(row.best.rate)}
-                  </span>
+                {/* Only stated flatly when it held all window. With a rotating bonus in play the
+                    best card for a category changes with the quarter, and "Discover it pays 5% on
+                    Transport" is true in one and false in the next. */}
+                {row.leftBehind > 0 && (
+                  row.bestVaries ? (
+                    <span className="text-gray-500">→ best card changed during this window</span>
+                  ) : row.best && !row.best.tie ? (
+                    <span className="text-gray-500">
+                      → {row.best.card.short} pays {fmtRate(row.best.rate)}
+                    </span>
+                  ) : null
                 )}
               </div>
             </div>
@@ -104,9 +120,11 @@ export default function SpendAudit({ rows = [], unknownQuarters = [], leftBehind
       </div>
 
       <p className="mt-4 pt-3.5 border-t border-gray-100 text-[11.5px] leading-relaxed text-gray-400">
-        Solid is spending that landed on the best card you hold for that category; faded is spending
-        that did not. Money on a card you haven&rsquo;t linked is shown but never counted as left
-        behind — there is nowhere for it to have been rerouted to.
+        Solid is spending that landed on the best card you held <em>that month</em>; faded is spending
+        that did not. Rotating categories change every quarter, so one card can be the right call in
+        part of a window and the wrong one in the rest — which is why a bar can be part solid and
+        part faded for the same card. Money on a card you haven&rsquo;t linked is shown palest of
+        all and never counted as left behind; there is nowhere for it to have been rerouted to.
       </p>
     </div>
   )

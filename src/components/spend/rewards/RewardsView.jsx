@@ -212,6 +212,8 @@ export default function RewardsView({
         <RotatingQuarters
           cards={model.cards}
           wallet={wallet}
+          spendTxs={spendTxs}
+          cardRewards={settings?.cardRewards ?? {}}
           range={range}
           currentQuarter={model.currentQuarter}
           categories={categories}

@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client.js'
 import { CATEGORIES, CATEGORY_COLORS, CREDIT_KIND_LABELS } from '../constants/categories.js'
 import { runImportQueue, sourceNameFromFile } from '../utils/importQueue.js'
+import { matchSourceName } from '../utils/sourceNaming.js'
 import { annotateDuplicates, duplicateFlags } from '../utils/duplicates.js'
 import { processCSVRows } from '../utils/csvHelpers.js'
 import { errorStatus } from '../utils/diagnostics.js'
@@ -28,8 +29,6 @@ import { buildCardColors } from '../components/spend/palette.js'
 import ViewToggle from '../components/shared/ViewToggle.jsx'
 import RewardsView from '../components/spend/rewards/RewardsView.jsx'
 import { walletEntryFor } from '../components/spend/rewards/CardPicker.jsx'
-
-const SOURCE_NAME_KEY = 'visionSource_spendAnalyzer'
 
 const VIEWS = [
   { value: 'spend', label: 'Spend' },
@@ -352,10 +351,14 @@ export default function SpendAnalyzer({ onTabChange, demoMode }) {
         return
       }
 
-      const savedName = localStorage.getItem(SOURCE_NAME_KEY) || ''
+      // The source name is never inherited from a previous import. Reusing the last card name
+      // imported is what silently relabelled a whole statement: the field looked answered, the
+      // name was plausible, and nothing on screen said where it came from. A name now comes from
+      // the file itself or from nobody — the review modal already refuses to confirm without one.
+      const existing = [...new Set(transactions.map(t => t.source).filter(Boolean))]
       const named = groups.map(g => ({
         ...g,
-        sourceName: g.sourceName || savedName || sourceNameFromFile(g.fileName),
+        sourceName: g.sourceName || matchSourceName(g.account, existing) || '',
       }))
       const { groups: annotated } = annotateDuplicates(named, transactions)
 
@@ -415,7 +418,6 @@ export default function SpendAnalyzer({ onTabChange, demoMode }) {
       }
       cardRewardsMutation.mutate({ ...current, wallet })
     }
-    localStorage.setItem(SOURCE_NAME_KEY, readyGroups[0].sourceName)
     pendingUploadMetaRef.current = readyGroups.map(g => ({
       filename: g.fileName,
       sourceName: g.sourceName,
@@ -931,6 +933,7 @@ export default function SpendAnalyzer({ onTabChange, demoMode }) {
         <BulkImportReviewModal
           groups={reviewData.groups}
           skipped={reviewData.skipped}
+          knownSources={[...new Set(transactions.map(t => t.source).filter(Boolean))].sort()}
           busy={batchMutation.isPending}
           wallet={settings?.cardRewards?.wallet ?? {}}
           onConfirm={handleReviewConfirm}

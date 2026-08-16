@@ -113,6 +113,25 @@ and reports failures in `skipped[]`. `processStatementFile()` tries, in order:
 All successful groups reach `BulkImportReviewModal` before one batch POST. `_rid` and `duplicateOf` are
 review-only — strip them before persistence.
 
+**A source name is never inherited from a previous import.** Both statement pages once fell back to
+`localStorage` when the extractor returned no name, so a Savor statement imported after a Discover
+one silently relabelled 69 transactions: the field looked answered, the name was plausible, and
+nothing on screen said where it came from. A name now comes from the file or from nobody —
+`BulkImportReviewModal` already refuses to confirm a group without one, and an empty field is
+styled as needing an answer.
+
+The vision pass returns `account`, the account identity printed on the page ("DISCOVER IT CARD
+ENDING IN 6957"), carried across page-batches exactly like `statementPeriod`. It is **evidence,
+shown verbatim in the review modal beside the name field**, never a name: the app calls a card
+whatever the user calls it, and adopting the printed string would mint a new source on every
+import. `matchSourceName` in `src/utils/sourceNaming.js` is the only thing allowed to turn it into
+a suggestion, and it matches on the PRODUCT word — the last significant word of an existing source
+name. Matching on every word fails real statements (issuers print "Savor Credit Card", not "Capital
+One Savor"); matching on any word puts a Capital One *Venture* statement onto your Capital One
+*Savor*. Two qualifying names returns null, because ambiguity is what caused the original bug. It
+lives in its own dependency-free module because `importQueue.js` imports pdfjs and cannot be loaded
+by `node --test`.
+
 Duplicate matching uses amount, normalized description, and date; same-source rows must share a date,
 different sources may differ by three days. `annotateDuplicates()` flags imports, `duplicateFlags()`
 audits stored rows. Never auto-delete; a dismissed member resolves its set. Run stored-ledger detection
@@ -205,7 +224,19 @@ stale. `region` is the browser's country filter, where `undefined` means "never 
 means "show everything".
 
 `auditByCategory` is the only thing on the page reading real per-row attribution rather than
-modelling. Its per-category `earned` and `optimal` must sum to `earnedActual` and `earnedOptimal`
+modelling. **Which card was best is a per-MONTH answer**, resolved alongside the earnings it is
+compared against. Resolving it once at the window's last quarter — as it first did — makes a
+multi-quarter window contradict itself: a rotating bonus covers Shopping in Q1 and Q2 but not Q3,
+so judging the whole window against Q3 reports a tie (every bar solid, nothing misplaced) beside a
+`leftBehind` total that correctly counted Q1 and Q2. A slice therefore carries `onBestSpend` /
+`offBestSpend` rather than a boolean, and one card can legitimately be both. `bestVaries` gates the
+"reach for X" line, because "Discover it pays 5% on Transport" is true in one quarter and false in
+the next.
+
+`rotatingUsage` answers the question a long window otherwise buries: what each quarter's categories
+were, how much eligible spend landed on the card, and how much fitted under a cap that reset four
+times. Its `cap` is prorated to the months of that quarter the window actually covers — measuring a
+one-month slice against the full $1,500 would report a miss that never existed. Its per-category `earned` and `optimal` must sum to `earnedActual` and `earnedOptimal`
 over the same rows — a test pins that, and it is the only reason the audit can sit under the
 headline without contradicting it. `leftBehind` counts **only spend on cards that resolve**: money
 on an unlinked source has nowhere to be rerouted to, and folding it in would make "you used the

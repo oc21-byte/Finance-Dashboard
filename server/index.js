@@ -2627,6 +2627,10 @@ app.post('/api/parse-pdf-vision', async (req, res) => {
   const periodHint = statementPeriod
     ? `The statement period is ${statementPeriod} — use it to resolve the year for every date.`
     : `Read the statement period printed on the page and return it as "statementPeriod".`
+  // The account identity, read verbatim off the page. Returned as EVIDENCE for the review screen
+  // to show, never as an instruction — the app names accounts however the user names them, and a
+  // wrong auto-name silently mislabels every row in the file.
+  const accountHint = `Also read the account this statement belongs to, exactly as printed on the page — the product name plus the last four digits, e.g. "DISCOVER IT CARD ENDING IN 6957" or "Savor Credit Card ending in 5450". Return it as "account", or null if the page does not show it.`
   // Credits are the subtle part: the money-back rows must be kept and labelled, while payments
   // to the card must be dropped, and both are printed the same way on most statements.
   const amountRules = isCard
@@ -2662,9 +2666,12 @@ as credits, often with "CR" or in a credits column, so decide from the DESCRIPTI
 
 ${periodHint}
 
+${accountHint}
+
 Return ONLY a JSON object:
 {
   "statementPeriod": "<the statement period as printed, or null>",
+  "account": "<the account name and last four digits as printed, or null>",
   "transactions": [
     ${shape}
   ]
@@ -2693,6 +2700,7 @@ Return valid JSON only, no markdown.`,
     res.json({
       transactions,
       statementPeriod: Array.isArray(parsed) ? null : (parsed.statementPeriod ?? null),
+      account: Array.isArray(parsed) ? null : (parsed.account ?? null),
     })
   } catch (err) {
     failure(res, 'PDF vision error', err, { detail: raw })

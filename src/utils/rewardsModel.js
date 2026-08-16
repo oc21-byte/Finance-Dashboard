@@ -807,9 +807,19 @@ export function auditByCategory(spendTxs, sourceNames, cardRewards, range) {
   const rows = new Map()
   const touch = (category) => {
     if (!rows.has(category)) {
-      rows.set(category, { category, spend: 0, byCard: new Map(), earned: 0, optimal: 0, unlinked: 0 })
+      rows.set(category, {
+        category, spend: 0, byCard: new Map(), earned: 0, optimal: 0, unlinked: 0,
+        // Which card was best HERE, month by month. A window spanning a rotation has more than one
+        // answer, and pretending otherwise is what made this row contradict its own total.
+        bestSeen: new Map(),
+      })
     }
     return rows.get(category)
+  }
+  const sliceOf = (row, sourceName) => {
+    let slice = row.byCard.get(sourceName)
+    if (!slice) row.byCard.set(sourceName, (slice = { spend: 0, onBest: 0, offBest: 0 }))
+    return slice
   }
 
   for (const month of monthsOf(range, grid)) {
@@ -817,8 +827,26 @@ export function auditByCategory(spendTxs, sourceNames, cardRewards, range) {
     if (!monthRows) continue
     const cards = resolveWallet(sourceNames, cardRewards, quarterKeyOf(month))
     const bySource = new Map(cards.map(c => [c.sourceName, c]))
+    const scorable = new Set(cards.map(c => c.sourceName))
 
-    // What actually happened: each card's own spend, at that card's own rates.
+    // The month's scorable spend per category, which both the optimal pass and "who was best this
+    // month" are computed from.
+    const monthByCategory = new Map()
+    for (const [source, byCategory] of monthRows) {
+      if (!scorable.has(source)) continue
+      for (const [category, spend] of byCategory) {
+        monthByCategory.set(category, (monthByCategory.get(category) || 0) + spend)
+      }
+    }
+    const monthlyList = [...monthByCategory.entries()].map(([category, spend]) => ({ category, monthly: spend }))
+    const topCatMonth = topCatCategoryFor(cards, monthlyList)
+    const bestThisMonth = new Map()
+    for (const category of monthByCategory.keys()) {
+      bestThisMonth.set(category, bestFor(cards, category, topCatMonth))
+    }
+
+    // What actually happened: each card's own spend, at that card's own rates, judged against the
+    // card that was best IN THIS MONTH.
     for (const [source, spendByCategory] of monthRows) {
       const card = bySource.get(source)
       const topCat = card ? topCatCategoryActual(card, spendByCategory) : null
@@ -826,33 +854,35 @@ export function auditByCategory(spendTxs, sourceNames, cardRewards, range) {
       for (const [category, spend] of spendByCategory) {
         const row = touch(category)
         row.spend += spend
-        row.byCard.set(source, (row.byCard.get(source) || 0) + spend)
-        if (card) row.earned += fillCategory(optionsFor([card], category, topCat), spend, pools).earned
-        else row.unlinked += spend
+        const slice = sliceOf(row, source)
+        slice.spend += spend
+        if (!card) {
+          row.unlinked += spend
+          continue
+        }
+        row.earned += fillCategory(optionsFor([card], category, topCat), spend, pools).earned
+        const best = bestThisMonth.get(category)
+        if (!best || best.tie || best.card.sourceName === source) slice.onBest += spend
+        else slice.offBest += spend
+        // Recorded per month so the row can say whether the answer held all window or moved.
+        const key = !best || best.tie ? 'tie' : `${best.card.sourceName}\u0000${best.rate}`
+        if (!row.bestSeen.has(key)) row.bestSeen.set(key, best && !best.tie ? best : null)
       }
     }
 
     // What perfect routing would have paid on that same scorable spend.
     if (cards.length) {
-      const scorable = new Set(cards.map(c => c.sourceName))
-      const spendByCategory = new Map()
-      for (const [source, byCategory] of monthRows) {
-        if (!scorable.has(source)) continue
-        for (const [category, spend] of byCategory) {
-          spendByCategory.set(category, (spendByCategory.get(category) || 0) + spend)
-        }
-      }
-      const monthly = [...spendByCategory.entries()].map(([category, spend]) => ({ category, monthly: spend }))
-      const topCat = topCatCategoryFor(cards, monthly)
       const pools = rotatingPools(cards)
-      for (const [category, spend] of spendByCategory) {
-        touch(category).optimal += fillCategory(optionsFor(cards, category, topCat), spend, pools).earned
+      for (const [category, spend] of monthByCategory) {
+        touch(category).optimal += fillCategory(optionsFor(cards, category, topCatMonth), spend, pools).earned
       }
     }
   }
 
-  // The best card is named at the window's last quarter, matching the grid: the audit explains
-  // what happened, but the advice it implies is about which card to reach for now.
+  // The advice line still speaks about now — which card to reach for today — but only when today's
+  // answer held for the whole window. A rotating bonus makes "Discover it pays 5% on Transport"
+  // true in one quarter and false in the next, and stating it flatly over a year is a plain
+  // misreading of what the bars beneath it show.
   const current = resolveWallet(sourceNames, cardRewards, quarterKeyOf(range?.to?.slice(0, 7)))
   const monthlyNow = [...rows.values()].map(r => ({ category: r.category, monthly: r.spend }))
   const topCatNow = topCatCategoryFor(current, monthlyNow)
@@ -860,18 +890,21 @@ export function auditByCategory(spendTxs, sourceNames, cardRewards, range) {
   return [...rows.values()]
     .map((row) => {
       const best = bestFor(current, row.category, topCatNow)
+      const bestVaries = row.bestSeen.size > 1
       const slices = [...row.byCard.entries()]
-        .map(([sourceName, spend]) => {
+        .map(([sourceName, slice]) => {
           const card = current.find(c => c.sourceName === sourceName)
           return {
             sourceName,
             short: card?.short ?? sourceName,
-            spend: round2(spend),
-            share: row.spend > 0 ? spend / row.spend : 0,
+            spend: round2(slice.spend),
+            share: row.spend > 0 ? slice.spend / row.spend : 0,
             linked: !!card,
-            // Solid where the money landed on the card that was actually best here, faded where it
-            // did not. A tie means every card was as good, so nothing was misplaced.
-            onBest: !!best && !!card && (best.tie || best.card.sourceName === sourceName),
+            // Split, not a flag: one card can be the right call in the months a bonus covered its
+            // category and the wrong one in the months it did not.
+            onBestSpend: round2(slice.onBest),
+            offBestSpend: round2(slice.offBest),
+            onBestShare: slice.spend > 0 ? slice.onBest / slice.spend : 0,
           }
         })
         .sort((a, b) => b.spend - a.spend)
@@ -884,10 +917,80 @@ export function auditByCategory(spendTxs, sourceNames, cardRewards, range) {
         leftBehind: round2(Math.max(0, row.optimal - row.earned)),
         unlinkedSpend: round2(row.unlinked),
         best,
+        // True when the best card was not the same in every month of the window.
+        bestVaries,
         slices,
       }
     })
     .sort((a, b) => b.leftBehind - a.leftBehind || b.spend - a.spend)
+}
+
+
+/**
+ * How much of a rotating card's quarterly bonus you actually used, quarter by quarter.
+ *
+ * The question a long window makes impossible to answer by eye: the 5% moved four times, the cap
+ * reset four times, and the audit's category rows are aggregated across all of it. This reports
+ * each quarter on its own terms — what its categories were, how much eligible spend you put on the
+ * card, how much of that fitted under the cap, and what it earned.
+ *
+ * `cap` is prorated to the months of that quarter the window actually covers: a window holding one
+ * month of a quarter had one month's worth of allowance available, and measuring it against the
+ * full $1,500 would report a miss that never existed.
+ */
+export function rotatingUsage(spendTxs, sourceName, cardRewards, range) {
+  const { wallet = {}, custom = {}, overrides = {} } = cardRewards
+  const entry = wallet[sourceName]
+  const card = cardById(entry?.catalogId, custom)
+  if (!card?.rotating) return []
+
+  const grid = monthlyGrid(spendTxs)
+  const monthly = monthlyCapOf(card.rotating)
+  const byQuarter = new Map()
+
+  for (const month of monthsOf(range, grid)) {
+    const quarterKey = quarterKeyOf(month)
+    if (!quarterKey) continue
+    const resolved = resolveCard(sourceName, entry, { quarterKey, overrides, custom })
+    if (!resolved) continue
+    const categories = Object.entries(resolved.rates)
+      .filter(([, rate]) => rate.rotating)
+      .map(([category]) => category)
+
+    let row = byQuarter.get(quarterKey)
+    if (!row) {
+      byQuarter.set(quarterKey, (row = {
+        quarterKey, months: 0, categories, spend: 0, scored: 0, cap: 0,
+        source: rotatingQuarterFor(card, entry, quarterKey).source,
+      }))
+    }
+    row.months += 1
+    row.cap += monthly
+
+    // Each month gets its own slice of the cap, which is how the scoring works too.
+    let pool = monthly
+    const spendByCategory = grid.get(month)?.get(sourceName)
+    for (const category of categories) {
+      const spend = spendByCategory?.get(category) ?? 0
+      if (spend <= 0) continue
+      row.spend += spend
+      const take = Math.min(spend, pool)
+      pool -= take
+      row.scored += take
+    }
+  }
+
+  return [...byQuarter.values()]
+    .map(row => ({
+      ...row,
+      spend: round2(row.spend),
+      scored: round2(row.scored),
+      cap: round2(row.cap),
+      earned: round2(row.scored * (card.rotating.pct / 100)),
+      // What fraction of the allowance actually available in this window you used.
+      used: row.cap > 0 ? Math.min(1, row.scored / row.cap) : 0,
+    }))
+    .sort((a, b) => a.quarterKey.localeCompare(b.quarterKey))
 }
 
 /**

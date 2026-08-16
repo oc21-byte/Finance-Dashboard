@@ -7,7 +7,7 @@ import {
   topCatCategoryFor, bestFor, secondRateFor, earnedActual, earnedOptimal, projectAnnual,
   compareCandidate, buildRewardsModel, classifySources, linkKindOf, SHORT_WINDOW_MONTHS,
   withSlot, withoutSlotFor, withQuarter, buildCandidates, rotatingQuarterFor, calendarRangeOf,
-  auditByCategory, unknownQuartersIn, withOverride, withoutOverride, listOverrides,
+  auditByCategory, unknownQuartersIn, rotatingUsage, withOverride, withoutOverride, listOverrides,
   normalizeCustomCard, cardById, allCards, newCustomId, CUSTOM_PREFIX,
 } from '../src/utils/rewardsModel.js'
 import { catalogCard, CARD_CATALOG } from '../src/constants/cardCatalog.js'
@@ -895,7 +895,7 @@ test('the audit reads where money actually landed, and what the wrong card cost'
   assert.equal(grocery.slices.length, 1)
   assert.equal(grocery.slices[0].sourceName, 'Active Cash')
   assert.equal(grocery.slices[0].share, 1)
-  assert.equal(grocery.slices[0].onBest, false)
+  assert.equal(grocery.slices[0].onBestShare, 0, 'none of it was on the best card')
   assert.equal(grocery.best.card.short, 'Blue Cash Preferred')
 })
 
@@ -905,7 +905,7 @@ test('spending already on the best card leaves nothing behind', () => {
   const grocery = rows.find(r => r.category === 'Grocery')
   assert.equal(grocery.leftBehind, 0)
   assert.equal(grocery.earned, grocery.optimal)
-  assert.equal(grocery.slices[0].onBest, true)
+  assert.equal(grocery.slices[0].onBestShare, 1)
 })
 
 test('a category split across cards keeps one slice per card, biggest first', () => {
@@ -918,8 +918,8 @@ test('a category split across cards keeps one slice per card, biggest first', ()
 
   assert.deepEqual(grocery.slices.map(s => s.sourceName), ['Active Cash', 'Blue Cash'])
   assert.equal(round(grocery.slices[0].share), 0.75)
-  assert.equal(grocery.slices[0].onBest, false)
-  assert.equal(grocery.slices[1].onBest, true, 'the part that was routed right is marked as such')
+  assert.equal(grocery.slices[0].onBestShare, 0)
+  assert.equal(grocery.slices[1].onBestShare, 1, 'the part routed right is marked as such')
   // Only the misrouted three quarters cost anything.
   assert.equal(grocery.leftBehind, round(300 * 0.04 * 6))
 })
@@ -932,7 +932,8 @@ test('a tie leaves nothing behind — no card was the wrong one', () => {
   const row = auditByCategory(txs, ['Active Cash'], only, rangeOf(txs))
     .find(r => r.category === 'Housing')
   assert.equal(row.leftBehind, 0)
-  assert.equal(row.slices[0].onBest, true)
+  assert.equal(row.slices[0].onBestShare, 1)
+  assert.equal(row.bestVaries, false)
 })
 
 test('spend on an unlinked card is reported, never counted as money left behind', () => {
@@ -1104,4 +1105,90 @@ test('a custom card reaches the whole model, wallet through to earnings', () => 
   assert.equal(model.cards.length, 1)
   assert.deepEqual(model.unlinkedSources, [], 'a custom id is not a stale one')
   assert.equal(model.earned.period, round(400 * 0.04 * 6))
+})
+
+test('a rotating bonus makes the best card a per-month answer, not a window-wide one', () => {
+  // The bug this pins. Discover's 2026 rotation puts Shopping in Q1 (wholesale clubs) and Q2 (home
+  // improvement) but NOT Q3. Judging a Feb-Jul window against Q3 alone reports a tie on Shopping —
+  // every slice solid, nothing misplaced — while the total correctly counts the Q1 and Q2 months.
+  // A row cannot say "you left money behind" and "every card was equally good" at once.
+  const txs = ledger([[400, 'Shopping', 'Active Cash']])
+  const range = rangeOf(txs)
+  const rewards = {
+    wallet: {
+      'Active Cash': { catalogId: 'activeCash' },
+      Discover: { kind: 'catalog', catalogId: 'discoverIt' },
+    },
+    overrides: {},
+  }
+  const row = auditByCategory(txs, ['Active Cash', 'Discover'], rewards, range)
+    .find(r => r.category === 'Shopping')
+
+  assert.ok(row.leftBehind > 0, 'Q1 and Q2 shopping belonged on Discover')
+  assert.equal(row.bestVaries, true, 'Q3 has no shopping bonus; Q1 and Q2 do')
+
+  // Feb and Mar are Q1, Apr-Jun are Q2, Jul is Q3. Five of the six months had a better card, so
+  // five sixths of the spend was misrouted and exactly one sixth was fine.
+  const slice = row.slices.find(s => s.sourceName === 'Active Cash')
+  assert.equal(round(slice.onBestShare), round(1 / 6))
+  assert.equal(slice.offBestSpend, 400 * 5)
+  assert.equal(slice.onBestSpend, 400 * 1)
+})
+
+test('a category whose best card never moves reports a stable answer', () => {
+  // Grocery on a wallet with no rotating card: one answer, all window, so the advice line can
+  // state it flatly.
+  const txs = ledger([[400, 'Grocery', 'Active Cash']])
+  const row = auditByCategory(txs, ['Active Cash', 'Blue Cash'], wallet(), rangeOf(txs))
+    .find(r => r.category === 'Grocery')
+  assert.equal(row.bestVaries, false)
+  assert.equal(row.best.card.short, 'Blue Cash Preferred')
+})
+
+test('every slice still accounts for all of its own spend', () => {
+  const txs = [...ledger([[300, 'Shopping', 'Active Cash']]), ...ledger([[100, 'Shopping', 'Mystery']])]
+  const rewards = {
+    wallet: { 'Active Cash': { catalogId: 'activeCash' }, Discover: { kind: 'catalog', catalogId: 'discoverIt' } },
+    overrides: {},
+  }
+  const row = auditByCategory(txs, ['Active Cash', 'Discover'], rewards, rangeOf(txs))
+    .find(r => r.category === 'Shopping')
+  for (const s of row.slices) {
+    // Unlinked spend is neither on nor off the best card — there was no card to judge.
+    const accounted = s.linked ? round(s.onBestSpend + s.offBestSpend) : 0
+    assert.equal(s.linked ? accounted : 0, s.linked ? s.spend : 0, s.sourceName)
+  }
+  assert.equal(round(row.slices.reduce((t, s) => t + s.spend, 0)), row.spend)
+})
+
+test('rotating usage reports each quarter on its own terms', () => {
+  // Feb-Jul 2026 spans three Discover quarters with different categories and a cap that resets in
+  // each. $600/mo of grocery: a bonus category in Q1 only.
+  const txs = ledger([[600, 'Grocery', 'Discover']])
+  const range = rangeOf(txs)
+  const rewards = { wallet: { Discover: { kind: 'catalog', catalogId: 'discoverIt' } }, overrides: {} }
+  const use = rotatingUsage(txs, 'Discover', rewards, range)
+
+  assert.deepEqual(use.map(q => q.quarterKey), ['2026-Q1', '2026-Q2', '2026-Q3'])
+
+  const q1 = use[0]
+  assert.equal(q1.months, 2, 'the window holds Feb and Mar of Q1')
+  assert.equal(q1.cap, 1000, 'two months of a $500/mo allowance, not the full $1,500')
+  assert.equal(q1.spend, 1200, '$600 a month of grocery, which Q1 bonuses')
+  assert.equal(q1.scored, 1000, 'capped')
+  assert.equal(q1.earned, round(1000 * 0.05))
+  assert.equal(q1.used, 1, 'the whole available allowance was used')
+  assert.ok(q1.categories.includes('Grocery'))
+
+  // Q2 and Q3 do not bonus grocery, so nothing eligible landed on the card.
+  assert.equal(use[1].spend, 0)
+  assert.equal(use[1].earned, 0)
+  assert.equal(use[1].used, 0)
+  assert.ok(!use[1].categories.includes('Grocery'))
+})
+
+test('rotating usage is empty for a card that does not rotate', () => {
+  const txs = ledger([[400, 'Grocery', 'Blue Cash']])
+  assert.deepEqual(rotatingUsage(txs, 'Blue Cash', wallet(), rangeOf(txs)), [])
+  assert.deepEqual(rotatingUsage(txs, 'Nobody', wallet(), rangeOf(txs)), [])
 })

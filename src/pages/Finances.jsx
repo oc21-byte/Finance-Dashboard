@@ -3,7 +3,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client.js'
 import { FINANCE_CATEGORIES, FINANCE_CATEGORY_COLORS } from '../constants/categories.js'
 import { processCSVRows } from '../utils/csvHelpers.js'
-import { runImportQueue, sourceNameFromFile } from '../utils/importQueue.js'
+import { runImportQueue } from '../utils/importQueue.js'
+import { matchSourceName } from '../utils/sourceNaming.js'
 import { annotateDuplicates, duplicateFlags } from '../utils/duplicates.js'
 import { errorStatus } from '../utils/diagnostics.js'
 import { resolvePeriod, explicitRange, filterByRange, describeScope, buildScopeKey } from '../utils/period.js'
@@ -26,8 +27,6 @@ import OutflowsCard from '../components/finance/OutflowsCard.jsx'
 import AllocationCard from '../components/finance/AllocationCard.jsx'
 import FinanceTransactionTable from '../components/finance/FinanceTransactionTable.jsx'
 import FinanceInsightsPanel from '../components/finance/FinanceInsightsPanel.jsx'
-
-const SOURCE_NAME_KEY = 'visionSource_finances'
 
 const DEMO_BANNER_H = 32
 
@@ -306,10 +305,14 @@ export default function Finances({ demoMode, onTabChange, handoff }) {
         return
       }
 
-      const savedName = localStorage.getItem(SOURCE_NAME_KEY) || ''
+      // The source name is never inherited from a previous import. Reusing the last card name
+      // imported is what silently relabelled a whole statement: the field looked answered, the
+      // name was plausible, and nothing on screen said where it came from. A name now comes from
+      // the file itself or from nobody — the review modal already refuses to confirm without one.
+      const existing = [...new Set(transactions.map(t => t.source).filter(Boolean))]
       const named = groups.map(g => ({
         ...g,
-        sourceName: g.sourceName || savedName || sourceNameFromFile(g.fileName),
+        sourceName: g.sourceName || matchSourceName(g.account, existing) || '',
       }))
       const { groups: annotated } = annotateDuplicates(named, transactions)
       setReviewData({ groups: annotated, skipped })
@@ -340,7 +343,6 @@ export default function Finances({ demoMode, onTabChange, handoff }) {
       }
     }
     if (changed) saveMappingMutation.mutate(newSources)
-    localStorage.setItem(SOURCE_NAME_KEY, readyGroups[0].sourceName)
     pendingUploadMetaRef.current = readyGroups.map(g => ({
       filename: g.fileName,
       sourceName: g.sourceName,
@@ -748,6 +750,7 @@ export default function Finances({ demoMode, onTabChange, handoff }) {
         <BulkImportReviewModal
           groups={reviewData.groups}
           skipped={reviewData.skipped}
+          knownSources={[...new Set(transactions.map(t => t.source).filter(Boolean))].sort()}
           busy={batchMutation.isPending}
           onConfirm={handleReviewConfirm}
           onExpectedBalance={expectedClosingAt}

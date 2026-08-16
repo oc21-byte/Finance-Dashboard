@@ -61,14 +61,17 @@ export async function parsePdfVision(file, { statementType = 'bank', onProgress,
 
   const transactions = []
   let statementPeriod = null
+  // The account is printed on the cover page, so only the first batch usually sees it.
+  let account = null
   for (let i = 0; i < batches.length; i++) {
     onProgress?.({ batch: i + 1, batchCount: batches.length })
     const result = await postVisionBatch(batches[i], statementType, statementPeriod)
     if (!statementPeriod && result.statementPeriod) statementPeriod = result.statementPeriod
+    if (!account && result.account) account = result.account
     transactions.push(...(result.transactions || []))
   }
 
-  return { transactions, pageCount: pages.length, statementPeriod }
+  return { transactions, pageCount: pages.length, statementPeriod, account }
 }
 
 /**

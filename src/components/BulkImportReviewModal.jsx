@@ -68,6 +68,7 @@ export default function BulkImportReviewModal({
   groups: initialGroups,
   skipped = [],
   onConfirm,
+  knownSources = [],
   onCancel,
   onRemap,
   busy = false,
@@ -303,8 +304,24 @@ export default function BulkImportReviewModal({
                         value={group.sourceName}
                         onChange={e => setSourceName(group.id, e.target.value)}
                         placeholder="Source name…"
-                        className="w-44 border border-gray-300 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+                        list={group.account ? `sources-${group.id}` : undefined}
+                        className={`w-44 border rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 ${
+                          group.sourceName.trim() ? 'border-gray-300' : 'border-amber-400 bg-amber-50'
+                        }`}
                       />
+                      {/* What the statement itself says this account is, quoted verbatim. This is
+                          the check that was missing: a name can be wrong, but a name sitting under
+                          the words printed on the page is wrong visibly. */}
+                      {group.account && (
+                        <>
+                          <span className="w-44 text-[11px] leading-snug text-gray-500">
+                            Statement says: <span className="text-gray-700">{group.account}</span>
+                          </span>
+                          <datalist id={`sources-${group.id}`}>
+                            {knownSources.map(name => <option key={name} value={name} />)}
+                          </datalist>
+                        </>
+                      )}
                       {/* Card only, and optional: the import must not become blockable on knowing
                           which product a statement is for. Skipping it just leaves the card to be
                           linked later on the Rewards view. */}

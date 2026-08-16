@@ -1,8 +1,8 @@
 import {
-  quartersInRange, withQuarter, rotatingQuarterFor, calendarRangeOf, cardById,
+  quartersInRange, withQuarter, rotatingQuarterFor, calendarRangeOf, cardById, rotatingUsage,
 } from '../../../utils/rewardsModel.js'
 import { CATEGORY_COLORS } from '../../../constants/categories.js'
-import { dollars, rate as fmtRate } from './format.js'
+import { money, dollars, rate as fmtRate } from './format.js'
 
 /**
  * The rotating-category rail card: what a Discover-style bonus covered, quarter by quarter.
@@ -26,6 +26,8 @@ import { dollars, rate as fmtRate } from './format.js'
 export default function RotatingQuarters({
   cards,
   wallet = {},
+  spendTxs = [],
+  cardRewards = {},
   range,
   currentQuarter,
   categories = [],
@@ -59,6 +61,10 @@ export default function RotatingQuarters({
         // A category recorded in an earlier quarter stays offered even if this window's filters
         // have since removed it — otherwise editing one quarter could silently drop another.
         const options = [...new Set([...categories, ...Object.values(recorded)])].sort()
+        // How much of each quarter's allowance actually got used. This is the thing a long window
+        // makes impossible to see by eye: the bonus moved every quarter and the cap reset with it,
+        // so one aggregate number for "what Discover earned" hides whether you ever used it.
+        const usage = new Map(rotatingUsage(spendTxs, card.sourceName, cardRewards, range).map(u => [u.quarterKey, u]))
 
         return (
           <div key={card.sourceName} className="mt-3.5 pt-3.5 border-t border-gray-100 first:border-0 first:mt-2 first:pt-0">
@@ -81,6 +87,7 @@ export default function RotatingQuarters({
               {quarters.map(({ key, months }) => {
                 const { source, entries } = rotatingQuarterFor(catalog, entry, key)
                 const live = key === currentQuarter
+                const use = usage.get(key)
 
                 return (
                   <div key={key} className="flex items-start gap-2">
@@ -91,6 +98,7 @@ export default function RotatingQuarters({
 
                     <span className="flex-1 min-w-0">
                       {source === 'catalog' ? (
+                        <>
                         <span className="flex flex-wrap gap-1">
                           {entries.map(([category, meta]) => (
                             <span
@@ -107,6 +115,22 @@ export default function RotatingQuarters({
                             </span>
                           ))}
                         </span>
+                          {use && use.cap > 0 && (
+                            <span className="mt-1 flex items-center gap-1.5">
+                              <span className="flex-1 h-1 rounded-full bg-gray-100 overflow-hidden max-w-[110px]">
+                                <span
+                                  className="block h-full rounded-full"
+                                  style={{ width: `${use.used * 100}%`, background: use.used > 0 ? '#8b5cf6' : 'transparent' }}
+                                />
+                              </span>
+                              <span className="text-[10px] text-gray-400 whitespace-nowrap">
+                                {use.scored > 0
+                                  ? <>{dollars(use.scored)} of {dollars(use.cap)} · {money(use.earned)}</>
+                                  : <>nothing eligible</>}
+                              </span>
+                            </span>
+                          )}
+                        </>
                       ) : (
                         <>
                           {source === 'unpublished' && (

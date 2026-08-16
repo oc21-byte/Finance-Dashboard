@@ -68,14 +68,22 @@ export async function processStatementFile(file, {
   if (isPdfFile(file)) {
     if (!hasAiKey) throw new Error('A PDF needs an AI key to read. Add one in Settings.')
     onStage?.('Reading PDF with AI vision')
-    const { transactions, pageCount } = await parsePdfVision(file, {
+    const { transactions, pageCount, account } = await parsePdfVision(file, {
       statementType,
       onProgress: ({ batch, batchCount }) =>
         batchCount > 1 && onStage?.(`Reading PDF with AI vision (part ${batch} of ${batchCount})`),
     })
     const normalized = normalizeExtracted(transactions, statementType)
     if (!normalized.length) throw new Error('AI could not find any transactions in this PDF.')
-    return { kind: 'transactions', transactions: normalized, note: `AI vision, ${pageCount} page(s)` }
+    // `account` is EVIDENCE, not a name. It goes to the review screen to be shown beside the
+    // source-name field; only `matchSourceName` may turn it into a suggestion, and only when it
+    // clearly points at a name the user already uses.
+    return {
+      kind: 'transactions',
+      transactions: normalized,
+      note: `AI vision, ${pageCount} page(s)`,
+      account: account ?? null,
+    }
   }
 
   onStage?.('Reading file')
@@ -203,6 +211,7 @@ export async function runImportQueue(files, {
         transactions,
         mapping: result.mapping ?? null,
         sourceName: result.sourceName ?? '',
+        account: result.account ?? null,
         note: result.note ?? '',
         headers: result.headers ?? null,
         rows: result.rows ?? null,
