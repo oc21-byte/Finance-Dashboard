@@ -18,6 +18,11 @@ import { buildDashboardAnalysis } from './dashboardAnalysis.js'
 import { createDashboardChatBinding, createDashboardChatTurn } from './dashboardChat.js'
 import { createDashboardInsightGeneration, normalizeDashboardInsightRecord } from './dashboardInsightGeneration.js'
 import { buildBudgetAnalysis } from './budgetAnalysis.js'
+import { portfolioValueOf } from '../src/utils/liquidNetWorth.js'
+import { APP_MODEL, financeSystemPrompt } from './appKnowledge.js'
+import {
+  goalTimeline, goalFundingLine, blendGrowthRate, monthYearLabel, monthsUntil,
+} from './goalAnalysis.js'
 import { createBudgetChatBinding, createBudgetChatTurn } from './budgetChat.js'
 import { createBudgetInsightGeneration, normalizeBudgetInsightRecord } from './budgetInsightGeneration.js'
 import { bankFlowOf } from '../src/constants/financeRules.js'
@@ -654,6 +659,46 @@ function sourceName(db, link) {
   return 'Unknown source'
 }
 
+// The liquid snapshot both goal prompts quote, valued the way every other surface values it.
+//
+// Both used to build their portfolio line from `purchasePrice * shares` — cost basis — while the
+// goal's own `currentAmount` printed two lines above came from `computeGoalProgress` at live market
+// prices. One prompt, two disagreeing valuations of one portfolio. `portfolioValueOf` is the same
+// function the Dashboard's KPI strip and `buildDashboardAnalysis` call, so agreement is structural.
+function liquidSnapshot(db, priceMap) {
+  const cashBalance = db.settings.cashBalance ?? 0
+  const savingsTotal = (db.savings_accounts ?? []).reduce((s, a) => s + a.balance, 0)
+  const portfolioValue = portfolioValueOf(db.holdings ?? [], priceMap, {
+    displayCurrency: displayCurrencyOf(db),
+    usdCad: priceMap?.__USDCAD ?? null,
+  })
+  return { cashBalance, savingsTotal, portfolioValue, netWorth: cashBalance + savingsTotal + portfolioValue }
+}
+
+// Resolves a goal's links to the `{ sourceType, value, apy }` triples `blendGrowthRate` scores.
+// The valuation lives here because it needs the db, prices and FX; the blending is pure and lives
+// in `goalAnalysis.js`, where it can be tested.
+function goalGrowthRate(db, goal, priceMap = {}) {
+  const linkValues = (goal.links ?? []).map(link => ({
+    sourceType: link.sourceType,
+    value: sourceValue(db, link, priceMap) * (link.percent / 100),
+    apy: link.sourceType === 'savings'
+      ? (db.savings_accounts ?? []).find(a => a.id === link.sourceId)?.apy ?? 0
+      : 0,
+  }))
+  return blendGrowthRate(linkValues, db.settings.assumedAnnualReturn ?? 0.06)
+}
+
+// What the linked accounts are actually worth to this goal, so `goalTimeline` can tell a linked
+// goal with no stated rate ("funded by links") from one with no funding story at all ("no rate").
+function goalLinkFunding(goal) {
+  const breakdown = goal.breakdown ?? goal.linkedBreakdown ?? []
+  return {
+    linkCount: breakdown.length,
+    linkedValue: breakdown.reduce((sum, b) => sum + (Number(b.value) || 0), 0),
+  }
+}
+
 // Holdings needed to price every bucket linked by any goal (so we only hit Yahoo when a
 // holdings-backed goal actually exists). Full objects so listing reaches Yahoo resolution.
 function holdingsForGoalLinks(db) {
@@ -724,15 +769,20 @@ app.get('/api/goals', async (req, res) => {
   const fin = buildMonthlyFinancials(db)
   const goals = (db.goals ?? []).map(g => {
     const { currentAmount, breakdown, isLinked } = computeGoalProgress(db, g, priceMap)
-    const withAmount = { ...g, currentAmount }
+    const withAmount = { ...g, currentAmount, breakdown }
     const investContribPerMonth = investContribForGoal(db, g, fin)
-    const tl = goalTimeline(withAmount, goalGrowthRate(db, withAmount, priceMap))
+    const tl = goalTimeline(withAmount, {
+      growth: goalGrowthRate(db, withAmount, priceMap),
+      asOf: new Date(),
+      ...goalLinkFunding(withAmount),
+    })
     return {
       ...g,
       currentAmount,
       linkedBreakdown: breakdown,
       isLinked,
       investContribPerMonth,
+      status: tl.status,
       growthMonths: tl.growthMonths,
       growthDate: tl.growthDate,
       growthVerdict: tl.growthVerdict,
@@ -748,7 +798,10 @@ app.post('/api/goals', (req, res) => {
   const db = readDb()
   const err = validateGoalLinks(db, req.body.links)
   if (err) return res.status(400).json({ error: err })
-  const goal = { id: uuidv4(), ...req.body }
+  // `createdAt` is what lets a goal be too new to judge rather than merely unfunded. Stamped
+  // server-side so a client cannot backdate one, and never backfilled onto existing goals —
+  // a missing value means "age unknown", which `goalTimeline` treats as no claim either way.
+  const goal = { id: uuidv4(), ...req.body, createdAt: new Date().toISOString().slice(0, 10) }
   db.goals.push(goal)
   writeDb(db)
   res.status(201).json(goal)
@@ -760,7 +813,11 @@ app.put('/api/goals/:id', (req, res) => {
   if (idx === -1) return res.status(404).json({ error: 'Not found' })
   const err = validateGoalLinks(db, req.body.links, req.params.id)
   if (err) return res.status(400).json({ error: err })
-  db.goals[idx] = { ...db.goals[idx], ...req.body, id: req.params.id }
+  // `createdAt` is pinned alongside `id`: an edit changes the plan, never when the goal began.
+  // Letting a PUT carry one would hand a client the ability to make an old goal look new.
+  db.goals[idx] = {
+    ...db.goals[idx], ...req.body, id: req.params.id, createdAt: db.goals[idx].createdAt,
+  }
   writeDb(db)
   res.json(db.goals[idx])
 })
@@ -1208,7 +1265,12 @@ app.delete('/api/categories/:name', (req, res) => {
 
 // --- LLM ---
 
-const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+// The Goals surfaces are advisory rather than a deterministic triad, but the same rule applies:
+// the status is decided in `goalAnalysis.js` and the model reports it. Stated in the persona so it
+// survives whatever else the user message goes on to say.
+const GOAL_ADVISOR_ROLE = 'You are a practical personal finance advisor helping with a savings goal. Be concise and specific. The goal\'s status, timeline and every figure are computed before they reach you — report the status you are given and never decide for yourself whether a goal is on track or behind.'
+
+const MONTH_NAMES =['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 function monthLabel(yyyymm) {
   const [y, m] = yyyymm.split('-').map(Number)
   return `${MONTH_NAMES[m - 1]} ${y}`
@@ -1366,141 +1428,6 @@ function formatMonthlyFinancials(fin) {
   return lines.join('\n')
 }
 
-// Claude has no knowledge of the real current date, so any prompt that reasons
-// about timelines (goal target dates, "months from now", etc.) must state it.
-function todayLine() {
-  return `Today's date is ${new Date().toISOString().slice(0, 10)}.`
-}
-
-// Whole months from today until a YYYY-MM-DD target date (rounded to nearest
-// month). Computed server-side so the model never has to do date arithmetic.
-// Returns null for a missing/unparseable date, negative if the date is past.
-function monthsUntil(targetDate) {
-  if (!targetDate) return null
-  const target = new Date(targetDate)
-  if (Number.isNaN(target.getTime())) return null
-  const days = (target - new Date()) / (1000 * 60 * 60 * 24)
-  return Math.round(days / 30.4375)
-}
-
-// "Aug 2027" from a YYYY-MM-DD date. Computed server-side so the model never has to
-// translate a month count into a calendar date (a step Haiku frequently gets wrong).
-function monthYearLabel(date) {
-  const d = new Date(date)
-  if (Number.isNaN(d.getTime())) return 'unknown'
-  return `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`
-}
-
-// Calendar month `n` whole months from today, e.g. dateAfterMonths(29) => "Nov 2028".
-function dateAfterMonths(months) {
-  const d = new Date()
-  d.setMonth(d.getMonth() + months)
-  return monthYearLabel(d)
-}
-
-// Blended expected annual growth rate for a goal, weighted by the value of each linked source:
-// savings sources contribute their APY (stored as a percent), holdings buckets the user's assumed
-// return (stored as a decimal). Unlinked goals — or links with no yield — return rate 0.
-function goalGrowthRate(db, goal, priceMap = {}) {
-  const assumedReturn = db.settings.assumedAnnualReturn ?? 0.06
-  let weighted = 0, total = 0, hasInvestments = false, hasYield = false
-  for (const link of goal.links ?? []) {
-    const value = sourceValue(db, link, priceMap) * (link.percent / 100)
-    if (value <= 0) continue
-    let rate = 0
-    if (link.sourceType === 'savings') {
-      const acct = (db.savings_accounts ?? []).find(a => a.id === link.sourceId)
-      rate = acct && acct.apy ? acct.apy / 100 : 0
-      if (rate > 0) hasYield = true
-    } else if (link.sourceType === 'holdingsAccountType') {
-      rate = assumedReturn
-      hasInvestments = true
-    }
-    weighted += value * rate
-    total += value
-  }
-  return { blendedAnnualRate: total > 0 ? weighted / total : 0, hasInvestments, hasYield, assumedReturn }
-}
-
-// Months to grow `balance` to `target`, compounding monthly at annualRate and adding `monthly`
-// each month. Returns { months, date } or null if unreachable within the cap.
-function projectWithGrowth({ balance, monthly, target, annualRate }) {
-  if (balance >= target) return { months: 0, date: dateAfterMonths(0) }
-  const r = annualRate / 12
-  let bal = balance
-  for (let m = 1; m <= 1200; m++) {
-    bal = bal * (1 + r) + monthly
-    if (bal >= target) return { months: m, date: dateAfterMonths(m) }
-  }
-  return null
-}
-
-// Pre-computed, plain-English timeline verdict for a goal so the prompt never asks the
-// model to do date arithmetic. Returns the linear (baseline) verdict plus, when a meaningful
-// `growth` rate is supplied, an additive, clearly-labeled optimistic "with growth" projection.
-function goalTimeline(goal, growth = null) {
-  const remaining = Math.max(0, goal.targetAmount - goal.currentAmount)
-  const monthsAtCurrent = goal.monthlySavings > 0 ? Math.ceil(remaining / goal.monthlySavings) : null
-  const monthsToTarget = monthsUntil(goal.targetDate)
-  const projectedDate = monthsAtCurrent == null ? null : dateAfterMonths(monthsAtCurrent)
-  const requiredMonthly = (monthsToTarget != null && monthsToTarget > 0) ? Math.ceil(remaining / monthsToTarget) : null
-
-  let verdict
-  if (monthsAtCurrent == null) {
-    verdict = 'No monthly savings rate is set, so a completion date cannot be projected.'
-  } else if (monthsToTarget == null) {
-    verdict = `At the current rate the goal is reached in ${monthsAtCurrent} months (${projectedDate}). No target date is set.`
-  } else if (monthsAtCurrent <= monthsToTarget) {
-    verdict = `ON TRACK: at the current rate the goal is reached in ${monthsAtCurrent} months (${projectedDate}), about ${monthsToTarget - monthsAtCurrent} month(s) BEFORE the ${monthYearLabel(goal.targetDate)} target.`
-  } else {
-    verdict = `BEHIND: at the current rate the goal is reached in ${monthsAtCurrent} months (${projectedDate}), which is ${monthsAtCurrent - monthsToTarget} month(s) AFTER the ${monthYearLabel(goal.targetDate)} target. To hit the target date the user must save about $${requiredMonthly}/month (currently $${goal.monthlySavings || 0}/month).`
-  }
-
-  let growthMonths = null, growthDate = null, growthVerdict = null, blendedAnnualRate = null, assumedReturnUsed = null, hasInvestments = false
-  if (growth && growth.blendedAnnualRate > 0 && remaining > 0) {
-    blendedAnnualRate = Math.round(growth.blendedAnnualRate * 10000) / 10000
-    assumedReturnUsed = growth.assumedReturn
-    hasInvestments = growth.hasInvestments
-    const proj = projectWithGrowth({
-      balance: goal.currentAmount,
-      monthly: goal.monthlySavings || 0,
-      target: goal.targetAmount,
-      annualRate: growth.blendedAnnualRate,
-    })
-    if (proj) {
-      const comp = []
-      if (growth.hasYield) comp.push('savings APY')
-      if (growth.hasInvestments) comp.push(`${Math.round(growth.assumedReturn * 100)}% assumed investment return`)
-      const rateLabel = `~${(growth.blendedAnnualRate * 100).toFixed(1)}%/yr (${comp.join(' + ')})`
-      if (monthsAtCurrent != null) {
-        const sooner = monthsAtCurrent - proj.months
-        if (sooner >= 1) {
-          growthMonths = proj.months
-          growthDate = proj.date
-          growthVerdict = `With growth ${rateLabel}: reached in ${proj.months} months (${proj.date}), about ${sooner} month(s) sooner than the no-growth estimate. Optimistic — assumes returns hold.`
-        }
-      } else {
-        growthMonths = proj.months
-        growthDate = proj.date
-        growthVerdict = `With growth ${rateLabel} and no monthly contributions, the linked balance compounds to the target in ${proj.months} months (${proj.date}). Optimistic — assumes returns hold.`
-      }
-    }
-  }
-
-  return { remaining, monthsAtCurrent, monthsToTarget, projectedDate, requiredMonthly, verdict, growthMonths, growthDate, growthVerdict, blendedAnnualRate, assumedReturnUsed, hasInvestments }
-}
-
-// Plain-English line describing which accounts back a goal, e.g.
-// "Funded by: Capital One HYSA (50% = $30,000.00), TFSA holdings (50% = $25,300.00, live market value)".
-function goalFundingLine(breakdown) {
-  if (!breakdown.length) return null
-  const parts = breakdown.map(b => {
-    const live = b.sourceType === 'holdingsAccountType' ? ', live market value' : ''
-    return `${b.name} (${b.percent}% = $${b.value.toFixed(2)}${live})`
-  })
-  return `Funded by linked accounts: ${parts.join(', ')}.`
-}
-
 // Returns a goal with its derived currentAmount and breakdown folded in, for use in prompts.
 function goalWithProgress(db, goal, priceMap) {
   const { currentAmount, breakdown } = computeGoalProgress(db, goal, priceMap)
@@ -1600,7 +1527,9 @@ Respond with this exact JSON format, no other text:
   let raw = null
   try {
     const text = await callLLM({
-      system: 'You are a personal finance transaction categorizer. Respond with valid JSON only.',
+      // The app model, not the advisory persona: categorizing needs to know that a card row is a
+      // purchase and a savings transfer is allocation, not how to give advice about either.
+      system: `You are a personal finance transaction categorizer. Respond with valid JSON only.\n\n${APP_MODEL}`,
       userMessages: [{ role: 'user', content: userMsg }],
       maxTokens: 1024,
     })
@@ -1645,13 +1574,14 @@ app.post('/api/llm/goal-analysis', async (req, res) => {
     })
     .join('\n')
 
-  const cashBalance = db.settings.cashBalance ?? 0
-  const savingsTotal = (db.savings_accounts ?? []).reduce((s, a) => s + a.balance, 0)
-  const portfolioValue = (db.holdings ?? []).reduce((s, h) => s + h.purchasePrice * h.shares, 0)
-  const netWorth = cashBalance + savingsTotal + portfolioValue
-  const netWorthSummary = `Cash: $${cashBalance.toFixed(2)}, Savings accounts: $${savingsTotal.toFixed(2)}, Portfolio (cost basis): $${portfolioValue.toFixed(2)}, Total: $${netWorth.toFixed(2)}`
+  const { cashBalance, savingsTotal, portfolioValue, netWorth } = liquidSnapshot(db, priceMap)
+  const netWorthSummary = `Cash: $${cashBalance.toFixed(2)}, Savings accounts: $${savingsTotal.toFixed(2)}, Portfolio (market value): $${portfolioValue.toFixed(2)}, Total: $${netWorth.toFixed(2)}`
 
-  const tl = goalTimeline(goal, goalGrowthRate(db, goal, priceMap))
+  const tl = goalTimeline(goal, {
+    growth: goalGrowthRate(db, goal, priceMap),
+    asOf: new Date(),
+    ...goalLinkFunding(goal),
+  })
   const volatilityNote = goal.breakdown.some(b => b.sourceType === 'holdingsAccountType')
     ? '\nNote: part of this goal is backed by investments, so its value moves with the market — mention this volatility if relevant.'
     : ''
@@ -1662,22 +1592,24 @@ Remaining: $${tl.remaining}
 Monthly savings rate: ${goal.monthlySavings ? '$' + goal.monthlySavings : 'not set'}
 Target date: ${goal.targetDate || 'not set'}${tl.monthsToTarget == null ? '' : ` (${monthYearLabel(goal.targetDate)}, ${tl.monthsToTarget} months from today)`}
 ${fundingLine ? fundingLine + '\n' : ''}
-Timeline (already computed — use these figures, do NOT recompute dates yourself):
+Goal age: ${tl.ageDays == null ? 'unknown — this goal predates creation dates being recorded, so do not guess how long it has existed' : `created ${tl.ageDays} day(s) ago`}
+
+STATUS (already decided — report it, never choose a different one): ${tl.status}
 ${tl.verdict}${tl.growthVerdict ? `\nOptimistic projection (assumes investment/interest returns hold — do NOT present as guaranteed): ${tl.growthVerdict}` : ''}
 
 All goals:
 ${allGoalsSummary || '  No other goals'}
 
-Liquid net worth snapshot (cash + savings + investments; excludes property, vehicles, private shares, and debts):
+Liquid net worth snapshot:
 ${netWorthSummary}
 
 ${formatMonthlyFinancials(fin)}${volatilityNote}
 
-Write 3–4 sentences: (1) state whether they are on track or behind using the linear Timeline — if a growth projection is also provided, present both as a range (e.g. "conservatively X months, or as few as Y months if returns hold") and make clear the optimistic figure assumes investment returns; if behind on the linear timeline, give the monthly savings rate needed to hit the target date; (2) name one specific credit-card spending category (from the breakdown) to reduce and roughly how much sooner it would get them there; (3) briefly state the data basis — how many full months and that expenses come from bank transactions. Be specific, practical, and honest. Do not add the card breakdown to total expenses. Plain text only, no markdown.`
+Write 3–4 sentences: (1) report the STATUS above in plain language and use its figures — never decide for yourself whether the goal is on track or behind, and never call a goal behind unless the status says behind. If the status is too_early, say the goal is too new to judge pace and, if a rate is set, that the plan as stated does or does not reach the target date. If it is funded_by_links or no_rate, say plainly that no monthly rate is set and what that means, without substituting a judgement. If it is behind, give the monthly savings rate needed to hit the target date. If a growth projection is provided, present both as a range (e.g. "conservatively X months, or as few as Y months if returns hold") and make clear the optimistic figure assumes investment returns. (2) Name one specific credit-card spending category (from the breakdown) to reduce and roughly how much sooner it would get them there. (3) Briefly state the data basis — how many full months and that expenses come from bank transactions. Be specific, practical, and honest. Do not add the card breakdown to total expenses. Plain text only, no markdown.`
 
   try {
     const text = await callLLM({
-      system: `You are a practical personal finance advisor. ${todayLine()} Be concise and specific.`,
+      system: financeSystemPrompt(GOAL_ADVISOR_ROLE, { today: true }),
       userMessages: [{ role: 'user', content: userMsg }],
       maxTokens: 512,
     })
@@ -2252,32 +2184,36 @@ app.post('/api/llm/goal-chat', async (req, res) => {
     return `  ${g.name}: $${currentAmount} / $${g.targetAmount} (${pct}%)${g.monthlySavings ? `, saving $${g.monthlySavings}/mo` : ''}`
   }).join('\n')
 
-  const cashBalance = db.settings.cashBalance ?? 0
-  const savingsTotal = (db.savings_accounts ?? []).reduce((s, a) => s + a.balance, 0)
-  const portfolioValue = (db.holdings ?? []).reduce((s, h) => s + h.purchasePrice * h.shares, 0)
+  const { cashBalance, savingsTotal, portfolioValue } = liquidSnapshot(db, priceMap)
 
   const pct = goal.targetAmount > 0 ? Math.round(goal.currentAmount / goal.targetAmount * 100) : 0
-  const tl = goalTimeline(goal, goalGrowthRate(db, goal, priceMap))
+  const tl = goalTimeline(goal, {
+    growth: goalGrowthRate(db, goal, priceMap),
+    asOf: new Date(),
+    ...goalLinkFunding(goal),
+  })
 
-  const systemMsg = `You are a personal finance advisor helping with a savings goal. ${todayLine()}
-
-Goal: ${goal.name}
+  const systemMsg = financeSystemPrompt(GOAL_ADVISOR_ROLE, {
+    today: true,
+    extra: `Goal: ${goal.name}
 Target: $${goal.targetAmount} | Saved: $${goal.currentAmount} (${pct}%)
 Remaining: $${tl.remaining}
 Monthly savings rate: ${goal.monthlySavings ? '$' + goal.monthlySavings : 'not set'}
 Target date: ${goal.targetDate || 'not set'}${tl.monthsToTarget == null ? '' : ` (${monthYearLabel(goal.targetDate)}, ${tl.monthsToTarget} months from today)`}
+Goal age: ${tl.ageDays == null ? 'unknown — this goal predates creation dates being recorded, so do not guess how long it has existed' : `created ${tl.ageDays} day(s) ago`}
 ${fundingLine ? fundingLine + '\n' : ''}
-Timeline (already computed — use these figures, do NOT recompute dates yourself):
+STATUS (already decided — report it, never choose a different one): ${tl.status}
 ${tl.verdict}${tl.growthVerdict ? `\nOptimistic projection (assumes investment/interest returns hold — do NOT present as guaranteed): ${tl.growthVerdict}` : ''}
 
 All goals:
 ${allGoalLines || '  No other goals'}
 
-Liquid net worth: Cash $${cashBalance.toFixed(2)}, Savings $${savingsTotal.toFixed(2)}, Portfolio cost basis $${portfolioValue.toFixed(2)}
+Liquid net worth: Cash $${cashBalance.toFixed(2)}, Savings $${savingsTotal.toFixed(2)}, Portfolio at market $${portfolioValue.toFixed(2)}
 
 ${formatMonthlyFinancials(fin)}
 
-Be concise, specific, and honest. When a growth projection is available, acknowledge both the conservative and optimistic estimates. Answer in 2–4 sentences.`
+Be concise, specific, and honest. Never decide for yourself whether the goal is on track or behind — report the status above, and never call a goal behind unless the status says behind. A too_early status means the goal is too new to have a pace; a funded_by_links or no_rate status means no monthly rate is set, which is not the same as falling short. When a growth projection is available, acknowledge both the conservative and optimistic estimates. Answer in 2–4 sentences.`,
+  })
 
   try {
     const text = await callLLM({ system: systemMsg, userMessages: messages, maxTokens: 512 })
@@ -2301,10 +2237,10 @@ app.post('/api/llm/budget-builder', async (req, res) => {
 
   const goalLines = activeGoals.length > 0
     ? activeGoals.map(g => {
-        const m = monthsUntil(g.targetDate)
+        const { months } = monthsUntil(g.targetDate, new Date())
         return `- ${g.name}: target $${g.targetAmount}, current $${g.currentAmount}` +
           (g.monthlySavings ? `, saving $${g.monthlySavings}/mo` : '') +
-          (g.targetDate ? `, due ${g.targetDate}${m == null ? '' : ` (${m} months from today)`}` : '')
+          (g.targetDate ? `, due ${g.targetDate}${months == null ? '' : ` (${months} months from today)`}` : '')
       }).join('\n')
     : '(none)'
 
@@ -2312,7 +2248,7 @@ app.post('/api/llm/budget-builder', async (req, res) => {
     .map(c => `- ${c.category}: $${c.monthly}`)
     .join('\n')
 
-  const userMsg = `You are a personal finance advisor. Generate a monthly budget that balances spending discipline with savings goals.
+  const userMsg = `Generate a monthly budget that balances spending discipline with savings goals.
 
 Monthly take-home income: $${income}
 Timeline preference: ${timelinePreference}
@@ -2344,7 +2280,10 @@ Only include categories that have spend data. Do not invent categories. Do NOT i
   let raw = null
   try {
     const text = await callLLM({
-      system: `You are a personal finance advisor. ${todayLine()} You always respond with valid JSON only.`,
+      system: financeSystemPrompt(
+        'You are a personal finance advisor building a monthly budget plan. You always respond with valid JSON only.',
+        { today: true },
+      ),
       userMessages: [{ role: 'user', content: userMsg }],
       maxTokens: 1024,
     })

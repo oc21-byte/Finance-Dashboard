@@ -1,5 +1,6 @@
 import { formatUsd, normalizeUsdText } from './currencyFormatting.js'
 import { stripJsonFence, validateSummary } from './modelText.js'
+import { COPYWRITER_ROLE, financeSystemPrompt } from './appKnowledge.js'
 
 const EXPLORE_OPTIONS = [
   {
@@ -156,7 +157,7 @@ export function createFinanceInsightGeneration({ analysis, period, periodLabel =
   const expectedKeys = analysis.observations.map(item => item.key)
 
   const prompt = {
-    system: `You write concise copy for a personal finance dashboard. The facts, selections, titles and arithmetic are already final. Never recalculate, alter or contradict them. Respond with valid JSON only.`,
+    system: financeSystemPrompt(COPYWRITER_ROLE),
     user: `Write the short copy displayed on a user's deterministic Finances insights.
 
 SOURCE FACTS — use only these values:
@@ -171,8 +172,6 @@ Writing rules:
 - Plain text only: no markdown, headings, bullets or emoji.
 - A body explains what its title already states; never restate the title verbatim and never contradict it.
 - Sound positive, polished and human, but do not flatter or minimize a financial problem.
-- Never use shaming labels such as reckless, irresponsible, bad with money or impulsive.
-- Money moved to savings or investments is allocation, not spending — never describe it as an expense or as money lost.
 - Do not invent causes, intentions, budgets, transactions, amounts or recommendations unsupported by the source facts.
 - The pace summary should state its basis plainly. For Over Pace, state the supplied monthly gap and give one calm next step. For Little Room, explain the savings-target shortfall without calling it overspending. For On Track, acknowledge the available room without promising future results. For Not Enough Data, say what information is missing.
 - Do not perform arithmetic. Copy exact monetary values only when they appear in the source facts.

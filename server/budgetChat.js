@@ -1,6 +1,7 @@
 import { formatUsd, normalizeUsdText } from './currencyFormatting.js'
 import { createChatBinding } from './chatBinding.js'
 import { stripJsonFence, validatePlainText } from './modelText.js'
+import { advisorRole, financeSystemPrompt } from './appKnowledge.js'
 
 // The plan-side allowlist. Deliberately NOT the bank one from `financeChat.js`, the card one from
 // `spendChat.js`, or the balance one from `dashboardChat.js`. This tab has no rows to slice: it has
@@ -386,11 +387,11 @@ function advicePrompt(context) {
     })),
   }
   return {
-    system: `You are a practical personal finance assistant answering an advisory question about a stored Budget result.
+    system: financeSystemPrompt(advisorRole('Budget'), {
+      extra: `${JSON.stringify(source, null, 2)}
 
-${JSON.stringify(source, null, 2)}
-
-Use only the supplied facts. Do not perform arithmetic or invent causes, intentions, transactions or amounts. Every savings figure here is what the plan INTENDS to set aside, never what was actually saved — never call it an achieved savings rate, and if asked what was actually saved, say the Spend Analyzer's Financial Pace covers that. A cap sitting below average spending means either the cap is unrealistic or the spending needs to come down; present it as that choice rather than as a failure. Money planned for savings, investments or a goal is allocation, not spending. Be constructive and non-shaming, but do not minimize a plan that commits more than comes in. Answer in 2–4 concise sentences, plain text only.`,
+Use only the supplied facts. Do not perform arithmetic or invent causes, intentions, transactions or amounts. Every savings figure here is what the plan INTENDS to set aside, never what was actually saved — never call it an achieved savings rate, and if asked what was actually saved, say the Spend Analyzer's Financial Pace covers that. A cap sitting below average spending means either the cap is unrealistic or the spending needs to come down; present it as that choice rather than as a failure. Be constructive and non-shaming, but do not minimize a plan that commits more than comes in. Answer in 2–4 concise sentences, plain text only.`,
+    }),
     maxTokens: 512,
   }
 }

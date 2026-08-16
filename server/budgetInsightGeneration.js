@@ -1,5 +1,6 @@
 import { formatUsd, normalizeUsdText } from './currencyFormatting.js'
 import { stripJsonFence, validateSummary } from './modelText.js'
+import { COPYWRITER_ROLE, financeSystemPrompt } from './appKnowledge.js'
 
 const EXPLORE_OPTIONS = [
   {
@@ -171,7 +172,7 @@ export function createBudgetInsightGeneration({ analysis, period, periodLabel = 
   const expectedKeys = analysis.observations.map(item => item.key)
 
   const prompt = {
-    system: `You write concise copy for a personal finance dashboard. The facts, selections, titles and arithmetic are already final. Never recalculate, alter or contradict them. Respond with valid JSON only.`,
+    system: financeSystemPrompt(COPYWRITER_ROLE),
     user: `Write the short copy displayed on a user's deterministic Budget insights.
 
 SOURCE FACTS — use only these values:
@@ -186,10 +187,8 @@ Writing rules:
 - Plain text only: no markdown, headings, bullets or emoji.
 - A body explains what its title already states; never restate the title verbatim and never contradict it.
 - Sound positive, polished and human, but do not flatter or minimize a financial problem.
-- Never use shaming labels such as reckless, irresponsible, bad with money or impulsive.
 - This is a PLAN, not a record of what happened. Every savings figure here is what the plan intends to set aside, never what was actually saved. Never call it an achieved or actual savings rate.
 - A cap sitting below average spending means the cap is unrealistic or the spending needs to come down. Present it as a choice between those two, never as a failure.
-- Money planned for savings, investments or a goal is allocation, not spending — never describe it as an expense or as money lost.
 - Do not invent causes, intentions, transactions, amounts or recommendations unsupported by the source facts.
 - Do not perform arithmetic. Copy exact monetary values only when they appear in the source facts.
 - Never present one supplied figure as the difference between two others. In particular, the overspend across over-cap categories is not the gap between the capped total and the average-spend total.

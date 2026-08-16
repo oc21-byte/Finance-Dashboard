@@ -90,7 +90,9 @@ test('the prompt limits AI work to wording deterministic source facts', () => {
 
   assert.match(prompt.system, /already final/i)
   assert.match(prompt.user, /Do not perform arithmetic/)
-  assert.match(prompt.user, /allocation, not spending/)
+  // The allocation rule is app-wide vocabulary, so it lives once in the shared primer rather than
+  // in this tab's writing rules — but it must still reach this generation.
+  assert.match(prompt.system, /allocation, not spending/)
   for (const item of analysis.observations) {
     assert.ok(prompt.user.includes(item.key), `${item.key} is named in the required shape`)
     assert.ok(prompt.user.includes(item.title), `${item.title} is supplied, not requested`)

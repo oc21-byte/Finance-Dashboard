@@ -86,7 +86,8 @@ rules encode) and `project-plan.md` (original, partly outdated concept). Never m
 | Goals math/UI | `src/utils/goalsModel.js`, `src/components/goals/*` |
 | Settings UI, model catalog | `src/pages/Settings.jsx`, `src/components/settings/*`, `src/utils/modelCatalog.js` |
 | Insight triads (one per tab) | `server/{spend,finance,dashboard,budget}{Analysis,InsightGeneration,Chat}.js` |
-| Shared insight safeguards | `server/chatBinding.js`, `server/modelText.js` |
+| Goals insight math | `server/goalAnalysis.js` |
+| Shared insight safeguards | `server/chatBinding.js`, `server/modelText.js`, `server/appKnowledge.js` |
 | Tests | `test/*.test.js` |
 
 Pages orchestrate queries, mutations, import flow, and derivation chains. Visual math goes in
@@ -381,11 +382,44 @@ otherwise label its own cleared option with the base rate and understate itself.
   Two rates, on purpose — a plan and an observation. Never merge them.
 - Goal analysis and chat accept **either provider's** key, matching the server routes. Demo mode
   disables every editor and leaves AI available, as on Budget.
+- **`server/goalAnalysis.js` decides a goal's status; the model reports it.** Same contract as the
+  four triads, arrived at late: the prompt used to hand over a free-text verdict and then order the
+  model to "state whether they are on track or behind", so a goal with nothing to project got a
+  judgement invented for it. The statuses are `reached`, `too_early`, `funded_by_links`, `no_rate`,
+  `no_target_date`, `on_track`, `behind`, and three of them exist because the binary had no room
+  for them: a goal younger than `NEW_GOAL_DAYS` has no track record to be behind (the form
+  pre-fills a target date one year out, so any goal wanting more than twelve times its rate was
+  stamped BEHIND at creation); a linked goal legitimately has no monthly rate and tracks its
+  accounts instead; and a goal with neither rate nor links is genuinely unprojectable.
+- **`createdAt` is stamped on POST and pinned on PUT**, `YYYY-MM-DD`. A missing one means *age
+  unknown*, never *old* — goals predating the field carry none and are never `too_early`. Do not
+  backfill it: inventing a creation date is the same error as inventing the verdict.
+- The module is **pure** — `asOf` is injected, and the caller resolves links to values before
+  `blendGrowthRate` scores them, because valuing a holdings bucket needs prices, FX and a display
+  currency. Dates are parsed as **local calendar days**, never as instants: `new Date('2028-08-01')`
+  is UTC midnight, so west of Greenwich a goal targeted at the first of a month labelled itself the
+  month before. Month comparisons are calendar-based for the same reason a year is twelve months
+  and not `365 / 30.4375`.
+- Both goal prompts value the portfolio at **market**, through `portfolioValueOf`. They used to
+  build that line from `purchasePrice * shares` while the goal's own balance two lines above came
+  from live prices — one prompt, two valuations of one portfolio.
 
 ## Insight contracts
 
 - Deterministic analysis owns totals, facts, classifications, rankings, statuses, and selections.
   Models write prose only, or classify a validated chat intent.
+- **Persona and domain vocabulary live once, in `server/appKnowledge.js`.** `APP_MODEL` says what the
+  app is and which tab owns which subject; `VOCABULARY` states the distinctions whose everyday
+  reading is the wrong one (allocation vs spending, liquid net worth, market movement vs
+  contribution, planned vs achieved). `financeSystemPrompt(role, { today, asOf, extra })` composes
+  them, and `extra` is where a surface adds its own facts and writing rules. Every prose surface
+  imports it — the four generations, the four chats, both Goals routes, Budget Builder, categorize.
+  Extraction prompts (detect-columns, extract-rows, vision) deliberately do not: they read
+  statements, not app state. Two rules for the module — **no figures** (a number arriving from
+  there is one no JS computed, and `test/appKnowledge.test.js` pins it), and knowledge only, with
+  tab-specific instructions left at their call site. Before this existed the persona strings were
+  copy-pasted into eight files and each invariant restated in two to four, so a surface got a rule
+  only if someone remembered to copy it — which is why the Goals prompts had none of them.
 - The four catalogues are **disjoint by subject**: spend is the card ledger, finance the bank ledger,
   dashboard the balance, budget the plan. A user reading two tabs must not meet one finding under two
   headings.
@@ -422,7 +456,7 @@ transactions[]              bank rows; optional allocation destination link
 credit_card_transactions[]  card rows; positive rows include creditKind
 holdings[]                  purchase lots with weighted-average cost basis
 savings_accounts[]
-goals[]
+goals[]                     createdAt is stamped on create; absent on goals that predate it
 netWorthHistory[]           { date, netWorth, breakdown{cash,savings,portfolio}, portfolioCost, basis }
 financeInsights             current finance generation + chat, or null
 spendInsights               v2 current generation + chat; v1 remains readable, or null

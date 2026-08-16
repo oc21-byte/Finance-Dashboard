@@ -3,6 +3,7 @@ import { detectRecurring } from '../src/utils/recurring.js'
 import { formatUsd, normalizeUsdText } from './currencyFormatting.js'
 import { createChatBinding } from './chatBinding.js'
 import { stripJsonFence, validatePlainText } from './modelText.js'
+import { advisorRole, financeSystemPrompt } from './appKnowledge.js'
 
 const FACT_METRICS = new Set([
   'spend', 'credits', 'transactions', 'recurring', 'income', 'expenses', 'headroom',
@@ -509,11 +510,11 @@ function advicePrompt(context) {
     },
   }
   return {
-    system: `You are a practical personal finance assistant answering an advisory question about a stored Spend Analyzer result.
-
-${JSON.stringify(source, null, 2)}
+    system: financeSystemPrompt(advisorRole('Spend Analyzer'), {
+      extra: `${JSON.stringify(source, null, 2)}
 
 Use only the supplied facts. Do not perform arithmetic or invent causes, intentions, transactions, budgets or amounts. Be constructive and non-shaming, but do not minimize Over Pace or other financial strain. Answer in 2–4 concise sentences, plain text only. State which supplied period your advice refers to when relevant.`,
+    }),
     maxTokens: 512,
   }
 }
