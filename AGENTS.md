@@ -78,6 +78,7 @@ rules encode) and `project-plan.md` (original, partly outdated concept). Never m
 | Shared period/scope model, shared UI | `src/utils/period.js`, `src/components/shared/*` |
 | Finances math/UI | `src/utils/finance*.js`, `src/components/finance/*` |
 | Spend math/UI | `src/utils/spend*.js`, `recurring.js`, `src/components/spend/*` |
+| Card rewards catalog | `src/constants/cardCatalog.js`, `src/utils/rewardsModel.js` |
 | Dashboard math/UI | `src/utils/liquidNetWorth.js`, `{waterfall,netWorthChart}Model.js`, `src/components/dashboard/*` |
 | Liquid-net-worth history | `server/netWorthHistory.js` |
 | Budget math/UI | `src/utils/budgetModel.js`, `src/components/budget/*` |
@@ -159,12 +160,44 @@ KPI row. All four AI tabs dock insights in a sticky `<aside>` inside an
 only where sticky. Finances and Spend offset `top` by the demo banner plus `PINNED_BAR_H`; the
 Dashboard and Budget have no pinned bar and offset by the banner alone.
 
+**Card rewards catalog.** `CARD_CATALOG` in `src/constants/cardCatalog.js` is the only source of
+issuer earn rates. `rewardsModel.js` scores them; rates do not live in components. A card's `id` is
+persisted in `settings.cardRewards.wallet` and `.overrides` — rename the display name freely, never
+the id. Add a card by copying an entry in that array (`fee`, `base`, `rates` keyed on app
+`CATEGORIES`, `verified: 'YYYY-MM'`). User corrections belong in `overrides` so a catalog update
+cannot clobber them.
+
+**A card is still `t.source`.** The rewards work adds no card entity: `settings.cardRewards.wallet`
+maps a source name to a catalog card, and the source name stays the free-text persistence contract
+that `cardOf()`, `buildCardColors()`, the card filter chips and `csvSources` all key on. Never
+rename or merge a source to make it match a catalog card.
+
+A wallet entry has three link states, and collapsing any two is a bug. `catalog` is scored;
+`unlisted` is a rewards card with no rates, counted in `coverage.scorable` but never scored, so the
+earned total cannot silently understate itself; `none` is not a rewards card and leaves the view
+entirely. A **missing** entry is a fourth thing — a question nobody has answered — which is why
+clearing a link deletes the key rather than storing an empty value. `linkKindOf`, `walletEntryFor`
+and `pickerValueFor` in `rewardsModel.js` own that shape; a bare `catalogId` still means `catalog`.
+
+Linking happens in three places through one `CardPicker`: the Rewards wallet setup, the import
+review modal (`wallet` prop, card ledger only — the picker is optional there and its value is held
+until confirm, because the source name beside it is still being edited), and Add Transaction
+(`sources` prop, card ledger only, where the card is required — a card row with no card can never
+be attributed, coloured or scored). Both props are absent on Finances, which keeps its old
+behaviour. There is **no vision autodetect of the card product**; the extraction prompt returns
+transactions only, deliberately.
+
 ## Dashboard behavior
 
 - **Liquid net worth = cash + savings + investment accounts.** It excludes property, vehicles, private
   or corporate shares, and debts. Never label it "net worth" in UI copy or a prompt. The
   `netWorthHistory` key, `netWorth` field, `/api/net-worth-*` routes, and `['net-worth-history']` query
   key keep the old spelling as persisted contracts — renamed nowhere.
+- **`buildDashboardAnalysis` values holdings in the home currency, like the cards do.** It must be
+  handed `settings` and a price map carrying `__USDCAD`, and must pass `displayCurrency` / `usdCad`
+  into `portfolioValueOf` and `buildComposition` — the same two functions `Dashboard.jsx` calls with
+  the same two arguments. Dropping either one values a foreign portfolio at cost while the KPI strip
+  beside it shows market, which is the exact disagreement that module exists to prevent.
 - **Cash is not editable anywhere.** `cash(d) = closingBalance(newest statement ≤ d) + Σ rows since`.
   Users supply `settings.statementBalances` (`{ date, balance, source }`) and nothing else;
   `settings.cashBalance` is a derived cache, and a client that PUTs one is ignored.
@@ -333,7 +366,8 @@ uploadHistory[]             filename, source, ledger, importedAt; transactionIds
 settings                    provider flags/config, budgets, mappings, per-provider vision models
                             (visionModel + openaiVisionModel), credit policy
                             plus cashOpeningBalance, statementBalances[], netWorthHistoryVersion,
-                            categoryBudgets{}, confirmedMonthlyIncome, budgetSavingsTarget/Rate
+                            categoryBudgets{}, confirmedMonthlyIncome, budgetSavingsTarget/Rate,
+                            cardRewards { region, wallet, overrides }
 ```
 
 Allocation links are `linkedSavingsAccountId` for Savings and the account-type label in

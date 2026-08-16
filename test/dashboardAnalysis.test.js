@@ -31,8 +31,13 @@ const HISTORY = [
 
 const SCOPE = { from: '2026-01-31', to: '2026-06-30', label: 'Jan 31, 2026 – Jun 30, 2026' }
 
-const HOLDINGS = [{ id: 'h1', ticker: 'AAA', shares: 100, purchasePrice: 100, accountType: 'TFSA' }]
-const PRICES = { AAA: 115 }
+// A Canadian book, stated outright rather than inherited from whatever the app's default home
+// currency happens to be. The holding is TSX-listed and quoted in CAD, so every figure below
+// depends on the analysis valuing holdings in the currency `settings` names — and the price map is
+// keyed the way `fetchPricesWithFx` actually keys it, `TICKER:LISTING`.
+const HOLDINGS = [{ id: 'h1', ticker: 'AAA', shares: 100, purchasePrice: 100, accountType: 'TFSA', listing: 'CA' }]
+const PRICES = { 'AAA:CA': 115 }
+const SETTINGS = { displayCurrency: 'CAD' }
 const SAVINGS_ACCOUNTS = [{ id: 'hysa', name: 'Capital One HYSA', balance: 26000 }]
 
 const GOALS = [
@@ -48,6 +53,7 @@ function analyze(overrides = {}) {
     savingsAccounts: SAVINGS_ACCOUNTS,
     holdings: HOLDINGS,
     prices: PRICES,
+    settings: SETTINGS,
     cash: 7500,
     checks: [],
     insightScope: SCOPE,
@@ -89,6 +95,27 @@ test('every headline number is the one the cards render, not a second computatio
     analysis.composition.total,
   )
   assert.deepEqual(analysis.composition.rows.map(row => row.name), ['Savings', 'TFSA', 'Cash'])
+})
+
+test('a foreign holding is valued in the home currency the settings name, as the cards value it', () => {
+  // The other half of "the same computation": `Dashboard.jsx` hands `portfolioValueOf` and
+  // `buildComposition` a display currency and an FX rate, and for a while this module handed them
+  // neither. A US holding in a CAD book was then priced against a USD default with no rate to
+  // convert by, so it fell back to cost — and the insight rail quoted a portfolio the KPI strip
+  // above it contradicted. The rate rides on the price map, which is how `fetchPricesWithFx`
+  // delivers it to `dashboardAnalysisInputs`.
+  const analysis = analyze({
+    holdings: [{ id: 'h1', ticker: 'BBB', shares: 100, purchasePrice: 100, accountType: 'Roth IRA', listing: 'US' }],
+    prices: { 'BBB:US': 115, __USDCAD: 1.25 },
+    settings: { displayCurrency: 'CAD' },
+  })
+
+  assert.equal(analysis.kpis.portfolio, 14375, '$11,500 USD at 1.25, not $10,000 of cost')
+  assert.equal(analysis.composition.rows.find(row => row.name === 'Roth IRA').value, 14375)
+  assert.equal(
+    analysis.composition.rows.reduce((total, row) => total + row.value, 0),
+    analysis.composition.total,
+  )
 })
 
 test('runway is measured over complete months only', () => {

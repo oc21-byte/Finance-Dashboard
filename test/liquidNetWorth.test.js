@@ -211,13 +211,16 @@ test('the trend window is anchored to today, not to the ledger', () => {
 test('composition rolls every investment account type up to the portfolio band', () => {
   // The trend has three bands but the donut has a slice per account type, so each slice has to
   // name the band it filters.
+  // A Canadian book with TSX-listed holdings, said out loud: valuing a CAD quote needs no FX, so
+  // these numbers turn on the roll-up alone rather than on whatever the default home currency is.
   const rows = buildComposition({
     cash: 5000, savings: 20000,
     holdings: [
-      { ticker: 'AAA', shares: 10, purchasePrice: 100, accountType: 'TFSA' },
-      { ticker: 'BBB', shares: 10, purchasePrice: 100, accountType: 'RRSP' },
+      { ticker: 'AAA', shares: 10, purchasePrice: 100, accountType: 'TFSA', listing: 'CA' },
+      { ticker: 'BBB', shares: 10, purchasePrice: 100, accountType: 'RRSP', listing: 'CA' },
     ],
-    prices: { AAA: 200, BBB: 100 },
+    prices: { 'AAA:CA': 200, 'BBB:CA': 100 },
+    displayCurrency: 'CAD',
   })
   assert.deepEqual(rows.map(r => r.name), ['Cash', 'Savings', 'TFSA', 'RRSP'])
   assert.deepEqual(rows.map(r => r.bucket), ['cash', 'savings', 'portfolio', 'portfolio'])
@@ -229,10 +232,22 @@ test('composition rolls every investment account type up to the portfolio band',
 })
 
 test('unpriced holdings fall back to cost basis rather than vanishing', () => {
-  const holdings = [{ ticker: 'AAA', shares: 10, purchasePrice: 100, accountType: 'TFSA' }]
-  assert.equal(portfolioValueOf(holdings, {}), 1000)
-  assert.equal(portfolioValueOf(holdings, { AAA: 150 }), 1500)
-  assert.deepEqual(holdingsByAccountType(holdings, { AAA: 150 }), { TFSA: 1500 })
+  const holdings = [{ ticker: 'AAA', shares: 10, purchasePrice: 100, accountType: 'TFSA', listing: 'CA' }]
+  const book = { displayCurrency: 'CAD' }
+  assert.equal(portfolioValueOf(holdings, {}, book), 1000)
+  assert.equal(portfolioValueOf(holdings, { 'AAA:CA': 150 }, book), 1500)
+  assert.deepEqual(holdingsByAccountType(holdings, { 'AAA:CA': 150 }, book), { TFSA: 1500 })
+})
+
+test('a quote that cannot be converted falls back to cost too, rather than to zero', () => {
+  // Same fallback, reached the other way: the price is known, the FX rate to state it in is not.
+  // Without this, a CAD holding in a USD book reads as its whole position having evaporated. The
+  // cost it falls back to is still in the cost currency — `convertHoldingMoney` sets `fxMissing`
+  // on exactly this row, and it is the caller's job to say so rather than to imply a USD figure.
+  const holdings = [{ ticker: 'AAA', shares: 10, purchasePrice: 100, accountType: 'TFSA', listing: 'CA' }]
+  const prices = { 'AAA:CA': 150 }
+  assert.equal(portfolioValueOf(holdings, prices, { displayCurrency: 'USD' }), 1000, 'held at cost')
+  assert.equal(portfolioValueOf(holdings, prices, { displayCurrency: 'USD', usdCad: 1.25 }), 1200, '$1,500 CAD in USD')
 })
 
 const SPEND_ROWS = [

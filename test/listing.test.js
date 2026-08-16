@@ -59,6 +59,12 @@ test('price map keys keep CA and US quotes for the same ticker apart', () => {
   const prices = { 'GIL:CA': 81.6, 'GIL:US': 58.17 }
   assert.equal(priceOfHolding(prices, { ticker: 'GIL', listing: 'CA' }), 81.6)
   assert.equal(priceOfHolding(prices, { ticker: 'GIL', listing: 'US' }), 58.17)
+
+  // A map keyed by bare ticker still resolves, for price maps written before keys carried a
+  // listing. The quote is then assumed to be in the listing's currency, which is the best guess
+  // available — one more reason a listing-keyed map is the shape to write.
+  assert.equal(priceOfHolding({ GIL: 81.6 }, { ticker: 'GIL', listing: 'CA' }), 81.6)
+  assert.equal(priceOfHolding({}, { ticker: 'GIL', listing: 'CA' }), null)
 })
 
 test('price query tokens carry the listing for /api/prices', () => {

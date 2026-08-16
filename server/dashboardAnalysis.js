@@ -1,5 +1,6 @@
 import dayjs from 'dayjs'
 import { formatUsd } from './currencyFormatting.js'
+import { resolveDisplayCurrency } from '../src/utils/displayCurrency.js'
 import {
   buildLiquidKpis, buildComposition, buildChangeAttribution, buildUnaccountedRows,
   monthsOfSpend, averageMonthlySpend, completeMonths, goalProgress,
@@ -252,11 +253,18 @@ export function buildDashboardAnalysis({
   const today = asOf ?? dayjs().format('YYYY-MM-DD')
   const scope = resolvedScope(bankTransactions, insightScope)
 
+  // The home currency and FX rate the Dashboard cards value holdings in. `Dashboard.jsx` passes
+  // both into the same two functions; omitting them here valued a foreign portfolio at cost while
+  // the card beside it showed market, which is precisely the disagreement this module exists to
+  // make impossible. `dashboardAnalysisInputs` supplies the rate on the price map, as `fetchPricesWithFx` builds it.
+  const home = resolveDisplayCurrency(settings?.displayCurrency)
+  const usdCad = prices?.__USDCAD ?? null
+
   const savings = savingsTotalOf(savingsAccounts)
-  const portfolio = portfolioValueOf(holdings, prices)
+  const portfolio = portfolioValueOf(holdings, prices, { displayCurrency: home, usdCad })
   const kpis = buildLiquidKpis({ history: netWorthHistory, cash, savings, portfolio, asOf: today })
 
-  const rows = buildComposition({ cash, savings, holdings, prices })
+  const rows = buildComposition({ cash, savings, holdings, prices, displayCurrency: home, usdCad })
   const composition = {
     total: round2(rows.reduce((total, row) => total + row.value, 0)),
     rows: [...rows].sort((a, b) => b.value - a.value),
