@@ -187,6 +187,19 @@ be attributed, coloured or scored). Both props are absent on Finances, which kee
 behaviour. There is **no vision autodetect of the card product**; the extraction prompt returns
 transactions only, deliberately.
 
+The rewards grid has exactly two editable kinds of cell, and both write a whole wallet entry
+through `withSlot` / `withoutSlotFor` / `withQuarter` — pure transforms in `rewardsModel.js`, never
+inline object spreads in a component. A chooser slot **moves** rather than duplicating (two slots on
+one category does not pay their sum; the lower simply earns nothing), and clearing a rotating
+quarter **deletes** the key, because an unrecorded quarter is an open question that scores at base,
+not an answer meaning zero. A published rate is never editable here; correcting one is Phase 5's
+separate, deliberate act, and a cell already carrying a correction offers no dropdown at all.
+
+The grid's cleared-option label reads the **catalog's** published rate for that category, not the
+resolved card's — the resolved card already has the current choice merged in, so a card that both
+publishes a rate and lets you choose one (Customized Cash: 2% grocery *and* 3% on a pick) would
+otherwise label its own cleared option with the base rate and understate itself.
+
 ## Dashboard behavior
 
 - **Liquid net worth = cash + savings + investment accounts.** It excludes property, vehicles, private

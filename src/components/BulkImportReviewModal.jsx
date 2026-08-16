@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import dayjs from 'dayjs'
+import CardPicker, { pickerValueFor } from './spend/rewards/CardPicker.jsx'
 
 // Optional, and stated as optional: a user importing three old statements at once should not be
 // blocked because they only have the newest one to hand. Entering it buys the check and an anchor;
@@ -73,12 +74,21 @@ export default function BulkImportReviewModal({
   // Bank only. A credit-card statement's closing balance is what you OWE, which has nothing to do
   // with the chequing figure `cashAsOf` derives, so the Spend Analyzer never passes this.
   onExpectedBalance = null,
+  // Card only. The stored wallet, so a source name that is already linked shows its card rather
+  // than asking again. Absent on the Finances tab, where a source name has nothing to link to.
+  wallet = null,
 }) {
   // Rows carry a stable id so selection survives removing other rows.
   const [groups, setGroups] = useState(() => initialGroups.map(g => ({
     ...g,
     transactions: g.transactions.map((tx, i) => ({ ...tx, _rid: `${g.id}:${i}` })),
   })))
+
+  // Which rewards card each file's rows belong to. Seeded from the wallet so re-importing from a
+  // source you have already linked shows that card instead of asking again.
+  const [links, setLinks] = useState(() => Object.fromEntries(
+    initialGroups.map(g => [g.id, pickerValueFor(wallet?.[g.sourceName])]),
+  ))
 
   // Possible duplicates start deselected, so the safe outcome is the default one.
   const [deselected, setDeselected] = useState(() => {
@@ -132,6 +142,10 @@ export default function BulkImportReviewModal({
 
   function setSourceName(id, sourceName) {
     setGroups(prev => prev.map(g => (g.id === id ? { ...g, sourceName } : g)))
+  }
+
+  function setLink(id, value) {
+    setLinks(prev => ({ ...prev, [id]: value }))
   }
 
   function removeRow(id, rid) {
@@ -188,6 +202,14 @@ export default function BulkImportReviewModal({
         .map(g => closings[g.id])
         .filter(c => c?.date && c.balance !== '' && Number.isFinite(Number(c.balance)))
         .map(c => ({ date: c.date, balance: Number(c.balance), source: 'statement' })),
+      // Card links, keyed by the FINAL source name. Held until confirm rather than written as they
+      // are picked, because the name beside the picker is still being edited — writing on change
+      // would leave a link stranded on whatever the field said mid-keystroke.
+      Object.fromEntries(
+        ready
+          .map(g => [g.sourceName.trim(), links[g.id]])
+          .filter(([name, value]) => name && value),
+      ),
     )
   }
 
@@ -275,13 +297,26 @@ export default function BulkImportReviewModal({
                     )}
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
-                    <input
-                      value={group.sourceName}
-                      onChange={e => setSourceName(group.id, e.target.value)}
-                      placeholder="Source name…"
-                      className="w-44 border border-gray-300 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
-                    />
+                  <div className="flex items-start gap-2 shrink-0">
+                    <div className="flex flex-col gap-1.5">
+                      <input
+                        value={group.sourceName}
+                        onChange={e => setSourceName(group.id, e.target.value)}
+                        placeholder="Source name…"
+                        className="w-44 border border-gray-300 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+                      />
+                      {/* Card only, and optional: the import must not become blockable on knowing
+                          which product a statement is for. Skipping it just leaves the card to be
+                          linked later on the Rewards view. */}
+                      {wallet && (
+                        <CardPicker
+                          value={links[group.id] ?? ''}
+                          onChange={value => setLink(group.id, value)}
+                          className="w-44"
+                          placeholder="Rewards card (optional)"
+                        />
+                      )}
+                    </div>
                     {onRemap && group.headers && (
                       <button
                         onClick={() => onRemap(group)}

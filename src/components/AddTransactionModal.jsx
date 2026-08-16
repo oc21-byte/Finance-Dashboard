@@ -7,12 +7,26 @@ function defaultCategory(type, categories) {
   return categories.includes('Expense') ? 'Expense' : (categories.includes('Other') ? 'Other' : categories[0])
 }
 
-export default function AddTransactionModal({ onConfirm, onCancel, categories = CATEGORIES }) {
+/**
+ * @param sources  Card ledger only: the source names already in the ledger. When supplied, the
+ *   card becomes a required field — a card row with no card is a row that can never be attributed,
+ *   coloured, filtered by card, or scored for rewards. The bank ledger passes nothing and keeps
+ *   the old `source: 'manual'` behaviour, because a bank row's counterparty is its payee.
+ */
+export default function AddTransactionModal({
+  onConfirm,
+  onCancel,
+  categories = CATEGORIES,
+  sources = null,
+}) {
   const [type, setType] = useState('expense')
   const [date, setDate] = useState(dayjs().format('YYYY-MM-DD'))
   const [description, setDescription] = useState('')
   const [amount, setAmount] = useState('')
   const [category, setCategory] = useState(() => defaultCategory('expense', categories))
+  // Prefilled only when there is exactly one card it could mean. With several, guessing would
+  // silently file the row against the wrong card.
+  const [source, setSource] = useState(() => (sources?.length === 1 ? sources[0] : ''))
 
   function handleTypeChange(t) {
     setType(t)
@@ -23,17 +37,18 @@ export default function AddTransactionModal({ onConfirm, onCancel, categories = 
     e.preventDefault()
     const abs = Math.abs(parseFloat(amount))
     if (!description.trim() || !abs) return
+    if (sources && !source.trim()) return
     onConfirm({
       date,
       description: description.trim(),
       amount: type === 'expense' ? -abs : abs,
       category,
-      source: 'manual',
+      source: sources ? source.trim() : 'manual',
       type,
     })
   }
 
-  const valid = description.trim() && parseFloat(amount) > 0
+  const valid = description.trim() && parseFloat(amount) > 0 && (!sources || source.trim())
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
@@ -111,6 +126,28 @@ export default function AddTransactionModal({ onConfirm, onCancel, categories = 
               {categories.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
+
+          {/* Free text with suggestions rather than a closed list: a card you are adding a row for
+              may not be in the ledger yet, and the source name is free text everywhere else. */}
+          {sources && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Card</label>
+              <input
+                type="text"
+                list="add-tx-sources"
+                value={source}
+                onChange={e => setSource(e.target.value)}
+                placeholder={sources.length ? sources[0] : 'e.g. Amex Cobalt'}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <datalist id="add-tx-sources">
+                {sources.map(s => <option key={s} value={s} />)}
+              </datalist>
+              <p className="mt-1 text-xs text-gray-400">
+                Which card this went on. Link it to a rewards card on the Rewards view.
+              </p>
+            </div>
+          )}
 
           <div className="flex justify-end gap-3 pt-1">
             <button

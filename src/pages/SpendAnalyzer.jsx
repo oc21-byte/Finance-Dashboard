@@ -25,8 +25,16 @@ import TopMerchants from '../components/spend/TopMerchants.jsx'
 import CardsBar from '../components/spend/CardsBar.jsx'
 import TransactionTable from '../components/spend/TransactionTable.jsx'
 import { buildCardColors } from '../components/spend/palette.js'
+import ViewToggle from '../components/shared/ViewToggle.jsx'
+import RewardsView from '../components/spend/rewards/RewardsView.jsx'
+import { walletEntryFor } from '../components/spend/rewards/CardPicker.jsx'
 
 const SOURCE_NAME_KEY = 'visionSource_spendAnalyzer'
+
+const VIEWS = [
+  { value: 'spend', label: 'Spend' },
+  { value: 'rewards', label: 'Rewards' },
+]
 
 const FILTER_KINDS = ['categories', 'cards', 'merchants']
 const FILTER_LABEL = { categories: 'Category', cards: 'Card', merchants: 'Merchant' }
@@ -61,6 +69,9 @@ export default function SpendAnalyzer({ onTabChange, demoMode }) {
   const [csvModalData, setCsvModalData] = useState(null)
   const [showAddModal, setShowAddModal] = useState(false)
   const [period, setPeriod] = useState('6M')
+  // Which view of the scoped data is showing. Deliberately NOT part of the scope: the period and
+  // filter chips sit above the toggle and apply to both views equally.
+  const [view, setView] = useState('spend')
   const [filters, setFilters] = useState(NO_FILTERS)
   const [showRecurring, setShowRecurring] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
@@ -175,6 +186,23 @@ export default function SpendAnalyzer({ onTabChange, demoMode }) {
     mutationFn: (newSources) => api.settings.update({ csvSources: newSources }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['settings'] }),
   })
+
+  // `cardRewards` is sent whole. `PUT /api/settings` merges only at the top level, so posting a
+  // partial object here would drop the sibling keys — the overrides and the region alongside it.
+  const cardRewardsMutation = useMutation({
+    mutationFn: (cardRewards) => api.settings.update({ cardRewards }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['settings'] }),
+  })
+
+  function handleLinkCard(sourceName, entry) {
+    const current = settings?.cardRewards ?? {}
+    const wallet = { ...(current.wallet ?? {}) }
+    // A null entry is "not linked yet", which is the absence of a key rather than a stored value —
+    // otherwise clearing a link would leave a row the setup screen could never ask about again.
+    if (entry) wallet[sourceName] = entry
+    else delete wallet[sourceName]
+    cardRewardsMutation.mutate({ ...current, wallet })
+  }
 
   const insightsMutation = useMutation({
     mutationFn: (period) => api.llm.spendInsights(period),
@@ -343,7 +371,9 @@ export default function SpendAnalyzer({ onTabChange, demoMode }) {
     setReviewData({ groups: annotated, skipped: [] })
   }
 
-  function handleReviewConfirm(readyGroups) {
+  // `balances` is bank-only and ignored here; `cardLinks` maps a confirmed source name to the
+  // rewards card picked in the review modal.
+  function handleReviewConfirm(readyGroups, balances, cardLinks = {}) {
     const existing = settings?.csvSources || {}
     const newSources = { ...existing }
     let changed = false
@@ -354,6 +384,16 @@ export default function SpendAnalyzer({ onTabChange, demoMode }) {
       }
     }
     if (changed) saveMappingMutation.mutate(newSources)
+
+    const linkEntries = Object.entries(cardLinks)
+    if (linkEntries.length) {
+      const current = settings?.cardRewards ?? {}
+      const wallet = { ...(current.wallet ?? {}) }
+      for (const [sourceName, value] of linkEntries) {
+        wallet[sourceName] = walletEntryFor(value, wallet[sourceName] ?? {})
+      }
+      cardRewardsMutation.mutate({ ...current, wallet })
+    }
     localStorage.setItem(SOURCE_NAME_KEY, readyGroups[0].sourceName)
     pendingUploadMetaRef.current = readyGroups.map(g => ({
       filename: g.fileName,
@@ -419,6 +459,13 @@ export default function SpendAnalyzer({ onTabChange, demoMode }) {
   // here as it does in the totals, or it draws uncoloured.
   const cardColors = useMemo(
     () => buildCardColors(transactions.map(t => t.source || 'Unknown')),
+    [transactions],
+  )
+
+  // Every card name the ledger holds, not just the ones in scope — the wallet setup has to be able
+  // to ask about a card whose spending the current period happens to exclude.
+  const allSources = useMemo(
+    () => [...new Set(transactions.map(t => t.source || 'Unknown'))].sort(),
     [transactions],
   )
 
@@ -676,9 +723,34 @@ export default function SpendAnalyzer({ onTabChange, demoMode }) {
         </div>
       )}
 
+      {/* Below the scope block, so the period and filter chips visibly govern both views. */}
+      {hasData && (
+        <div className="mb-5">
+          <ViewToggle value={view} onChange={setView} options={VIEWS} />
+        </div>
+      )}
+
+      {hasData && view === 'rewards' && (
+        <RewardsView
+          spendTxs={scopedSpend}
+          allSources={allSources}
+          range={range}
+          settings={settings}
+          categoryColors={allCategoryColors}
+          demoMode={demoMode}
+          onLink={handleLinkCard}
+          saving={cardRewardsMutation.isPending}
+          clearsPinned={clearsPinned}
+        />
+      )}
+
       {/* Main column + sticky insights rail, starting level with "Spend over time". The rail drops
-          below the content under xl, where 320px of it would leave the charts too narrow to read. */}
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-6 items-start">
+          below the content under xl, where 320px of it would leave the charts too narrow to read.
+
+          Hidden rather than unmounted on the Rewards view: the table's page, its sort and the chart
+          hover state are all local, and losing them on every toggle would make switching back feel
+          like a reload. The charts are memoised on the scoped rows, so nothing recomputes. */}
+      <div className={view === 'rewards' ? 'hidden' : 'grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-6 items-start'}>
       <div className="min-w-0">
 
       {hasData && (
@@ -836,6 +908,7 @@ export default function SpendAnalyzer({ onTabChange, demoMode }) {
           groups={reviewData.groups}
           skipped={reviewData.skipped}
           busy={batchMutation.isPending}
+          wallet={settings?.cardRewards?.wallet ?? {}}
           onConfirm={handleReviewConfirm}
           onCancel={() => {
             pendingUploadMetaRef.current = null
@@ -857,6 +930,7 @@ export default function SpendAnalyzer({ onTabChange, demoMode }) {
       {showAddModal && (
         <AddTransactionModal
           categories={allCategories}
+          sources={allSources}
           onConfirm={data => addMutation.mutate(data)}
           onCancel={() => setShowAddModal(false)}
         />

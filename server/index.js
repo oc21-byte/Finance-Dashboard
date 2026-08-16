@@ -106,6 +106,20 @@ const DEFAULT_DB = {
     // Home / reporting currency for the whole app. Bank, card, cash and savings are assumed
     // already entered in this currency; foreign-quoted holdings are FX-converted into it.
     displayCurrency: DEFAULT_DISPLAY_CURRENCY,
+    // The Rewards view's configuration. Declared here rather than conjured by the blind merge
+    // above, for the same reason `categoryBudgets` is: without a default, `ensureDb()`'s back-fill
+    // never creates the key and every reader has to defend against its absence.
+    //
+    // `wallet` maps a ledger source name — the free text `cardOf()` keys on — to a catalog card,
+    // plus the two things only the user can know: which categories a chooser card's slots point
+    // at, and which category a rotating card ran in a given quarter. `overrides` holds corrected
+    // rates, kept separate from the catalog so shipping a corrected catalog can never clobber a
+    // correction the user made.
+    cardRewards: {
+      region: null,
+      wallet: {},
+      overrides: {},
+    },
   },
 }
 
