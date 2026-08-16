@@ -110,6 +110,87 @@ test('the special-rate shapes the model branches on are well formed', () => {
   }
 })
 
+// The rotating calendar is published data, and the same authoring mistakes are possible in it as
+// in `rates` — a category keyed by the issuer's name instead of the app's scores nothing at all,
+// and it would do so silently, in one quarter only.
+test('every rotating calendar quarter is well formed and keys on app categories', () => {
+  for (const card of CARD_CATALOG) {
+    const calendar = card.rotating?.calendar
+    if (!calendar) continue
+    assert.ok(Object.keys(calendar).length, `${card.id}.rotating.calendar is empty; omit it instead`)
+
+    for (const [quarter, categories] of Object.entries(calendar)) {
+      const where = `${card.id}.rotating.calendar['${quarter}']`
+      assert.match(quarter, /^\d{4}-Q[1-4]$/, `${where} is not a YYYY-Qn key`)
+      assert.ok(Object.keys(categories).length, `${where} is empty — omit an unannounced quarter`)
+
+      for (const [category, meta] of Object.entries(categories)) {
+        assert.ok(
+          RATE_CATEGORIES.includes(category),
+          `${where} pays on "${category}", which is not an app category.`,
+        )
+        // The pct and the cap live on `rotating`, not on the quarter: one rate, one shared cap.
+        for (const field of ['pct', 'capMo', 'capQtr', 'capYr']) {
+          assert.equal(meta[field], undefined, `${where}['${category}'].${field} belongs on rotating`)
+        }
+        if (meta.coverage != null) {
+          assert.equal(meta.coverage, 'partial', `${where}['${category}'].coverage must be 'partial'`)
+          assert.ok(
+            typeof meta.note === 'string' && meta.note.length,
+            `${where}['${category}'] is partial but says nothing about which part it covers`,
+          )
+        }
+      }
+      // Same rule the standing rates obey: nobody bonuses all of Transport.
+      if (categories.Transport) {
+        assert.equal(
+          categories.Transport.coverage, 'partial',
+          `${where} pays on all of Transport. The category bundles gas, transit and flights.`,
+        )
+      }
+    }
+  }
+})
+
+test('the Discover 2026 calendar matches the published quarters', () => {
+  // Pinned because it is transcribed data: a typo here is invisible in the UI and wrong in the
+  // money. Q4 is deliberately absent — Discover announces it around Sept 1, 2026.
+  const calendar = catalogCard('discoverIt').rotating.calendar
+  assert.deepEqual(Object.keys(calendar).sort(), [
+    '2025-Q1', '2025-Q2', '2025-Q3', '2025-Q4', '2026-Q1', '2026-Q2', '2026-Q3',
+  ])
+  const at = q => Object.keys(calendar[q]).sort()
+  assert.deepEqual(at('2025-Q1'), ['Food & Dining', 'Shopping', 'Subscription'])
+  assert.deepEqual(at('2025-Q2'), ['Grocery', 'Shopping'])
+  assert.deepEqual(at('2025-Q3'), ['Housing', 'Transport'])
+  assert.deepEqual(at('2025-Q4'), ['Health', 'Shopping'])
+  assert.deepEqual(at('2026-Q1'), ['Grocery', 'Shopping', 'Subscription'])
+  assert.deepEqual(at('2026-Q2'), ['Food & Dining', 'Shopping'])
+  assert.deepEqual(at('2026-Q3'), ['Health', 'Transport'])
+})
+
+test('the Freedom Flex 2026 calendar matches the published quarters', () => {
+  // Named merchants and charities are deliberately absent: Q1's Norwegian Cruise Line, Q2's Chase
+  // Travel and Feeding America, Q3's United Way. See the header rule — a single merchant mapped to
+  // a whole app category is wrong by orders of magnitude, not by a partial-coverage margin.
+  const calendar = catalogCard('freedomFlex').rotating.calendar
+  assert.deepEqual(Object.keys(calendar).sort(), [
+    '2025-Q1', '2025-Q2', '2025-Q3', '2025-Q4', '2026-Q1', '2026-Q2', '2026-Q3',
+  ])
+  const at = q => Object.keys(calendar[q]).sort()
+  assert.deepEqual(at('2025-Q1'), ['Grocery', 'Health'])
+  assert.deepEqual(at('2025-Q2'), ['Shopping', 'Subscription'])
+  assert.deepEqual(at('2025-Q3'), ['Entertainment', 'Transport'])
+  assert.deepEqual(at('2025-Q4'), ['Shopping'])
+  assert.deepEqual(at('2026-Q1'), ['Food & Dining'])
+  assert.deepEqual(at('2026-Q2'), ['Grocery', 'Shopping'])
+  assert.deepEqual(at('2026-Q3'), ['Entertainment', 'Transport'])
+  // Chase Travel is a portal rate, and the catalog never scores portal rates as a category.
+  for (const quarter of Object.values(calendar)) {
+    assert.equal(quarter.Housing, undefined, 'no portal or charity bonus leaked into a category')
+  }
+})
+
 test('verified stamps are YYYY-MM, and the newest is reported', () => {
   for (const card of CARD_CATALOG) {
     assert.match(card.verified, /^\d{4}-(0[1-9]|1[0-2])$/, `${card.id}.verified must be YYYY-MM`)

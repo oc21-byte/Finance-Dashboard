@@ -21,7 +21,7 @@
  * derived from published rates and is labelled an estimate wherever it renders.
  */
 
-import { catalogCard } from '../constants/cardCatalog.js'
+import { catalogCard, CARD_CATALOG } from '../constants/cardCatalog.js'
 import { categoryOf, cardOf } from './spendAggregations.js'
 
 /**
@@ -171,6 +171,75 @@ export function withQuarter(entry, quarterKey, category) {
   return { ...entry, kind: 'catalog', quarters }
 }
 
+/**
+ * Where a rotating card's bonus categories for one quarter come from, and what they are.
+ *
+ * Three answers, and they are not interchangeable:
+ *
+ *   `catalog`     The published calendar has this quarter. Read-only; the user has nothing to add.
+ *   `user`        The calendar does not cover it and the user recorded it themselves — the gap
+ *                 between an issuer announcing a quarter and this catalog shipping it.
+ *   `unpublished` Later than anything the calendar knows: the issuer has not announced it. A fact
+ *                 about the world rather than a question for the user.
+ *   `missing`     Absent, but not later than the calendar's newest quarter — so it DID happen and
+ *                 this catalog simply does not have it. Told apart from `unpublished` by comparing
+ *                 quarter keys rather than by looking at a clock, which this module never does.
+ *                 Calling a quarter that already happened "not announced yet" is a plain untruth,
+ *                 and a 1Y window reaches back past the calendar every time.
+ *
+ * @returns {{ source: string, entries: Array<[string, object]> }}
+ */
+export function rotatingQuarterFor(card, entry, quarterKey) {
+  if (!card?.rotating || !quarterKey) return { source: 'none', entries: [] }
+
+  const published = card.rotating.calendar?.[quarterKey]
+  if (published) return { source: 'catalog', entries: Object.entries(published) }
+
+  const recorded = entry?.quarters?.[quarterKey]
+  if (recorded) return { source: 'user', entries: [[recorded, {}]] }
+
+  const keys = Object.keys(card.rotating.calendar ?? {})
+  if (!keys.length) return { source: 'none', entries: [] }
+  const newest = keys.reduce((max, k) => (k > max ? k : max), '')
+  return { source: quarterKey > newest ? 'unpublished' : 'missing', entries: [] }
+}
+
+function rotatingCategoriesFor(card, entry, quarterKey) {
+  return rotatingQuarterFor(card, entry, quarterKey).entries
+}
+
+/**
+ * The span a card's published calendar covers, as `{ from, to }` quarter keys, or null.
+ *
+ * The view states this outright. A user loading several years of statements needs to know the
+ * calendar stops before their oldest one, rather than reading a row of base rates as the card
+ * having genuinely earned nothing back then.
+ */
+export function calendarRangeOf(card) {
+  const keys = Object.keys(card?.rotating?.calendar ?? {})
+  if (!keys.length) return null
+  const sorted = [...keys].sort()
+  return { from: sorted[0], to: sorted[sorted.length - 1] }
+}
+
+/** The shared-cap pool key for one card's rotating bonus. */
+const rotatingPoolKey = card => `${card.sourceName} rotating`
+
+/**
+ * A fresh set of shared rotating budgets, one per rotating card, for ONE month.
+ *
+ * Discover's $1,500 a quarter is a combined allowance across everything the quarter covers, not
+ * $1,500 for each. Without this, a quarter covering three categories would score three times the
+ * bonus the card can actually pay.
+ */
+export function rotatingPools(cards) {
+  const pools = new Map()
+  for (const card of cards) {
+    if (card.rotating) pools.set(rotatingPoolKey(card), monthlyCapOf(card.rotating))
+  }
+  return pools
+}
+
 export function resolveCard(sourceName, entry, { quarterKey = null, overrides = {} } = {}) {
   if (linkKindOf(entry) !== 'catalog') return null
   const card = catalogCard(entry.catalogId)
@@ -190,11 +259,17 @@ export function resolveCard(sourceName, entry, { quarterKey = null, overrides = 
     rates[category] = { pct, chooser: true, slot: i }
   })
 
-  // Rotating cards (Discover): the bonus applies only in a quarter the user actually recorded.
-  // An unrecorded quarter scores NOTHING — left blank rather than guessed.
-  const rotatingCategory = card.rotating && quarterKey ? entry.quarters?.[quarterKey] : null
-  if (rotatingCategory && !(rates[rotatingCategory]?.pct >= card.rotating.pct)) {
-    rates[rotatingCategory] = {
+  // Rotating cards (Discover, Freedom Flex). The published calendar is the authority — it is the
+  // same for every holder and announced a quarter ahead, so making a user retype it would be asking
+  // them to supply a fact we already have. A hand-recorded quarter only fills a gap the calendar
+  // does not cover: a quarter the issuer has announced but this catalog has not caught up with.
+  //
+  // One quarter covers SEVERAL app categories, and they all share one quarterly cap. `capMo` here is
+  // the per-category ceiling; the shared pool is enforced in `fillCategory`.
+  for (const [category, meta] of rotatingCategoriesFor(card, entry, quarterKey)) {
+    if (rates[category]?.pct >= card.rotating.pct) continue
+    rates[category] = {
+      ...meta,
       pct: card.rotating.pct,
       capMo: monthlyCapOf(card.rotating),
       rotating: true,
@@ -221,8 +296,9 @@ export function resolveCard(sourceName, entry, { quarterKey = null, overrides = 
     topCat: card.topCat ?? null,
     chooser: card.chooser ?? null,
     rotating: card.rotating ?? null,
-    // Only meaningful for rotating cards: whether this quarter is on the record at all.
-    quarterRecorded: card.rotating ? !!rotatingCategory : null,
+    // Only meaningful for rotating cards: where this quarter's categories came from —
+    // 'catalog', 'user', 'unpublished', or 'none'. See `rotatingQuarterFor`.
+    rotatingSource: card.rotating ? rotatingQuarterFor(card, entry, quarterKey).source : null,
   }
 }
 
@@ -340,7 +416,9 @@ export function optionsFor(cards, category, topCatCategory = null) {
   for (const card of cards) {
     const rate = card.rates[category]
     if (rate) {
-      out.push({ card, rate: rate.pct, capMo: monthlyCapOf(rate), detail: rate })
+      // A rotating rate draws on a budget shared with every other category the quarter covers.
+      const pool = rate.rotating ? rotatingPoolKey(card) : null
+      out.push({ card, rate: rate.pct, capMo: monthlyCapOf(rate), detail: rate, pool })
     } else if (card.topCat && topCatCategory === category) {
       out.push({ card, rate: card.topCat.pct, capMo: monthlyCapOf(card.topCat), topCat: true })
     }
@@ -351,19 +429,30 @@ export function optionsFor(cards, category, topCatCategory = null) {
 
 /**
  * Greedy-fill one month's spend down the sorted options.
+ *
+ * `pools` carries budgets shared ACROSS categories — currently only the rotating quarterly cap,
+ * which one quarter spreads over several categories. Pass the same Map to every category in a month
+ * and it is consumed as it is spent; pass none and each option is bounded by its own cap alone.
+ *
+ * The order categories are filled in does not change the total: every category drawing on one pool
+ * does so at the same rate and falls back to the same card's base, so whichever consumes the budget
+ * first, the money earned is identical.
+ *
  * @returns {{ earned: number, byCard: Map<string, number> }} reward, and its split by card.
  */
-export function fillCategory(options, spend) {
+export function fillCategory(options, spend, pools = null) {
   let remaining = spend
   let earned = 0
   const byCard = new Map()
   for (const option of options) {
     if (remaining <= 0) break
-    const take = Math.min(remaining, option.capMo)
+    const budget = option.pool && pools ? (pools.get(option.pool) ?? Infinity) : Infinity
+    const take = Math.min(remaining, option.capMo, budget)
     if (take <= 0) continue
     const reward = take * (option.rate / 100)
     earned += reward
     byCard.set(option.card.sourceName, (byCard.get(option.card.sourceName) || 0) + reward)
+    if (option.pool && pools) pools.set(option.pool, budget - take)
     remaining -= take
   }
   return { earned, byCard }
@@ -471,9 +560,11 @@ export function earnedActual(spendTxs, sourceNames, cardRewards, range) {
         continue
       }
       const topCat = topCatCategoryActual(card, spendByCategory)
+      // One budget for this card for this month, spent down across every category it covers.
+      const pools = rotatingPools([card])
       for (const [category, spend] of spendByCategory) {
         // Only this one card's options — the spend is already committed to it.
-        const { earned } = fillCategory(optionsFor([card], category, topCat), spend)
+        const { earned } = fillCategory(optionsFor([card], category, topCat), spend, pools)
         total += earned
         byCard.set(source, (byCard.get(source) || 0) + earned)
       }
@@ -521,8 +612,9 @@ export function earnedOptimal(spendTxs, sourceNames, cardRewards, range) {
       category, monthly: spend,
     }))
     const topCat = topCatCategoryFor(cards, monthly)
+    const pools = rotatingPools(cards)
     for (const [category, spend] of spendByCategory) {
-      const { earned, byCard: split } = fillCategory(optionsFor(cards, category, topCat), spend)
+      const { earned, byCard: split } = fillCategory(optionsFor(cards, category, topCat), spend, pools)
       total += earned
       for (const [source, reward] of split) byCard.set(source, (byCard.get(source) || 0) + reward)
     }
@@ -546,9 +638,10 @@ export function earnedOptimal(spendTxs, sourceNames, cardRewards, range) {
  */
 export function projectAnnual(cards, monthly, byCardMonthly = null) {
   const topCat = topCatCategoryFor(cards, monthly)
+  const optimalPools = rotatingPools(cards)
   let optimal = 0
   for (const { category, monthly: spend } of monthly) {
-    optimal += fillCategory(optionsFor(cards, category, topCat), spend).earned
+    optimal += fillCategory(optionsFor(cards, category, topCat), spend, optimalPools).earned
   }
 
   let current = null
@@ -558,8 +651,9 @@ export function projectAnnual(cards, monthly, byCardMonthly = null) {
       const card = cards.find(c => c.sourceName === source)
       if (!card) continue
       const cardTopCat = topCatCategoryActual(card, byCategory)
+      const cardPools = rotatingPools([card])
       for (const [category, spend] of byCategory) {
-        current += fillCategory(optionsFor([card], category, cardTopCat), spend).earned
+        current += fillCategory(optionsFor([card], category, cardTopCat), spend, cardPools).earned
       }
     }
     current = round2(current * 12)
@@ -607,6 +701,11 @@ export function compareCandidate(cards, candidateCard, monthly) {
       toCard: to.card.short,
       capMo: to.capMo === Infinity ? null : round2(to.capMo),
       gain: round2(gain * 12),
+      // Carried through so the comparison can qualify the gain the way the grid qualifies the rate.
+      // Without it, a card paying 5% on flights-booked-via-a-portal reads as 5% on all of Transport
+      // and its whole case is built on a number that only applies to a slice of the category.
+      partial: to.detail?.coverage === 'partial',
+      note: to.detail?.note ?? null,
     })
   }
 
@@ -617,6 +716,35 @@ export function compareCandidate(cards, candidateCard, monthly) {
     net: round2(after - before - candidate.fee),
     changes: changes.sort((a, b) => b.gain - a.gain),
   }
+}
+
+/**
+ * Every catalog card you don't already hold, scored against your real spending, best first.
+ *
+ * "Best" is `net` — the yearly gain AFTER the annual fee — not the headline earn rate. A 5% card
+ * with a $120 fee is worth less than a 2% card with none unless you actually spend enough in its
+ * categories, and ranking on rate would put it first anyway.
+ *
+ * Cards already in the wallet are excluded rather than shown at zero: you cannot add a card twice,
+ * and a row reading "+$0" invites the reading "this card is worthless" rather than "you have it".
+ *
+ * Every figure is annualized, because comparing cards is inherently forward-looking. That makes the
+ * whole of this subject to the short-window caution — a candidate ranked on seven days of spending
+ * is ranked on noise, and the caller must say so rather than print the number.
+ */
+export function buildCandidates({
+  cards = [],
+  monthly = [],
+  catalog = CARD_CATALOG,
+  ownedIds = [],
+  region = null,
+}) {
+  const owned = new Set(ownedIds)
+  return catalog
+    .filter(card => !owned.has(card.id))
+    .filter(card => !region || card.region === region)
+    .map(card => ({ card, ...compareCandidate(cards, card, monthly) }))
+    .sort((a, b) => b.net - a.net || a.card.name.localeCompare(b.card.name))
 }
 
 /**

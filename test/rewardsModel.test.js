@@ -6,8 +6,9 @@ import {
   monthlyGrid, monthlySpendByCategory, averageMonthlyByCard, optionsFor, fillCategory,
   topCatCategoryFor, bestFor, secondRateFor, earnedActual, earnedOptimal, projectAnnual,
   compareCandidate, buildRewardsModel, classifySources, linkKindOf, SHORT_WINDOW_MONTHS,
-  withSlot, withoutSlotFor, withQuarter,
+  withSlot, withoutSlotFor, withQuarter, buildCandidates, rotatingQuarterFor, calendarRangeOf,
 } from '../src/utils/rewardsModel.js'
+import { catalogCard, CARD_CATALOG } from '../src/constants/cardCatalog.js'
 
 // Every test here defends one claim the Rewards view makes out loud. The three that matter most:
 //
@@ -292,58 +293,132 @@ const discoverWallet = quarters => ({
   overrides: {},
 })
 
-test('an unrecorded rotating quarter scores nothing — blank, not guessed', () => {
-  const card = resolveCard('Discover', { catalogId: 'discoverIt' }, { quarterKey: '2026-Q3' })
+// Discover's published 2026 calendar, which the catalog now ships:
+//   Q1 Grocery · Shopping (wholesale clubs) · Subscription (streaming)
+//   Q2 Food & Dining · Shopping (home improvement)
+//   Q3 Transport (gas, EV, transit, flights) · Health (drug stores)
+//   Q4 not yet announced
+// The test ledger runs Feb–Jul 2026, so it straddles all three published quarters.
+
+test('the published calendar is the authority, and covers every category in the quarter', () => {
+  const card = resolveCard('Discover', { catalogId: 'discoverIt' }, { quarterKey: '2026-Q1' })
+  assert.equal(card.rotatingSource, 'catalog')
+  assert.deepEqual(Object.keys(card.rates).sort(), ['Grocery', 'Shopping', 'Subscription'])
+  for (const rate of Object.values(card.rates)) {
+    assert.equal(rate.pct, 5)
+    assert.equal(rate.rotating, true)
+    assert.equal(rate.capMo, 500, 'the per-category ceiling; the shared budget is enforced on fill')
+  }
+  // The coverage note travels with it, so the grid can mark it an over-estimate.
+  assert.equal(card.rates.Shopping.coverage, 'partial')
+  assert.match(card.rates.Shopping.note, /wholesale clubs/)
+})
+
+test('each quarter resolves to its own categories, with no user input at all', () => {
+  const entry = { catalogId: 'discoverIt' }
+  const at = q => Object.keys(resolveCard('Discover', entry, { quarterKey: q }).rates).sort()
+  assert.deepEqual(at('2026-Q2'), ['Food & Dining', 'Shopping'])
+  assert.deepEqual(at('2026-Q3'), ['Health', 'Transport'])
+  assert.deepEqual(at('2026-Q1'), ['Grocery', 'Shopping', 'Subscription'])
+})
+
+test('a quarter the issuer has not announced scores at base, and says which it is', () => {
+  const card = resolveCard('Discover', { catalogId: 'discoverIt' }, { quarterKey: '2026-Q4' })
+  assert.equal(card.rotatingSource, 'unpublished', 'not the same as the user failing to answer')
   assert.deepEqual(card.rates, {})
-  assert.equal(card.quarterRecorded, false)
-  // It falls back to the base rate rather than to the bonus it might have been running.
   assert.equal(bestFor([card], 'Transport').rate, 1)
 })
 
-test('a recorded quarter earns the bonus, capped at a third of the quarterly cap per month', () => {
-  const card = resolveCard('Discover', {
-    catalogId: 'discoverIt',
-    quarters: { '2026-Q3': 'Transport' },
-  }, { quarterKey: '2026-Q3' })
-  assert.equal(card.quarterRecorded, true)
-  assert.equal(card.rates.Transport.pct, 5)
-  assert.equal(card.rates.Transport.capMo, 500)
-  assert.equal(card.rates.Transport.rotating, true)
+test('a hand-recorded quarter fills a gap the calendar does not cover, and never overrides it', () => {
+  const entry = { catalogId: 'discoverIt', quarters: { '2026-Q4': 'Health', '2026-Q1': 'Transport' } }
+
+  // Q4 has no published entry, so the user's record is used.
+  const q4 = resolveCard('Discover', entry, { quarterKey: '2026-Q4' })
+  assert.equal(q4.rotatingSource, 'user')
+  assert.equal(q4.rates.Health.pct, 5)
+
+  // Q1 is published. The user's guess loses — the calendar is a fact, not a preference.
+  const q1 = resolveCard('Discover', entry, { quarterKey: '2026-Q1' })
+  assert.equal(q1.rotatingSource, 'catalog')
+  assert.equal(q1.rates.Transport, undefined)
+  assert.deepEqual(Object.keys(q1.rates).sort(), ['Grocery', 'Shopping', 'Subscription'])
 })
 
-test('a card is resolved against the quarter being scored, not against some other one', () => {
-  const entry = { catalogId: 'discoverIt', quarters: { '2026-Q3': 'Transport' } }
-  assert.equal(resolveCard('Discover', entry, { quarterKey: '2026-Q2' }).rates.Transport, undefined)
-  assert.equal(resolveCard('Discover', entry, { quarterKey: '2026-Q3' }).rates.Transport.pct, 5)
+test('a rotating card with no calendar at all stays entirely on the hand-entry path', () => {
+  // Every rotating card in the catalog now ships a calendar, so this path is exercised against a
+  // synthetic card. It still matters: it is what a newly added rotating card falls back to before
+  // anyone has sourced its quarters.
+  const bare = { rotating: { pct: 5, capQtr: 1500 } }
+  assert.equal(rotatingQuarterFor(bare, {}, '2026-Q1').source, 'none')
+  assert.equal(
+    rotatingQuarterFor(bare, { quarters: { '2026-Q1': 'Grocery' } }, '2026-Q1').source, 'user',
+  )
+  // Never 'unpublished' — with no calendar there is no horizon to be past.
+  assert.equal(rotatingQuarterFor(bare, {}, '2099-Q4').source, 'none')
+
+  for (const card of CARD_CATALOG) {
+    if (!card.rotating) continue
+    assert.ok(card.rotating.calendar, `${card.id} rotates but ships no calendar`)
+  }
+})
+
+test('the quarterly cap is SHARED across everything the quarter covers', () => {
+  // The bug this guards: $1,500/quarter is $500/month for the whole bonus, not $500 for each of
+  // Q1's three categories. Scoring them independently would pay 5% on all $900 below.
+  const txs = [
+    tx('2026-02-10', 400, 'Grocery', 'Discover'),
+    tx('2026-02-11', 400, 'Shopping', 'Discover'),
+    tx('2026-02-12', 100, 'Subscription', 'Discover'),
+  ]
+  const range = { months: ['2026-02'], monthCount: 1, to: '2026-02-28' }
+  const earned = earnedActual(txs, ['Discover'], discoverWallet({}), range).period
+
+  // $500 of the $900 earns 5%; the remaining $400 falls back to the same card at 1%.
+  assert.equal(earned, round(500 * 0.05 + 400 * 0.01))
+  assert.notEqual(earned, round(900 * 0.05), 'three categories must not get three caps')
+})
+
+test('the shared cap gives the same total whichever category consumes it first', () => {
+  // Every category in a quarter earns the same rate and falls back to the same base, so the fill
+  // order cannot change the money. Worth pinning: it is what makes the greedy fill safe here.
+  const range = { months: ['2026-02'], monthCount: 1, to: '2026-02-28' }
+  const one = earnedActual([
+    tx('2026-02-10', 700, 'Grocery', 'Discover'),
+    tx('2026-02-11', 200, 'Shopping', 'Discover'),
+  ], ['Discover'], discoverWallet({}), range).period
+  const other = earnedActual([
+    tx('2026-02-10', 200, 'Grocery', 'Discover'),
+    tx('2026-02-11', 700, 'Shopping', 'Discover'),
+  ], ['Discover'], discoverWallet({}), range).period
+  assert.equal(one, other)
+  assert.equal(one, round(500 * 0.05 + 400 * 0.01))
 })
 
 test('a window spanning a rotation is scored month by month, each with its own quarter', () => {
-  // $300/mo of Transport across Feb–Jul. Only Q3 (July alone, in this window) was recorded as
-  // Transport, so exactly one month earns 5% and the other five earn the 1% base.
+  // $300/mo of Transport across Feb–Jul. Transport is only a bonus category in Q3, which this
+  // window touches for July alone, so exactly one month earns 5% and the other five earn base.
   const txs = ledger([[300, 'Transport', 'Discover']])
-  const range = rangeOf(txs)
-  const rewards = discoverWallet({ '2026-Q3': 'Transport' })
-
   assert.equal(
-    earnedActual(txs, ['Discover'], rewards, range).period,
+    earnedActual(txs, ['Discover'], discoverWallet({}), rangeOf(txs)).period,
     round(300 * 0.05 * 1 + 300 * 0.01 * 5),
   )
 })
 
-test('recording every quarter in the window earns the bonus across all of it', () => {
-  const txs = ledger([[300, 'Transport', 'Discover']])
-  const range = rangeOf(txs)
-  const rewards = discoverWallet({
-    '2026-Q1': 'Transport', '2026-Q2': 'Transport', '2026-Q3': 'Transport',
-  })
-  assert.equal(earnedActual(txs, ['Discover'], rewards, range).period, round(300 * 0.05 * 6))
+test('spending that follows the calendar earns the bonus in every month of the window', () => {
+  // Shopping is a bonus category in Q1 (wholesale clubs) and Q2 (home improvement) — Feb through
+  // Jun here — but not in Q3, so July drops to base.
+  const txs = ledger([[300, 'Shopping', 'Discover']])
+  assert.equal(
+    earnedActual(txs, ['Discover'], discoverWallet({}), rangeOf(txs)).period,
+    round(300 * 0.05 * 5 + 300 * 0.01 * 1),
+  )
 })
 
 test('the rotating cap bites within a month, and the overflow drops to the base rate', () => {
   const txs = [tx('2026-07-10', 800, 'Transport', 'Discover')]
   const range = { months: ['2026-07'], monthCount: 1, to: '2026-07-31' }
   assert.equal(
-    earnedActual(txs, ['Discover'], discoverWallet({ '2026-Q3': 'Transport' }), range).period,
+    earnedActual(txs, ['Discover'], discoverWallet({}), range).period,
     round(500 * 0.05 + 300 * 0.01),
   )
 })
@@ -626,26 +701,176 @@ test('recording a quarter is per quarter, and clearing it removes the key', () =
 })
 
 test('recording a quarter changes what that quarter earned, and only that quarter', () => {
-  // Q2 is Apr–Jun, Q3 is Jul. $1,000 of grocery a month on a card that pays 5% in a recorded
-  // quarter and 1% otherwise.
-  const txs = ledger([[1000, 'Grocery', 'Discover']])
-  const range = rangeOf(txs)
+  // The hand-entry path, reached the way it is reached in practice: a quarter past the end of the
+  // calendar. Sep 2026 is Q3 (published as Transport and Entertainment, so grocery earns base);
+  // Oct and Nov are Q4, which Chase had not announced when this catalog shipped.
+  const txs = ['2026-09', '2026-10', '2026-11'].map(m => tx(`${m}-10`, 1000, 'Grocery', 'Chase'))
+  const range = { months: ['2026-09', '2026-10', '2026-11'], monthCount: 3, to: '2026-11-30' }
   const linked = quarters => ({
-    wallet: { Discover: { kind: 'catalog', catalogId: 'discoverIt', quarters } },
+    wallet: { Chase: { kind: 'catalog', catalogId: 'freedomFlex', quarters } },
     overrides: {},
   })
 
   const none = buildRewardsModel({
-    spendTxs: txs, allSources: ['Discover'], range, settings: { cardRewards: linked({}) },
+    spendTxs: txs, allSources: ['Chase'], range, settings: { cardRewards: linked({}) },
   })
-  assert.equal(none.earned.period, round(6 * 1000 * 0.01), 'six months at base')
+  assert.equal(none.earned.period, round(3 * 1000 * 0.01), 'grocery is in no published quarter')
 
-  const entry = withQuarter({ kind: 'catalog', catalogId: 'discoverIt' }, '2026-Q2', 'Grocery')
-  const q2 = buildRewardsModel({
-    spendTxs: txs, allSources: ['Discover'], range, settings: { cardRewards: linked(entry.quarters) },
+  const entry = withQuarter({ kind: 'catalog', catalogId: 'freedomFlex' }, '2026-Q4', 'Grocery')
+  const q4 = buildRewardsModel({
+    spendTxs: txs, allSources: ['Chase'], range, settings: { cardRewards: linked(entry.quarters) },
   })
-  // Apr, May, Jun at 5%; Feb, Mar, Jul still at 1%. The cap is $1,500/qtr → $500/mo, so only half
-  // of each bonus month's $1,000 earns 5% and the rest falls back onto the same card at 1%.
+  // The $1,500/quarter cap is $500/mo, so half of each Q4 month earns 5% and the rest falls back
+  // onto the same card at 1%. September, being Q3, is untouched.
   const bonusMonth = 500 * 0.05 + 500 * 0.01
-  assert.equal(q2.earned.period, round(3 * bonusMonth + 3 * 1000 * 0.01))
+  assert.equal(q4.earned.period, round(1000 * 0.01 + 2 * bonusMonth))
+})
+
+// ------------------------------------------------------------------ candidates
+
+// `buildCandidates` ranks cards you do NOT hold against your real spending. Everything it returns
+// is annualized, so it carries the same short-window caution the projection does.
+
+test('candidates rank on the yearly gain after the fee, not on the headline rate', () => {
+  const txs = ledger([[400, 'Grocery', 'Active Cash']])
+  const range = rangeOf(txs)
+  const monthly = monthlySpendByCategory(txs, range)
+  const cards = resolveWallet(['Active Cash'], wallet(), null)
+
+  const fake = [
+    // 6% grocery, but $400/mo of grocery only earns $288/yr — a $400 fee buries it.
+    { id: 'pricey', name: 'Pricey', short: 'Pricey', issuer: 'X', region: 'us', fee: 400, base: 1, rates: { Grocery: { pct: 6 } } },
+    // A plain 3% grocery card with no fee wins on net despite the lower rate.
+    { id: 'plain', name: 'Plain', short: 'Plain', issuer: 'X', region: 'us', fee: 0, base: 1, rates: { Grocery: { pct: 3 } } },
+  ]
+  const ranked = buildCandidates({ cards, monthly, catalog: fake })
+  assert.deepEqual(ranked.map(r => r.card.id), ['plain', 'pricey'])
+  assert.ok(ranked[0].net > 0)
+  assert.ok(ranked[1].net < 0, 'the fee outruns the gain')
+
+  // net is exactly candidate − base − fee, the identity the panel prints line by line.
+  for (const row of ranked) {
+    assert.equal(row.net, round(row.candidateAnnual - row.baseAnnual - row.fee))
+  }
+})
+
+test('a card already in the wallet is not offered again', () => {
+  const txs = ledger([[400, 'Grocery', 'Blue Cash']])
+  const monthly = monthlySpendByCategory(txs, rangeOf(txs))
+  const cards = resolveWallet(['Blue Cash'], wallet(), null)
+  const ids = buildCandidates({ cards, monthly, ownedIds: ['amexBcp'] }).map(r => r.card.id)
+  assert.ok(!ids.includes('amexBcp'))
+  assert.ok(ids.length > 0, 'the rest of the catalog is still offered')
+})
+
+test('the region filter narrows to one country, and no filter keeps both', () => {
+  const txs = ledger([[400, 'Grocery', 'Blue Cash']])
+  const monthly = monthlySpendByCategory(txs, rangeOf(txs))
+  const cards = resolveWallet(['Blue Cash'], wallet(), null)
+
+  for (const region of ['us', 'ca']) {
+    const rows = buildCandidates({ cards, monthly, region })
+    assert.ok(rows.length > 0, `${region} has candidates`)
+    assert.ok(rows.every(r => r.card.region === region))
+  }
+  const all = buildCandidates({ cards, monthly })
+  assert.ok(all.length > buildCandidates({ cards, monthly, region: 'us' }).length)
+})
+
+test('with an empty wallet a candidate is scored as if it were the only card', () => {
+  const txs = ledger([[400, 'Grocery', 'Nothing']])
+  const monthly = monthlySpendByCategory(txs, rangeOf(txs))
+  const only = buildCandidates({ cards: [], monthly }).find(r => r.card.id === 'amexBcp')
+  assert.equal(only.baseAnnual, 0, 'nothing linked earns nothing')
+  // $400/mo grocery is under the $500/mo cap, so all of it earns 6%.
+  assert.equal(only.candidateAnnual, round(400 * 0.06 * 12))
+  assert.equal(only.net, round(400 * 0.06 * 12 - only.card.fee))
+})
+
+test('what changes names the category, both cards and the gain', () => {
+  const txs = ledger([[400, 'Grocery', 'Active Cash']])
+  const monthly = monthlySpendByCategory(txs, rangeOf(txs))
+  const cards = resolveWallet(['Active Cash'], wallet(), null)   // flat 2%
+  const row = buildCandidates({ cards, monthly }).find(r => r.card.id === 'amexBcp')
+
+  const grocery = row.changes.find(c => c.category === 'Grocery')
+  assert.equal(grocery.fromRate, 2)
+  assert.equal(grocery.fromCard, 'Active Cash')
+  assert.equal(grocery.toRate, 6)
+  assert.equal(grocery.toCard, 'Blue Cash Preferred')
+  assert.equal(grocery.gain, round(400 * 0.04 * 12), '4 points of gain on $400/mo')
+  // Only improvements are listed; a category the candidate would not win never appears.
+  assert.ok(row.changes.every(c => c.toRate > c.fromRate))
+})
+
+test('a partial-coverage bonus is flagged on the change it drives', () => {
+  // Amex Platinum pays 5% on Transport, but only on flights booked through a portal. The gain is
+  // real arithmetic on a rate that covers a slice of the category, and the panel has to say so —
+  // an unqualified "+$216 a year on Transport" is the whole case for a $895 card.
+  const txs = ledger([[500, 'Transport', 'Active Cash']])
+  const monthly = monthlySpendByCategory(txs, rangeOf(txs))
+  const cards = resolveWallet(['Active Cash'], wallet(), null)
+  const row = buildCandidates({ cards, monthly }).find(r => r.card.id === 'amexPlat')
+
+  const transport = row.changes.find(c => c.category === 'Transport')
+  assert.equal(transport.partial, true)
+  assert.match(transport.note, /Amex Travel/)
+
+  // A bonus that covers its whole category carries no flag and no note to print.
+  const grocery = buildCandidates({ cards, monthly: [{ category: 'Grocery', monthly: 400 }] })
+    .find(r => r.card.id === 'amexBcp').changes.find(c => c.category === 'Grocery')
+  assert.equal(grocery.partial, false)
+  assert.equal(grocery.note, null)
+})
+
+test('a quarter before the calendar is a gap in our data, not an unannounced one', () => {
+  // Calendars reach back to 2025. Anything older is a quarter that happened and that we simply do
+  // not hold — telling a user it is "not announced yet" would be false. The difference is decided
+  // by comparing quarter keys; this module never looks at a clock.
+  const card = catalogCard('discoverIt')
+  const entry = { catalogId: 'discoverIt' }
+  assert.equal(rotatingQuarterFor(card, entry, '2024-Q4').source, 'missing')
+  assert.equal(rotatingQuarterFor(card, entry, '2025-Q4').source, 'catalog', 'now published')
+  assert.equal(rotatingQuarterFor(card, entry, '2026-Q4').source, 'unpublished')
+  assert.equal(rotatingQuarterFor(card, entry, '2027-Q1').source, 'unpublished')
+
+  // Both unknown states score at base, and both stay recordable by hand.
+  for (const q of ['2024-Q4', '2026-Q4']) {
+    assert.deepEqual(resolveCard('D', entry, { quarterKey: q }).rates, {})
+    assert.equal(
+      resolveCard('D', { ...entry, quarters: { [q]: 'Grocery' } }, { quarterKey: q }).rates.Grocery.pct,
+      5,
+    )
+  }
+})
+
+test('the calendar span is reported so the view can say how far back it reaches', () => {
+  // Every rotating card carries one, and it is what the rail card prints. A window older than
+  // `from` is a gap in our data rather than a card that earned nothing.
+  for (const card of CARD_CATALOG) {
+    if (!card.rotating) continue
+    const span = calendarRangeOf(card)
+    assert.ok(span, `${card.id} has a calendar but no reportable span`)
+    assert.match(span.from, /^\d{4}-Q[1-4]$/)
+    assert.ok(span.from <= span.to)
+    assert.equal(span.from, '2025-Q1', `${card.id} should reach back to 2025`)
+  }
+  assert.equal(calendarRangeOf({ rotating: { pct: 5 } }), null, 'no calendar, no span')
+  assert.equal(calendarRangeOf(null), null)
+})
+
+test('a rotating quarter beats a standing rate on the same category, but never a higher one', () => {
+  // Freedom Flex pays a standing 3% on dining, and its Q1 2026 rotation is dining at 5%. The
+  // higher rate has to win, or a quarter would silently downgrade a rate the card always pays.
+  const q1 = resolveCard('Chase', { catalogId: 'freedomFlex' }, { quarterKey: '2026-Q1' })
+  assert.equal(q1.rates['Food & Dining'].pct, 5)
+  assert.equal(q1.rates['Food & Dining'].rotating, true)
+
+  // Outside that quarter the standing rate is what remains.
+  const q2 = resolveCard('Chase', { catalogId: 'freedomFlex' }, { quarterKey: '2026-Q2' })
+  assert.equal(q2.rates['Food & Dining'].pct, 3)
+  assert.equal(q2.rates['Food & Dining'].rotating, undefined)
+  // And the quarter's own categories are there alongside it.
+  assert.equal(q2.rates.Shopping.pct, 5)
+  assert.equal(q2.rates.Grocery.pct, 5)
 })

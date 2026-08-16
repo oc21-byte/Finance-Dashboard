@@ -25,6 +25,38 @@
 // rates / summary / verified. Do not put rates in components. User corrections belong in
 // settings.cardRewards.overrides so a catalog update cannot clobber them.
 //
+// ROTATING CARDS carry `rotating: { pct, capQtr, calendar? }`. The calendar is published data, not
+// something a user should be retyping — it is announced a quarter ahead and is the same for every
+// holder. Each quarter maps to a SET of app categories, because one issuer category ("gas stations,
+// EV charging, public transportation, flights") lands across several of ours, and each carries its
+// own `coverage` / `note` exactly as a normal rate does.
+//
+// A quarter ABSENT from the calendar is not yet announced, which is not the same as a quarter that
+// pays nothing. The UI says so and still lets a user record it by hand for the gap between an
+// issuer announcing a quarter and this file being updated. A card with no `calendar` at all stays
+// entirely on that hand-entry path.
+//
+// The cap is SHARED across everything a quarter covers — $1,500 of spend per quarter total, not per
+// category. `rewardsModel` enforces that with a per-card pool; see `fillCategory`.
+//
+// NAMED MERCHANTS AND CHARITIES ARE OMITTED, not mapped to a category. `coverage: 'partial'` is for
+// a bonus covering a real fraction of a category — gas within Transport, drugstores within Health.
+// A single merchant is not that. Freedom Flex's Q1 2026 ran "dining, Norwegian Cruise Line, and
+// American Heart Association donations": scoring all of Transport at 5% because one cruise line
+// qualified would overstate by an order of magnitude, and a rate that is wrong by 100× is worse
+// than a rate that is absent. Amazon and Whole Foods are borderline and included as partial —
+// each is a real share of its category. A charity or one cruise line is not. When in doubt, omit:
+// the base rate is an under-estimate you can explain, and the note beside a partial rate is the
+// only thing standing between a user and a decision made on a fabricated number.
+//
+// MONTH-ONLY BONUSES ARE OMITTED TOO. Chase runs these ("March only: tax preparation", "December
+// only: PayPal"). The calendar is keyed by quarter, so the nearest thing to representing one is to
+// credit it across all three months — which triples it. Quarter granularity is what the shared cap
+// is published at, so it stays; the odd one-month promotion is dropped instead.
+//
+// Calendars go back to 2025. Earlier quarters resolve to `missing`, which the UI states plainly
+// rather than scoring at a guess.
+//
 // `pct` is what rewardsModel multiplies by spend. Cash-back cards use the published percent.
 // Points cards use equivalent cash at these valuations (household cheat sheet, Aug 2026):
 //   Chase Ultimate Rewards  2.0¢/pt   → 3x dining = 6, 1x = base 2
@@ -114,10 +146,44 @@ export const CARD_CATALOG = [
     summary: "5% on this quarter's rotating category, to $1,500 · 1% everything else",
     base: 1,
     rates: {},
-    // The category changes every quarter and the user activates it manually, so there is nothing
-    // to publish here — `settings.cardRewards.wallet[source].quarters` is the only record of what
-    // a given quarter actually was, and an unrecorded quarter is scored at the base rate.
-    rotating: { pct: 5, capQtr: 1500 },
+    rotating: {
+      pct: 5,
+      capQtr: 1500,
+      calendar: {
+        '2025-Q1': {
+          'Food & Dining': {},
+          'Shopping': { coverage: 'partial', note: 'home improvement stores' },
+          'Subscription': { coverage: 'partial', note: 'select streaming services' },
+        },
+        '2025-Q2': {
+          'Grocery': { coverage: 'partial', note: 'grocery stores, not Walmart or Target superstores' },
+          'Shopping': { coverage: 'partial', note: 'wholesale clubs' },
+        },
+        '2025-Q3': {
+          'Transport': { coverage: 'partial', note: 'gas, EV charging and public transit — not flights' },
+          'Housing': { coverage: 'partial', note: 'utilities' },
+        },
+        '2025-Q4': {
+          'Shopping': { coverage: 'partial', note: 'Amazon only' },
+          'Health': { coverage: 'partial', note: 'drug stores' },
+        },
+        '2026-Q1': {
+          'Grocery': { coverage: 'partial', note: 'grocery stores, not Walmart or Target superstores' },
+          'Shopping': { coverage: 'partial', note: 'wholesale clubs' },
+          'Subscription': { coverage: 'partial', note: 'select streaming services' },
+        },
+        '2026-Q2': {
+          'Food & Dining': {},
+          'Shopping': { coverage: 'partial', note: 'home improvement stores' },
+        },
+        '2026-Q3': {
+          'Transport': { coverage: 'partial', note: 'gas, EV charging, public transit and flights' },
+          'Health': { coverage: 'partial', note: 'drug stores' },
+        },
+        // 2026-Q4 is announced around Sept 1, 2026. Absent rather than guessed — see the note on
+        // `calendar` above for why an absent quarter is a different thing from an empty one.
+      },
+    },
     verified: '2026-08',
   },
   {
@@ -232,7 +298,49 @@ export const CARD_CATALOG = [
       'Food & Dining': { pct: 3 },
       'Health': { pct: 3, coverage: 'partial', note: 'drugstores only' },
     },
-    rotating: { pct: 5, capQtr: 1500 },
+    rotating: {
+      pct: 5,
+      capQtr: 1500,
+      calendar: {
+        // Omitted throughout, per the named-merchant and month-only rules in the header:
+        //   2025 Q1  Norwegian Cruise Line · March-only tax prep and insurance
+        //   2025 Q2  June-only internet, cable and phone
+        //   2025 Q3  Instacart
+        //   2025 Q4  Chase Travel (portal, elevated to 9%) · Old Navy · December-only PayPal
+        //   2026 Q1  Norwegian Cruise Line · American Heart Association
+        //   2026 Q2  Chase Travel · Feeding America
+        //   2026 Q3  United Way
+        // Scoring all of Transport at 5% because one cruise line qualified would be wrong by an
+        // order of magnitude, not by a partial-coverage margin.
+        '2025-Q1': {
+          'Grocery': { coverage: 'partial', note: 'grocery stores, excluding Walmart and Target' },
+          'Health': { coverage: 'partial', note: 'fitness clubs, gyms, hair, nails and spa services' },
+        },
+        '2025-Q2': {
+          'Shopping': { coverage: 'partial', note: 'Amazon only' },
+          'Subscription': { coverage: 'partial', note: 'select streaming services' },
+        },
+        '2025-Q3': {
+          'Transport': { coverage: 'partial', note: 'gas and EV charging only' },
+          'Entertainment': { coverage: 'partial', note: 'select live entertainment' },
+        },
+        '2025-Q4': {
+          'Shopping': { coverage: 'partial', note: 'department stores' },
+        },
+        '2026-Q1': {
+          'Food & Dining': {},
+        },
+        '2026-Q2': {
+          'Shopping': { coverage: 'partial', note: 'Amazon only' },
+          'Grocery': { coverage: 'partial', note: 'Whole Foods Market only' },
+        },
+        '2026-Q3': {
+          'Transport': { coverage: 'partial', note: 'gas, EV charging, transit, tolls and parking — not flights' },
+          'Entertainment': { coverage: 'partial', note: 'concerts, sporting events and amusement parks' },
+        },
+        // 2026-Q4 is announced around mid-September 2026.
+      },
+    },
     verified: '2026-08',
   },
   {

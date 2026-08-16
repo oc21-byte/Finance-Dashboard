@@ -7,7 +7,14 @@ import RewardsMatrix from './RewardsMatrix.jsx'
 import RotatingQuarters from './RotatingQuarters.jsx'
 import EarnedCard from './EarnedCard.jsx'
 import Limitations from './Limitations.jsx'
+import CardCatalogBrowser from './CardCatalogBrowser.jsx'
+import { resolveDisplayCurrency } from '../../../utils/displayCurrency.js'
 import { money } from './format.js'
+
+/** A CAD book browses Canadian cards first, a USD book American ones. Overridable, and stored. */
+function defaultRegion(displayCurrency) {
+  return resolveDisplayCurrency(displayCurrency) === 'CAD' ? 'ca' : 'us'
+}
 
 /**
  * The Rewards view.
@@ -28,8 +35,10 @@ export default function RewardsView({
   categoryColors,
   demoMode = false,
   onLink,
+  onRegionChange,
   saving = false,
   clearsPinned = 0,
+  browserOpen = false,
 }) {
   const model = useMemo(
     () => buildRewardsModel({ spendTxs, allSources, range, settings }),
@@ -45,6 +54,15 @@ export default function RewardsView({
   const { scored, scorable } = model.coverage
   const categories = useMemo(() => model.rows.map(r => r.category), [model.rows])
   const hasPartial = model.rows.some(row => row.cells.some(cell => cell.partial))
+
+  // `undefined` is "never chosen" and takes the home-currency default; `null` is the user having
+  // explicitly asked for every region, and must survive a reload as itself.
+  const storedRegion = settings?.cardRewards?.region
+  const region = storedRegion === undefined ? defaultRegion(settings?.displayCurrency) : storedRegion
+  const ownedIds = useMemo(
+    () => Object.values(wallet).map(entry => entry?.catalogId).filter(Boolean),
+    [wallet],
+  )
 
   // Slot and quarter edits are ordinary wallet writes — same handler as linking a card, because
   // they change the same stored entry. The transform itself lives in `rewardsModel`.
@@ -131,6 +149,19 @@ export default function RewardsView({
           </p>
         )}
 
+        <CardCatalogBrowser
+          cards={model.cards}
+          monthly={model.monthly}
+          ownedIds={ownedIds}
+          region={region}
+          onRegionChange={onRegionChange}
+          unlinkedSources={model.unlinkedSources}
+          shortWindow={model.projection.shortWindow}
+          demoMode={demoMode}
+          onLink={onLink}
+          defaultOpen={browserOpen}
+        />
+
         {saving && <p className="text-[12px] text-gray-400">Saving…</p>}
       </div>
 
@@ -161,7 +192,7 @@ export default function RewardsView({
           onEntryChange={handleEntryChange}
         />
 
-        <Limitations hasPartial={hasPartial} />
+        <Limitations hasPartial={hasPartial} hasRotating={model.cards.some(c => c.rotating)} />
       </aside>
     </div>
   )

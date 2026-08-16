@@ -204,6 +204,14 @@ export default function SpendAnalyzer({ onTabChange, demoMode }) {
     cardRewardsMutation.mutate({ ...current, wallet })
   }
 
+  // Which country's cards the catalog browser offers. Persisted rather than local because a
+  // USD-booked user who also holds Canadian cards should not re-pick it on every visit; `null`
+  // means "no preference", which falls back to the home currency.
+  function handleRegionChange(region) {
+    const current = settings?.cardRewards ?? {}
+    cardRewardsMutation.mutate({ ...current, region })
+  }
+
   const insightsMutation = useMutation({
     mutationFn: (period) => api.llm.spendInsights(period),
     onSuccess: () => {
@@ -739,6 +747,7 @@ export default function SpendAnalyzer({ onTabChange, demoMode }) {
           categoryColors={allCategoryColors}
           demoMode={demoMode}
           onLink={handleLinkCard}
+          onRegionChange={handleRegionChange}
           saving={cardRewardsMutation.isPending}
           clearsPinned={clearsPinned}
         />

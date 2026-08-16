@@ -8,7 +8,7 @@ import { catalogVerifiedAt } from '../../../constants/cardCatalog.js'
  * before someone changes a real habit on the strength of it. A rewards page that never states its
  * limits is asking to be trusted further than it has earned.
  */
-export default function Limitations({ hasPartial = false }) {
+export default function Limitations({ hasPartial = false, hasRotating = false }) {
   const verified = catalogVerifiedAt()
 
   return (
@@ -32,6 +32,20 @@ export default function Limitations({ hasPartial = false }) {
           inside a grocery store earns what the issuer says it earns.
           {hasPartial && <> Bonuses marked † cover only part of a category and are over-estimates.</>}
         </li>
+        <li>
+          <span className="text-gray-700">Points are converted at an assumed value.</span> A card
+          earning 3x on dining is scored as a percentage using a fixed cents-per-point figure from
+          the catalog. Change that assumption and the ranking changes with it — points cards are
+          only ever as good as what you actually redeem them for.
+        </li>
+        {hasRotating && (
+          <li>
+            <span className="text-gray-700">Rotating bonuses are assumed activated.</span> Discover
+            and Chase both make you turn each quarter on by hand, and a quarter you forgot earned
+            the base rate instead — up to $75 of the difference. Nothing here knows which you
+            activated, so every published quarter is counted as if you did.
+          </li>
+        )}
         <li>
           <span className="text-gray-700">No redemption tracking.</span> This is what your spending
           earned, not what you have banked or what a point is worth when you spend it. Cash back

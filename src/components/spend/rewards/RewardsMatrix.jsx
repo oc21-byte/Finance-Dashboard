@@ -79,7 +79,9 @@ export default function RewardsMatrix({
       }
     }
 
-    if (card.rotating && currentQuarter) {
+    // A published quarter is not the user's to set. Only a card with no calendar, or a quarter the
+    // issuer has not announced yet, still asks.
+    if (card.rotating && currentQuarter && card.rotatingSource !== 'catalog') {
       const on = entry.quarters?.[currentQuarter]
       return {
         value: on === row.category ? 'bonus' : '',
