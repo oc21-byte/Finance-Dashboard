@@ -61,6 +61,7 @@
 // Points cards use equivalent cash at these valuations (household cheat sheet, Aug 2026):
 //   Chase Ultimate Rewards  2.0¢/pt   → 3x dining = 6, 1x = base 2
 //   Capital One miles       1.85¢/mi  → 2x = base 3.7
+//   Aeroplan                1.5¢/pt   → 1.5x gas = 2.25, 1x = base 1.5
 //   everything else         1.0¢      → 5x = 5  (Amex MR, Bilt, BMO Rewards, Blue Points, Scene+)
 // Portal-only bonuses (Chase Travel, Cap One Travel, Bilt Travel) stay in `summary` — putting
 // them on Transport would score every gas fill at the portal rate. Welcome bonuses, intro APRs
@@ -749,6 +750,132 @@ export const CARD_CATALOG = [
       'Grocery': { pct: 2 },
       'Transport': { pct: 2, coverage: 'partial', note: 'gas and EV charging' },
       'Shopping': { pct: 2, coverage: 'partial', note: 'wholesale clubs and alcohol' },
+    },
+    verified: '2026-08',
+  },
+
+  // Aeroplan cards, all three issuers. Every one of them leads with a multiplier on purchases made
+  // directly with Air Canada — a single merchant inside Transport, so it is never scored, per the
+  // named-merchant rule above. Where the Air Canada rate happens to equal the gas rate (the two
+  // Visa Infinites) the Transport note names it alongside gas and nothing is lost; where it is a
+  // separate higher tier it stays in `summary`. Hyatt and the Aeroplan eStore, same treatment.
+  {
+    id: 'tdAeroplanPlatinum',
+    name: 'TD Aeroplan Visa Platinum',
+    short: 'TD Aeroplan Platinum',
+    issuer: 'TD',
+    region: 'ca',
+    fee: 89,
+    summary: '1x Aeroplan on gas, EV charging, grocery and Air Canada · 1 point per $1.50 on everything else · scored at 1.5¢/pt',
+    base: 1,
+    rates: {
+      'Grocery': { pct: 1.5 },
+      'Transport': { pct: 1.5, coverage: 'partial', note: 'gas, EV charging and Air Canada purchases only' },
+    },
+    verified: '2026-08',
+  },
+  {
+    id: 'tdAeroplanVI',
+    name: 'TD Aeroplan Visa Infinite',
+    short: 'TD Aeroplan Infinite',
+    issuer: 'TD',
+    region: 'ca',
+    fee: 139,
+    summary: '1.5x Aeroplan on gas, EV charging, grocery and Air Canada (combined $80k/yr then 1x) · 1x else · 1.5x at Hyatt in summary only · scored at 1.5¢/pt',
+    base: 1.5,
+    rates: {
+      'Grocery': { pct: 2.25 },
+      'Transport': { pct: 2.25, coverage: 'partial', note: 'gas, EV charging and Air Canada purchases only' },
+    },
+    verified: '2026-08',
+  },
+  {
+    id: 'tdAeroplanVIP',
+    name: 'TD Aeroplan Visa Infinite Privilege',
+    short: 'TD Aeroplan Privilege',
+    issuer: 'TD',
+    region: 'ca',
+    fee: 599,
+    summary: '1.5x Aeroplan on gas, EV charging, grocery, travel, transit and dining · 1.25x else · 2x on Air Canada and at Hyatt in summary only · lounge access and companion pass not scored · scored at 1.5¢/pt',
+    base: 1.875,
+    rates: {
+      'Grocery': { pct: 2.25 },
+      'Food & Dining': { pct: 2.25 },
+      'Transport': { pct: 2.25, coverage: 'partial', note: 'gas, EV charging, travel and transit; Air Canada earns 2x, in summary only' },
+    },
+    verified: '2026-08',
+  },
+  {
+    id: 'cibcAeroplanVisa',
+    name: 'CIBC Aeroplan Visa',
+    short: 'CIBC Aeroplan',
+    issuer: 'CIBC',
+    region: 'ca',
+    fee: 0,
+    summary: '1x Aeroplan on gas, EV charging, grocery and Air Canada · 1 point per $1.50 on everything else · scored at 1.5¢/pt',
+    base: 1,
+    rates: {
+      'Grocery': { pct: 1.5 },
+      'Transport': { pct: 1.5, coverage: 'partial', note: 'gas, EV charging and Air Canada purchases only' },
+    },
+    verified: '2026-08',
+  },
+  {
+    id: 'cibcAeroplanVI',
+    name: 'CIBC Aeroplan Visa Infinite',
+    short: 'CIBC Aeroplan Infinite',
+    issuer: 'CIBC',
+    region: 'ca',
+    fee: 139,
+    summary: '1.5x Aeroplan on gas, EV charging, grocery and Air Canada (first $80k of net annual purchases then 1x) · 1x else · 1.5x at Hyatt in summary only · scored at 1.5¢/pt',
+    base: 1.5,
+    rates: {
+      'Grocery': { pct: 2.25 },
+      'Transport': { pct: 2.25, coverage: 'partial', note: 'gas, EV charging and Air Canada purchases only' },
+    },
+    verified: '2026-08',
+  },
+  {
+    id: 'cibcAeroplanVIP',
+    name: 'CIBC Aeroplan Visa Infinite Privilege',
+    short: 'CIBC Aeroplan Privilege',
+    issuer: 'CIBC',
+    region: 'ca',
+    fee: 599,
+    summary: '1.5x Aeroplan on gas, EV charging, grocery, travel and dining · 1.25x else · 2x on Air Canada and at Hyatt in summary only · lounge access and companion pass not scored · scored at 1.5¢/pt',
+    base: 1.875,
+    rates: {
+      'Grocery': { pct: 2.25 },
+      'Food & Dining': { pct: 2.25 },
+      'Transport': { pct: 2.25, coverage: 'partial', note: 'gas, EV charging and eligible travel; Air Canada earns 2x, in summary only' },
+    },
+    verified: '2026-08',
+  },
+  {
+    id: 'amexAeroplan',
+    name: 'Amex Aeroplan Card',
+    short: 'Aeroplan Card',
+    issuer: 'Amex',
+    region: 'ca',
+    fee: 120,
+    summary: '1.5x Aeroplan on dining and food delivery in Canada · 1x else · 2x on Air Canada not scored, one merchant inside Transport · scored at 1.5¢/pt',
+    base: 1.5,
+    rates: {
+      'Food & Dining': { pct: 2.25 },
+    },
+    verified: '2026-08',
+  },
+  {
+    id: 'amexAeroplanReserve',
+    name: 'Amex Aeroplan Reserve',
+    short: 'Aeroplan Reserve',
+    issuer: 'Amex',
+    region: 'ca',
+    fee: 599,
+    summary: '2x Aeroplan on dining and food delivery in Canada · 1.25x else · 3x on Air Canada not scored, one merchant inside Transport · lounge access and companion pass not scored · scored at 1.5¢/pt',
+    base: 1.875,
+    rates: {
+      'Food & Dining': { pct: 3 },
     },
     verified: '2026-08',
   },

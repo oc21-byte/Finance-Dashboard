@@ -211,9 +211,9 @@ test('catalogCard returns null for an id the catalog no longer has', () => {
   assert.equal(catalogCard(undefined), null)
 })
 
-test('the authored catalog is 23 US and 16 Canada cards', () => {
+test('the authored catalog is 23 US and 24 Canada cards', () => {
   const us = CARD_CATALOG.filter(c => c.region === 'us')
   const ca = CARD_CATALOG.filter(c => c.region === 'ca')
   assert.equal(us.length, 23)
-  assert.equal(ca.length, 16)
+  assert.equal(ca.length, 24)
 })

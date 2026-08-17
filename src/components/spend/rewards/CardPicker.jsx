@@ -11,7 +11,7 @@ export { walletEntryFor, pickerValueFor } from '../../../utils/rewardsModel.js'
  *
  * Used in three places — the wallet setup, the import review modal, and Add Transaction — so that
  * a card is linked the same way wherever you happen to be standing. A `<select>` rather than a
- * search box: with 39 cards, grouped by region and issuer, a native picker is faster to use, fully
+ * search box: with 47 cards, grouped by region and issuer, a native picker is faster to use, fully
  * keyboard-accessible for free, and cannot invent a card that isn't there.
  *
  * The three non-catalog choices are not interchangeable:
