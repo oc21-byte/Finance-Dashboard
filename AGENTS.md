@@ -24,8 +24,9 @@ rules encode) and `project-plan.md` (original, partly outdated concept). Never m
   settings endpoints return only `hasClaudeApiKey` / `hasOpenaiApiKey` flags.
 - Use TanStack Query for server state. Never fetch in `useEffect`; invalidate affected keys after
   mutations.
-- Never call `/api/shutdown` on unload. Only Close App in `Layout.jsx` stops Express, via
-  `process.exit(0)`.
+- Never call `/api/shutdown` on unload. Only Close App in `Layout.jsx` stops the app: Express
+  exits and, under `npm run dev`, also stops nodemon (`UNDER_NODEMON` env in `nodemonConfig`);
+  `concurrently --kill-others` then stops Vite.
 
 **Ledger semantics**
 

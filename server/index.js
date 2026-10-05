@@ -2852,8 +2852,13 @@ app.post('/api/net-worth-rebuild', async (req, res) => {
 
 app.post('/api/shutdown', (req, res) => {
   res.json({ ok: true })
-  // Exit this process only — process.kill(0) would SIGINT the whole group and take Vite with it.
-  setTimeout(() => process.exit(0), 150)
+  // A clean exit alone leaves nodemon waiting for file changes and Vite still serving on 5173,
+  // so stale servers pile up across launches. Under `npm run dev`, stop nodemon too; the
+  // `--kill-others` flag on concurrently then takes Vite down with it.
+  setTimeout(() => {
+    if (process.env.UNDER_NODEMON) process.kill(process.ppid, 'SIGTERM')
+    process.exit(0)
+  }, 150)
 })
 
 // --- Start ---

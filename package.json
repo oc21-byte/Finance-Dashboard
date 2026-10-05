@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"vite\" \"nodemon server/index.js\"",
+    "dev": "concurrently --kill-others \"vite\" \"nodemon server/index.js\"",
     "test": "node --test",
     "build": "vite build",
     "preview": "vite preview"
@@ -13,7 +13,10 @@
     "watch": [
       "server/"
     ],
-    "ext": "js,json"
+    "ext": "js,json",
+    "env": {
+      "UNDER_NODEMON": "1"
+    }
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.95.1",

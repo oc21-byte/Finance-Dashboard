@@ -360,6 +360,8 @@ to dig deeper into a specific feature.
 **"Port 5173 is already in use"**
 Another copy of the app is already running in a different terminal window. Find that window
 and close it (or press Ctrl + C inside it), then run `npm run dev` again.
+If you can't find it, on a Mac run `killall node` in Terminal (on Windows, `taskkill /F /IM node.exe`
+in Command Prompt) — this stops every copy at once, and your data is safe.
 
 **"npm: command not found" (or "node is not recognized")**
 Node.js didn't install correctly. Go back to Part 1, reinstall it, restart your computer,
