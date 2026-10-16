@@ -4,6 +4,11 @@ Local-only personal finance dashboard: React + Vite (`:5173`), Express (`:3001`)
 Vite proxies `/api/*` to Express. `data/db.json` is git-ignored, auto-created by `ensureDb()`, and
 backfilled when top-level keys are missing.
 
+Express binds to loopback only (`127.0.0.1` and, when the OS has it, `::1`) via `server/loopback.js`.
+The Vite dev and preview servers stay on `localhost` and proxy `/api` to `http://127.0.0.1:3001` —
+not the name `localhost`, because Node 17+ may resolve that to `::1` and miss an IPv4-only bind.
+Do not pass a host of `0.0.0.0`, `::`, or `true`.
+
 ```bash
 npm run dev      # frontend + backend
 npm test         # deterministic unit/integration tests

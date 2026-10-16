@@ -48,6 +48,7 @@ import {
   HISTORY_VERSION, rebuildHistory, valueHoldingsAsOf, buildEntry,
   cashAsOf, statementChecks, sortedBalances, deriveOpeningBalance, ledgerCoverageEnd,
 } from './netWorthHistory.js'
+import { listenLoopback } from './loopback.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DB_PATH = path.join(__dirname, '../data/db.json')
@@ -2864,10 +2865,13 @@ app.post('/api/shutdown', (req, res) => {
 // --- Start ---
 
 const PORT = 3001
-app.listen(PORT, () => {
-  if (DEMO_MODE) {
-    console.log(`[DEMO MODE] Express server on http://localhost:${PORT} — serving mock_data.json, all writes blocked`)
-  } else {
-    console.log(`Express server running on http://localhost:${PORT}`)
-  }
-})
+// Loopback only. A bare `app.listen(PORT)` binds every interface, so anyone on the same
+// Wi-Fi could read the ledger or call factory-reset / shutdown. Browser CORS does not
+// apply to those direct requests. See server/loopback.js for why both 127.0.0.1 and ::1.
+const bound = await listenLoopback(app, PORT)
+const via = bound.map((server) => server.address().address).join(', ')
+if (DEMO_MODE) {
+  console.log(`[DEMO MODE] Express server on http://127.0.0.1:${PORT} (${via}; loopback only) — serving mock_data.json, all writes blocked`)
+} else {
+  console.log(`Express server running on http://127.0.0.1:${PORT} (${via}; loopback only)`)
+}
