@@ -140,7 +140,11 @@ The key is stored only in your local `data/db.json` and is never sent anywhere e
 
 ## Data & privacy
 
-All financial data lives in `data/db.json` on your computer. Nothing is synced to a server or cloud. The only outbound network requests are:
+All financial data lives in `data/db.json` on your computer. Nothing is synced to a server or cloud.
+
+The dashboard (port 5173) and the API (port 3001) accept connections only from this computer. Another device on the same network — shared hotel or arena Wi-Fi, for example — cannot open the app or call the API, including the routes that reset your data or shut the app down. Open `http://localhost:5173` in a browser on this machine, which is the same address the launchers use.
+
+The only outbound network requests are:
 
 - **Anthropic API** — when you use AI features with a Claude key
 - **OpenAI API** — when you use AI features with an OpenAI key
